@@ -73,12 +73,14 @@ publish_seed() {
 }
 
 # Parent repository: project documentation and local orchestration.
-init_seed acme-shop
+# Write this before initializing the root repository, so nested repositories are
+# ignored from the first interaction with the root checkout.
 mkdir -p "$seed_dir/acme-shop/docs"
 cat > "$seed_dir/acme-shop/.gitignore" <<'EOF'
 /backend/
 /frontend/
 EOF
+init_seed acme-shop
 cat > "$seed_dir/acme-shop/README.md" <<'EOF'
 # Acme Shop
 
