@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - name: Check formatting
+        run: |
+          unformatted="$(go list -f '{{.Dir}}' ./... | while IFS= read -r dir; do gofmt -l "$dir"/*.go; done)"
+          test -z "$unformatted" || (printf '%s\n' "$unformatted" && exit 1)
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Race test
+        run: go test -race ./...
+      - name: Build
+        run: go build -o "$RUNNER_TEMP/wtree" ./cmd/wtree
+      - name: Cross-platform release layout
+        run: VERSION=0.0.0-ci DIST_DIR="$RUNNER_TEMP/dist" ./scripts/release-build.sh
+      - name: Reuse release directory safely
+        run: make release-test
+      - name: Check release manifest
+        run: |
+          test -f "$RUNNER_TEMP/dist/SHA256SUMS"
+          test -f "$RUNNER_TEMP/dist/wtree_0.0.0-ci_linux_amd64"
+          test -f "$RUNNER_TEMP/dist/wtree_0.0.0-ci_darwin_amd64"
+          test -f "$RUNNER_TEMP/dist/wtree_0.0.0-ci_windows_amd64.exe"
+          test -f "$RUNNER_TEMP/dist/LICENSE"
+          test -f "$RUNNER_TEMP/dist/NOTICE"
