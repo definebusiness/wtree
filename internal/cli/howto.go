@@ -9,55 +9,102 @@ const globalHowTo = `WTREE HOW-TO
 
 1. What wtree is
    wtree manages one logical workspace across independent, nested Git repositories.
-2. Initialize a project
-   Run: wtree init
-3. What repository discovery does
-   init finds independent nested Git repositories and records their Git identities.
-4. Configure worktree storage
+2. Clone a published multi-repository project
+   Run: wtree clone ./project.wtree.yml, or pass an HTTP(S) manifest URL.
+3. Initialize and publish an existing project
+   Configure and push every upstream, then run wtree init and commit project.wtree.yml.
+4. Keep local configuration private
+   init creates or updates .gitignore for /.wtree.yml; project.wtree.yml is portable and tracked.
+5. Refresh the portable manifest from local repositories
+   Run: wtree update. Review the old/new table before confirming the update.
+6. Synchronize a clone from its published manifest
+   Run: wtree sync. Use --from <path-or-URL> to replace the stored manifest source.
+7. Preview manifest changes for tools
+   Run: wtree update --json --dry-run or wtree sync --json --dry-run.
+8. Configure worktree storage
    Use config set worktrees.root <path>, or pass --worktree-root when creating.
-5. Create a workspace
+9. Create a workspace
    Run: wtree create feature/login
-6. Create from HEAD
+10. Create from HEAD
    The default --from HEAD creates branches from each repository's current HEAD.
-7. Create from another branch/ref
+11. Create from another branch/ref
    Run: wtree create feature/login --from main
-8. Override nested repository mounts
+12. Override nested repository mounts
    Run: wtree create feature/login --mount backend=api
-9. Work inside a workspace
-   Run: cd "$(wtree path feature/login)"
-10. Resolve workspace paths
+13. Work inside a workspace
+   Jump to a branch workspace: cd "$(wtree path feature/login)"
+   Jump back to the original clone (the default workspace): cd "$(wtree path default)"
+14. Resolve workspace paths
     Run: wtree path feature/login
-11. Resolve repository paths
+15. Resolve repository paths
     Run: wtree repo path backend
-12. Inspect status
+16. Inspect status
     Run: wtree status feature/login --json
-13. Import an existing workspace
+17. Import an existing workspace
     Run: wtree import /path/to/workspace --name feature/login
-14. Import renamed nested checkouts
+18. Import renamed nested checkouts
     Import maps checkouts by Git identity, so a configured backend may be mounted as api.
-15. Remove a workspace
+19. Remove a workspace
     Run: wtree remove feature/login. Branches and retained state remain for checkout.
-16. Restore an existing branch with checkout
+20. Restore an existing branch with checkout
     Run: wtree checkout feature/login
-17. Delete workspace and branches
+21. Delete workspace and branches
     Run: wtree delete feature/login. Use --force only for the named safety overrides.
-18. Diagnose inconsistencies
+22. Diagnose inconsistencies
     Run: wtree doctor feature/login. Use --fix only for listed safe repairs.
-19. Use --dry-run
+23. Use --dry-run
     Add --dry-run to render and validate an operation without mutation.
-20. Use --json
+24. Use --json
     Add --json where supported for machine-readable output; errors use a stable envelope.
-21. Use wtree from nested directories
+25. Use wtree from nested directories
     wtree resolves the project from the current repository identity and workspace state.
-22. Use --project explicitly
+26. Use --project explicitly
     Run: wtree --project /path/to/project <command> when context is ambiguous.
-23. AI coding agent workflow
+27. AI coding agent workflow
     Create, resolve with path, work in the checkout, inspect status, then remove or delete.
-24. Important safety semantics
-    Create preflights first; remove retains state; delete and force operations require explicit intent.
+28. Important safety semantics
+    Clone, update, and sync preflight first; destructive reconciliation requires explicit intent.
 `
 
 var commandHowTo = map[string]string{
+	"init": `HOW TO: init
+
+Discover the complete local repository tree after every repository has been pushed and connected to its intended upstream. Write ignored .wtree.yml and portable project.wtree.yml, and ensure /.wtree.yml is in the root .gitignore.
+
+EXAMPLES
+  wtree init
+  wtree init --manifest-source https://git.example.com/acme/project.wtree.yml
+  wtree init --dry-run --json
+`,
+	"clone": `HOW TO: clone
+
+Create and register a complete multi-repository checkout from a local portable manifest or an HTTP(S) URL. The exact manifest source is saved for later sync operations.
+
+EXAMPLES
+  wtree clone ./project.wtree.yml
+  wtree clone https://git.example.com/acme/project.wtree.yml ./acme-shop
+  wtree clone ./project.wtree.yml ./acme-shop --dry-run
+`,
+	"update": `HOW TO: update
+
+Reinspect local repositories and compare the result with .wtree.yml and project.wtree.yml. Interactive output asks before writing; JSON without --dry-run applies non-interactively.
+
+EXAMPLES
+  wtree update
+  wtree update --dry-run
+  wtree update --json --dry-run
+  wtree update --json
+`,
+	"sync": `HOW TO: sync
+
+Read the stored portable manifest source and reconcile this clone's repositories and local configuration to it. --from replaces the stored source after a successful sync.
+
+EXAMPLES
+  wtree sync
+  wtree sync --dry-run
+  wtree sync --from ./replacement.wtree.yml
+  wtree sync --json --dry-run
+`,
 	"create": `HOW TO: create
 
 Create a synchronized branch and parent-first worktrees after preflight succeeds.
@@ -128,5 +175,5 @@ func renderHowToIfRequested(writer io.Writer, arguments []string) (bool, error) 
 			return true, err
 		}
 	}
-	return true, invalidArgumentsError{cause: fmt.Errorf("--how-to is valid only as `wtree --how-to` or `wtree {create,import,remove,delete,doctor} --how-to`")}
+	return true, invalidArgumentsError{cause: fmt.Errorf("--how-to is valid only as `wtree --how-to` or `wtree {init,clone,update,sync,create,import,remove,delete,doctor} --how-to`")}
 }

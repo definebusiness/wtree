@@ -1,9 +1,10 @@
 # `wtree` hands-on tutorial
 
-This tutorial uses three local Git repositories to explore every `wtree`
-command without contacting a real remote server. The fixture represents an
-Acme Shop project with a parent repository and two independent repositories
-nested inside it.
+This tutorial uses three local bare Git repositories and a portable manifest
+to explore the complete `wtree` workflow without contacting a real remote server. The
+fixture represents an Acme Shop project with a parent repository and two
+independent repositories nested inside it. The fixture does not create the
+project checkout: `wtree clone` reconstructs it from `project.wtree.yml`.
 
 Run the commands in order in one terminal. Paths are stored in environment
 variables so the examples work regardless of where the `wtree-go` repository
@@ -69,7 +70,8 @@ Create the fixture next to the `wtree-go` repository:
 cd "$WTREE_SOURCE_ROOT"
 ./tutorial/setup-fixture.sh ../wtree-tutorial
 export WTREE_TUTORIAL="$(cd ../wtree-tutorial && pwd)"
-export WTREE_PROJECT="$WTREE_TUTORIAL/setup/acme-shop"
+export WTREE_MANIFEST="$WTREE_TUTORIAL/project.wtree.yml"
+export WTREE_PROJECT="$WTREE_TUTORIAL/acme-shop"
 ```
 
 If you already ran the fixture script successfully, skip the script command
@@ -83,17 +85,19 @@ export WTREE_DATA_HOME="$WTREE_TUTORIAL/wtree-data"
 export XDG_CONFIG_HOME="$WTREE_TUTORIAL/xdg-config"
 ```
 
-The fixture has this checkout layout:
+The fixture initially has only this distribution layout:
 
 ```text
-setup/acme-shop/             acme-shop.git, checked out on main
-├── backend/                 java-backend.git, checked out on main
-└── frontend/                web-frontend.git, checked out on main
+project.wtree.yml            portable project manifest
+origins/
+├── acme-shop.git/           bare parent origin
+├── java-backend.git/        bare backend origin
+└── web-frontend.git/        bare frontend origin
 ```
 
-`backend/` is deliberately a checkout of a repository named
-`java-backend.git`. This demonstrates that `wtree` identifies repositories by
-Git identity, not by matching repository and directory names.
+The manifest mounts `java-backend.git` as `backend/`. This demonstrates that
+`wtree` identifies repositories by Git identity, not by matching repository
+and directory names.
 
 The fake origins and their branches are:
 
@@ -106,45 +110,46 @@ The fake origins and their branches are:
 | `experiment/dark-navigation` | no | no | yes |
 | `hotfix/customer-timeout` | no | yes | no |
 
-Inspect the remote-tracking branches:
+## 3. Clone the complete project from its portable manifest
+
+Set the global worktree root before cloning so all generated tutorial state
+stays below the disposable fixture directory:
 
 ```sh
-git -C "$WTREE_PROJECT" branch --remotes
-git -C "$WTREE_PROJECT/backend" branch --remotes
-git -C "$WTREE_PROJECT/frontend" branch --remotes
+wtree config set worktrees.root "$WTREE_TUTORIAL/worktrees"
 ```
 
-## 3. Initialize the project
-
-Move into the parent source checkout:
+First preflight the clone. `--dry-run` reads and validates the manifest and all
+deterministic destination rules without creating a checkout, while `--json`
+produces machine-readable output:
 
 ```sh
+wtree clone "$WTREE_MANIFEST" "$WTREE_PROJECT" --dry-run --json
+```
+
+Now reconstruct and register the complete project:
+
+```sh
+wtree clone "$WTREE_MANIFEST" "$WTREE_PROJECT"
 cd "$WTREE_PROJECT"
 ```
 
-First preflight initialization. `--dry-run` performs discovery without writing
-`.wtree.yml` or registry state, while `--json` produces machine-readable
-output:
-
-```sh
-wtree init --worktree-root "$WTREE_TUTORIAL/worktrees" --dry-run --json
-```
-
-Now initialize the project:
-
-```sh
-wtree init --worktree-root "$WTREE_TUTORIAL/worktrees"
-```
-
-Inspect the generated project configuration:
+The clone contains an ignored local configuration and the tracked portable
+manifest from the parent repository:
 
 ```sh
 sed -n '1,200p' .wtree.yml
+sed -n '1,200p' project.wtree.yml
+git check-ignore .wtree.yml
+git status --short
 ```
 
-It should contain repository IDs named `root`, `backend`, and `frontend`.
+`.wtree.yml` records the absolute path in `WTREE_MANIFEST` as its original
+manifest source. Both configurations should contain repository IDs named
+`root`, `backend`, and `frontend`, but only the local file contains checkout
+paths and machine-specific settings.
 
-The source checkout is registered as the `default` workspace:
+The cloned checkout is registered as the `default` workspace:
 
 ```sh
 wtree list
@@ -152,7 +157,15 @@ wtree status
 wtree status default --json
 ```
 
-## 4. Inspect and change configuration
+Inspect the remote-tracking branches created by the clone:
+
+```sh
+git -C "$WTREE_PROJECT" branch --remotes
+git -C "$WTREE_PROJECT/backend" branch --remotes
+git -C "$WTREE_PROJECT/frontend" branch --remotes
+```
+
+## 4. Inspect, update, and synchronize configuration
 
 The worktree root supplied to `init` is project-scoped:
 
@@ -175,6 +188,36 @@ The project value still takes precedence for this project:
 
 ```sh
 wtree config get worktrees.root --project
+```
+
+`update` is the maintainer-facing direction: it reinspects the local Git
+repositories and proposes changes to `.wtree.yml` and `project.wtree.yml`.
+The clean fixture has no differences, but it still demonstrates the
+machine-readable preview:
+
+```sh
+wtree update --dry-run
+wtree update --json --dry-run
+```
+
+Without `--dry-run`, interactive output shows the old/new table and asks for
+confirmation. `wtree update --json` applies a validated change without an
+interactive prompt. It changes files only; publishing `project.wtree.yml`
+still requires an ordinary Git commit and push.
+
+`sync` is the consuming direction. It rereads the manifest source stored by
+`clone` and reconciles this checkout to the portable definition:
+
+```sh
+wtree sync --dry-run
+wtree sync --json --dry-run
+```
+
+To move a clone to a replacement local file or URL and remember that source
+after a successful synchronization, use:
+
+```sh
+wtree sync --from "$WTREE_MANIFEST"
 ```
 
 ## 5. Understand remote and local branches
@@ -246,6 +289,15 @@ git -C "$WTREE_SEARCH_WORKSPACE/frontend" diff main..HEAD --name-only
 
 `wtree path` is the supported way to find a workspace. Do not reconstruct its
 sanitized directory name yourself.
+
+Jump into the branch workspace, back to the original clone (registered as the
+`default` workspace), and forth again with the same lookup command:
+
+```sh
+cd "$(wtree path feature/customer-search)"
+cd "$(wtree path default)"
+cd "$(wtree path feature/customer-search)"
+```
 
 ## 7. Attempt checkouts for branches present on only some origins
 
@@ -381,7 +433,7 @@ wtree remove tutorial/new-workspace --force --dry-run
 ```
 
 Restore the file so the tutorial does not discard work, then return to the
-source checkout:
+cloned default checkout:
 
 ```sh
 git restore README.md
@@ -510,7 +562,7 @@ wtree delete manual/import-demo
 
 ## 15. Review the final state
 
-The source checkout and the checked-out `feature/customer-search` workspace
+The cloned default checkout and the checked-out `feature/customer-search` workspace
 remain. The failed partial and missing-branch checkouts did not leave any
 workspace state:
 

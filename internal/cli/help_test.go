@@ -33,13 +33,18 @@ func TestHowToCoversAllTopicsAndCommandGuides(t *testing.T) {
 		t.Fatalf("global how-to = %#v", guide)
 	}
 	for _, want := range []string{
-		"What wtree is", "Initialize a project", "What repository discovery does", "Configure worktree storage", "Create a workspace", "Create from HEAD", "Create from another branch/ref", "Override nested repository mounts", "Work inside a workspace", "Resolve workspace paths", "Resolve repository paths", "Inspect status", "Import an existing workspace", "Import renamed nested checkouts", "Remove a workspace", "Restore an existing branch with checkout", "Delete workspace and branches", "Diagnose inconsistencies", "Use --dry-run", "Use --json", "Use wtree from nested directories", "Use --project explicitly", "AI coding agent workflow", "Important safety semantics",
+		"What wtree is", "Clone a published multi-repository project", "Initialize and publish an existing project", "Keep local configuration private", "Refresh the portable manifest from local repositories", "Synchronize a clone from its published manifest", "Preview manifest changes for tools", "Configure worktree storage", "Create a workspace", "Create from HEAD", "Create from another branch/ref", "Override nested repository mounts", "Work inside a workspace", "Resolve workspace paths", "Resolve repository paths", "Inspect status", "Import an existing workspace", "Import renamed nested checkouts", "Remove a workspace", "Restore an existing branch with checkout", "Delete workspace and branches", "Diagnose inconsistencies", "Use --dry-run", "Use --json", "Use wtree from nested directories", "Use --project explicitly", "AI coding agent workflow", "Important safety semantics",
 	} {
 		if !strings.Contains(guide.Stdout, want) {
 			t.Errorf("global how-to missing %q", want)
 		}
 	}
-	for _, command := range []string{"create", "import", "remove", "delete", "doctor"} {
+	for _, want := range []string{`cd "$(wtree path feature/login)"`, `cd "$(wtree path default)"`} {
+		if !strings.Contains(guide.Stdout, want) {
+			t.Errorf("global how-to missing workspace jump %q", want)
+		}
+	}
+	for _, command := range []string{"init", "clone", "update", "sync", "create", "import", "remove", "delete", "doctor"} {
 		result := testutil.RunCommand(t, cli.Execute, command, "--how-to")
 		if result.Err != nil || result.Stderr != "" || !strings.Contains(result.Stdout, "HOW TO: "+command) || !strings.Contains(result.Stdout, "EXAMPLES") {
 			t.Errorf("%s how-to = %#v", command, result)

@@ -1,12 +1,12 @@
 #!/usr/bin/env sh
-# Create the local, multi-repository Acme Shop fixture used by the tutorial.
+# Create bare origins and a portable Acme Shop manifest for the tutorial.
 set -eu
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 fixture_dir=${1:-$script_dir}
 origins_dir=$fixture_dir/origins
-setup_dir=$fixture_dir/setup
 worktrees_dir=$fixture_dir/worktrees
+manifest_path=$fixture_dir/project.wtree.yml
 
 die() {
 	printf 'setup-fixture: %s\n' "$*" >&2
@@ -15,7 +15,7 @@ die() {
 
 command -v git >/dev/null 2>&1 || die "git is required"
 
-for path in "$origins_dir" "$setup_dir" "$worktrees_dir"; do
+for path in "$origins_dir" "$worktrees_dir" "$manifest_path"; do
 	if [ -e "$path" ]; then
 		die "$path already exists; move or remove it before recreating the fixture"
 	fi
@@ -24,16 +24,17 @@ done
 mkdir -p "$fixture_dir"
 fixture_dir=$(CDPATH='' cd -- "$fixture_dir" && pwd)
 origins_dir=$fixture_dir/origins
-setup_dir=$fixture_dir/setup
 worktrees_dir=$fixture_dir/worktrees
-mkdir -p "$origins_dir" "$setup_dir" "$worktrees_dir"
+manifest_path=$fixture_dir/project.wtree.yml
+mkdir -p "$origins_dir" "$worktrees_dir"
 seed_dir=$(mktemp -d "${TMPDIR:-/tmp}/wtree-tutorial.XXXXXX")
 complete=false
 
 cleanup() {
 	rm -rf "$seed_dir"
 	if [ "$complete" = false ]; then
-		rm -rf "$origins_dir" "$setup_dir" "$worktrees_dir"
+		rm -rf "$origins_dir" "$worktrees_dir"
+		rm -f "$manifest_path"
 	fi
 }
 
@@ -77,6 +78,7 @@ publish_seed() {
 # ignored from the first interaction with the root checkout.
 mkdir -p "$seed_dir/acme-shop/docs"
 cat > "$seed_dir/acme-shop/.gitignore" <<'EOF'
+/.wtree.yml
 /backend/
 /frontend/
 EOF
@@ -350,17 +352,64 @@ EOF
 commit_all web-frontend "Experiment with dark navigation"
 publish_seed web-frontend web-frontend
 
-# Clone the clean source setup. The java-backend repository is intentionally
-# mounted under a directory whose name does not match the origin repository.
-git clone -q "$origins_dir/acme-shop.git" "$setup_dir/acme-shop"
-git clone -q "$origins_dir/java-backend.git" "$setup_dir/acme-shop/backend"
-git clone -q "$origins_dir/web-frontend.git" "$setup_dir/acme-shop/frontend"
+# This represents the portable output produced by the project maintainer's
+# fully configured `wtree init`. Commit it at the parent repository root, and
+# also copy it beside the origins so the tutorial can exercise a local manifest
+# source without creating a checkout in this fixture script.
+git -C "$seed_dir/acme-shop" checkout -q main
+cat > "$seed_dir/acme-shop/project.wtree.yml" <<EOF
+version: 1
+
+project:
+  id: 8af7d31c-2cf3-4fc8-9e1d-f62d5d0a83c0
+  name: acme-shop
+
+repositories:
+  root:
+    clone:
+      remote: origin
+      url: "$origins_dir/acme-shop.git"
+    upstream:
+      branch: main
+      remote: origin
+      merge: refs/heads/main
+    parent: null
+    mount: .
+    default_branch: main
+  backend:
+    clone:
+      remote: origin
+      url: "$origins_dir/java-backend.git"
+    upstream:
+      branch: main
+      remote: origin
+      merge: refs/heads/main
+    parent: root
+    mount: backend
+    default_branch: main
+  frontend:
+    clone:
+      remote: origin
+      url: "$origins_dir/web-frontend.git"
+    upstream:
+      branch: main
+      remote: origin
+      merge: refs/heads/main
+    parent: root
+    mount: frontend
+    default_branch: main
+EOF
+git -C "$seed_dir/acme-shop" add .gitignore project.wtree.yml
+git -C "$seed_dir/acme-shop" commit -q -m "Publish portable wtree manifest"
+git -C "$seed_dir/acme-shop" push -q origin main
+cp "$seed_dir/acme-shop/project.wtree.yml" "$manifest_path"
 
 complete=true
 printf '%s\n' \
 	"Created the Acme Shop fixture in $fixture_dir" \
 	"" \
-	"Source checkout: $setup_dir/acme-shop" \
-	"Worktree root:   $worktrees_dir" \
+	"Portable manifest: $manifest_path" \
+	"Bare origins:      $origins_dir" \
+	"Worktree root:     $worktrees_dir" \
 	"" \
-	"All three source repositories are clean and checked out on main."
+	"No project checkout was created; use wtree clone in the tutorial."

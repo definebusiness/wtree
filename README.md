@@ -67,12 +67,34 @@ See [docs/INSTALL.md](docs/INSTALL.md) for local release builds and checksums.
 
 ## Usage
 
-Initialize a project from its root checkout. `wtree` discovers independent
-nested repositories and writes the project configuration.
+To publish an existing project, first push every repository and connect its
+current branch to the intended upstream. `wtree init` then discovers the
+independent nested repositories, writes ignored local `.wtree.yml`, writes
+portable `project.wtree.yml`, and ensures the local file is ignored.
 
 ```sh
 cd ~/code/product
 wtree init
+git add .gitignore project.wtree.yml
+```
+
+Clone a complete project from a local portable manifest or a URL that returns
+one directly:
+
+```sh
+wtree clone ./project.wtree.yml ~/code/product
+wtree clone https://git.example.com/acme/project.wtree.yml ~/code/product
+```
+
+The clone remembers its manifest source. Reinspect local repositories and
+refresh both configurations with `update`, or reconcile an existing clone to
+its published manifest with `sync`:
+
+```sh
+wtree update
+wtree update --json --dry-run
+wtree sync
+wtree sync --json --dry-run
 ```
 
 Choose where newly created workspaces live (this is optional; otherwise the
@@ -86,6 +108,15 @@ Create matching branches and worktrees for the parent and nested repositories:
 
 ```sh
 wtree create feature/login
+cd "$(wtree path feature/login)"
+```
+
+The original clone is the `default` workspace. Jump back to it—and later back
+to the branch workspace—through `wtree path` rather than reconstructing either
+location:
+
+```sh
+cd "$(wtree path default)"
 cd "$(wtree path feature/login)"
 ```
 
@@ -136,8 +167,8 @@ Run `wtree --how-to` for the installed workflow guide, or
 
 ## Learn and contribute
 
-- Follow the [hands-on tutorial](tutorial/README.md) to create and work with a
-  local multi-repository fixture.
+- Follow the [hands-on tutorial](tutorial/README.md) to clone a portable local
+  multi-repository fixture and work with synchronized workspaces.
 - See the [AI-assisted delivery process](docs/ai/README.md) for this
   repository's planning, implementation, independent-review, and verification
   loop.
