@@ -467,7 +467,7 @@ You can also run a command outside the project with explicit project
 selection:
 
 ```sh
-wtree --project "$WTREE_PROJECT" list
+wtree list --project "$WTREE_PROJECT"
 ```
 
 ## 12. Diagnose workspace drift
@@ -535,10 +535,10 @@ Preview and import the manual workspace. Explicit project selection tells
 `wtree` which configured repository hierarchy the new checkout belongs to:
 
 ```sh
-wtree --project "$WTREE_PROJECT" import "$WTREE_MANUAL_WORKSPACE" \
+wtree import "$WTREE_MANUAL_WORKSPACE" --project "$WTREE_PROJECT" \
   --name manual/import-demo \
   --dry-run
-wtree --project "$WTREE_PROJECT" import "$WTREE_MANUAL_WORKSPACE" \
+wtree import "$WTREE_MANUAL_WORKSPACE" --project "$WTREE_PROJECT" \
   --name manual/import-demo
 ```
 

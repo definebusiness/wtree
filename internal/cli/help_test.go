@@ -118,9 +118,9 @@ func TestHelpAccuratelyDocumentsProjectSelectorAndConfigScopeMarker(t *testing.T
 		t.Fatalf("config get help = %#v", configHelp)
 	}
 	for _, want := range []string{
-		"wtree --project <path> config get <key>",
+		"wtree config -p <path> get <key>",
 		"wtree config get <key> --project",
-		"wtree --project <path> config get <key> --project",
+		"wtree config -p <path> get <key> --project",
 	} {
 		if !strings.Contains(configHelp.Stdout, want) {
 			t.Errorf("config get help missing %q:\n%s", want, configHelp.Stdout)
@@ -140,12 +140,12 @@ func TestDocumentedConfigProjectFormsExecuteWithTheirStatedSemantics(t *testing.
 	}
 	projectValue := filepath.Join(t.TempDir(), "project-worktrees")
 	set := testutil.RunCommand(t, cli.Execute,
-		"--project", project.Path, "config", "set", "--project", "worktrees.root", projectValue)
+		"config", "-p", project.Path, "set", "worktrees.root", projectValue, "--project")
 	if set.Err != nil {
 		t.Fatalf("documented project-scope set = %#v", set)
 	}
 	get := testutil.RunCommand(t, cli.Execute,
-		"--project", project.Path, "config", "get", "worktrees.root", "--project", "--json")
+		"config", "-p", project.Path, "get", "worktrees.root", "--project", "--json")
 	if get.Err != nil || get.Stderr != "" {
 		t.Fatalf("documented combined get = %#v", get)
 	}
@@ -204,7 +204,7 @@ func TestVerboseProgressNeverLeaksEnvironmentValues(t *testing.T) {
 	}
 	secret := "wtree-test-secret-not-for-output"
 	t.Setenv("WTREE_TEST_SECRET", secret)
-	result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "create", "feature/redacted", "--data-dir", data, "--path", target, "--verbose")
+	result := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/redacted", "--data-dir", data, "--path", target, "--verbose")
 	if result.Err != nil || result.Stderr == "" || strings.Contains(result.Stdout, secret) || strings.Contains(result.Stderr, secret) {
 		t.Fatalf("verbose output = %#v", result)
 	}

@@ -22,10 +22,10 @@ func TestExecuteListIncludesDefaultAndCreatedWorkspace(t *testing.T) {
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "create", "feature/list", "--data-dir", data, "--path", target); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/list", "--data-dir", data, "--path", target); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}
-	plain := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "list", "--data-dir", data)
+	plain := testutil.RunCommand(t, cli.Execute, "list", "--project", project.Path, "--data-dir", data)
 	if plain.Err != nil || plain.Stderr != "" {
 		t.Fatalf("plain list = %#v", plain)
 	}
@@ -37,7 +37,7 @@ func TestExecuteListIncludesDefaultAndCreatedWorkspace(t *testing.T) {
 	if plain.Stdout != wantPlain {
 		t.Fatalf("plain list = %q, want %q", plain.Stdout, wantPlain)
 	}
-	result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "list", "--data-dir", data, "--json")
+	result := testutil.RunCommand(t, cli.Execute, "list", "--project", project.Path, "--data-dir", data, "--json")
 	if result.Err != nil || result.Stderr != "" {
 		t.Fatalf("list = %#v", result)
 	}
@@ -97,13 +97,13 @@ func TestExecuteCheckoutRestoresRetainedRenamedMountAndLookupFromNestedCheckout(
 	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "create", "feature/restore", "--data-dir", data, "--path", target, "--mount", "backend=api"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", root.Path, "feature/restore", "--data-dir", data, "--path", target, "--mount", "backend=api"); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}
 	backend.Run(t, "worktree", "remove", "--force", filepath.Join(target, "api"))
 	root.Run(t, "worktree", "remove", "--force", target)
 
-	checkout := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "checkout", "feature/restore", "--data-dir", data)
+	checkout := testutil.RunCommand(t, cli.Execute, "checkout", "--project", root.Path, "feature/restore", "--data-dir", data)
 	if checkout.Err != nil || checkout.Stderr != "" || !strings.Contains(checkout.Stdout, "Checked out workspace: feature/restore\n") {
 		t.Fatalf("checkout = %#v", checkout)
 	}
@@ -162,13 +162,13 @@ func TestExecuteCheckoutOverlayRetainsUnspecifiedMounts(t *testing.T) {
 	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "create", "feature/overlay", "--data-dir", data, "--path", target, "--mount", "backend=api", "--mount", "shared=common"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", root.Path, "feature/overlay", "--data-dir", data, "--path", target, "--mount", "backend=api", "--mount", "shared=common"); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}
 	shared.Run(t, "worktree", "remove", "--force", filepath.Join(target, "api", "common"))
 	backend.Run(t, "worktree", "remove", "--force", filepath.Join(target, "api"))
 	root.Run(t, "worktree", "remove", "--force", target)
-	result := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "checkout", "feature/overlay", "--data-dir", data, "--mount", "backend=services")
+	result := testutil.RunCommand(t, cli.Execute, "checkout", "--project", root.Path, "feature/overlay", "--data-dir", data, "--mount", "backend=services")
 	if result.Err != nil {
 		t.Fatalf("checkout = %#v", result)
 	}
@@ -184,7 +184,7 @@ func TestExecuteCheckoutAndLookupFailuresDoNotMutate(t *testing.T) {
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	missing := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "checkout", "feature/missing", "--data-dir", data, "--path", target, "--json")
+	missing := testutil.RunCommand(t, cli.Execute, "checkout", "--project", project.Path, "feature/missing", "--data-dir", data, "--path", target, "--json")
 	if missing.Err == nil || cli.ExitCode(missing.Err) != 5 || !strings.Contains(missing.Stdout, "\"code\":\"validation\"") {
 		t.Fatalf("missing checkout = %#v", missing)
 	}
@@ -194,18 +194,18 @@ func TestExecuteCheckoutAndLookupFailuresDoNotMutate(t *testing.T) {
 	project.Run(t, "branch", "feature/held")
 	held := filepath.Join(t.TempDir(), "held")
 	project.Run(t, "worktree", "add", held, "feature/held")
-	checkedOut := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "checkout", "feature/held", "--data-dir", data, "--path", target)
+	checkedOut := testutil.RunCommand(t, cli.Execute, "checkout", "--project", project.Path, "feature/held", "--data-dir", data, "--path", target)
 	if checkedOut.Err == nil || cli.ExitCode(checkedOut.Err) != 8 || checkedOut.Stdout != "" {
 		t.Fatalf("checked-out branch = %#v", checkedOut)
 	}
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Fatalf("checked-out branch created target: %v", err)
 	}
-	unknownWorkspace := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "path", "unknown", "--data-dir", data)
+	unknownWorkspace := testutil.RunCommand(t, cli.Execute, "path", "--project", project.Path, "unknown", "--data-dir", data)
 	if unknownWorkspace.Err == nil || cli.ExitCode(unknownWorkspace.Err) != 4 || unknownWorkspace.Stdout != "" {
 		t.Fatalf("unknown workspace path = %#v", unknownWorkspace)
 	}
-	unknownRepo := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "repo", "path", "unknown", "--data-dir", data)
+	unknownRepo := testutil.RunCommand(t, cli.Execute, "repo", "--project", project.Path, "path", "unknown", "--data-dir", data)
 	if unknownRepo.Err == nil || cli.ExitCode(unknownRepo.Err) != 5 || unknownRepo.Stdout != "" {
 		t.Fatalf("unknown repo path = %#v", unknownRepo)
 	}
@@ -219,14 +219,14 @@ func TestExecuteCheckoutExistingUnmappedBranchCreatesState(t *testing.T) {
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "checkout", "feature/existing", "--data-dir", data, "--path", target, "--json")
+	result := testutil.RunCommand(t, cli.Execute, "checkout", "--project", project.Path, "feature/existing", "--data-dir", data, "--path", target, "--json")
 	if result.Err != nil || result.Stderr != "" || !strings.Contains(result.Stdout, "\"operation\":\"checkout\"") {
 		t.Fatalf("checkout = %#v", result)
 	}
 	if _, err := os.Stat(filepath.Join(target, ".git")); err != nil {
 		t.Fatalf("checkout worktree: %v", err)
 	}
-	listed := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "list", "--data-dir", data)
+	listed := testutil.RunCommand(t, cli.Execute, "list", "--project", project.Path, "--data-dir", data)
 	if listed.Err != nil || !strings.Contains(listed.Stdout, "feature/existing  "+target+"\n") {
 		t.Fatalf("list after checkout = %#v", listed)
 	}
@@ -258,7 +258,7 @@ func TestExecuteListIncludesPartialWorkspaceJSON(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	result := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "list", "--data-dir", data, "--json")
+	result := testutil.RunCommand(t, cli.Execute, "list", "--project", root.Path, "--data-dir", data, "--json")
 	if result.Err != nil {
 		t.Fatalf("list = %#v", result)
 	}
@@ -307,7 +307,7 @@ func TestExecuteCheckoutRefusesPersistedPartialDetachedAndDivergentStateWithoutM
 			if err := store.WriteWorkspace(service.WorkspaceStatePath(data, projectID, scenario.name), state); err != nil {
 				t.Fatal(err)
 			}
-			result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "checkout", "feature/state", "--data-dir", data, "--path", state.Path)
+			result := testutil.RunCommand(t, cli.Execute, "checkout", "--project", project.Path, "feature/state", "--data-dir", data, "--path", state.Path)
 			if result.Err == nil || cli.ExitCode(result.Err) != 5 {
 				t.Fatalf("checkout %s = %#v, want validation refusal", scenario.name, result)
 			}

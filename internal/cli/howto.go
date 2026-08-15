@@ -59,7 +59,7 @@ const globalHowTo = `WTREE HOW-TO
 25. Use wtree from nested directories
     wtree resolves the project from the current repository identity and workspace state.
 26. Use --project explicitly
-    Run: wtree --project /path/to/project <command> when context is ambiguous.
+    Run: wtree <command> --project /path/to/project when context is ambiguous.
 27. AI coding agent workflow
     Create, resolve with path, work in the checkout, inspect status, then remove or delete.
 28. Inspect registered projects

@@ -23,7 +23,7 @@ func TestExecuteDoctorJSONIsReadOnlyAndSupportsFixDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "doctor", "default", "--data-dir", data, "--json")
+	result := testutil.RunCommand(t, cli.Execute, "doctor", "--project", project.Path, "default", "--data-dir", data, "--json")
 	if result.Err != nil || result.Stderr != "" {
 		t.Fatalf("doctor = %#v", result)
 	}
@@ -40,7 +40,7 @@ func TestExecuteDoctorJSONIsReadOnlyAndSupportsFixDryRun(t *testing.T) {
 	if err != nil || string(after) != string(before) {
 		t.Fatalf("doctor mutated state: %v", err)
 	}
-	dryRun := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "doctor", "default", "--data-dir", data, "--fix", "--dry-run", "--json")
+	dryRun := testutil.RunCommand(t, cli.Execute, "doctor", "--project", project.Path, "default", "--data-dir", data, "--fix", "--dry-run", "--json")
 	if dryRun.Err != nil || dryRun.Stderr != "" {
 		t.Fatalf("doctor --fix --dry-run = %#v", dryRun)
 	}
@@ -53,7 +53,7 @@ func TestExecuteDoctorReadOnlyResolutionPreservesMovedRegistry(t *testing.T) {
 		local     bool
 	}{
 		{name: "explicit", arguments: func(project, data string) []string {
-			return []string{"--project", project, "doctor", "default", "--data-dir", data, "--json"}
+			return []string{"doctor", "--project", project, "default", "--data-dir", data, "--json"}
 		}},
 		{name: "local", local: true, arguments: func(_ string, data string) []string {
 			return []string{"doctor", "default", "--data-dir", data, "--fix", "--dry-run", "--json"}

@@ -47,7 +47,7 @@ func TestExecuteCreateDryRunRendersDeterministicJSONPlanWithoutMutation(t *testi
 		t.Fatalf("init = %#v", result)
 	}
 	result := testutil.RunCommand(t, cli.Execute,
-		"--project", project.Path, "create", "feature/login", "--dry-run", "--data-dir", data, "--path", target, "--mount", "backend=api", "--json")
+		"create", "--project", project.Path, "feature/login", "--dry-run", "--data-dir", data, "--path", target, "--mount", "backend=api", "--json")
 	if result.Err != nil || result.Stderr != "" {
 		t.Fatalf("create dry-run = %#v", result)
 	}
@@ -82,7 +82,7 @@ func TestExecuteCreateCreatesBranchWorktreeAndState(t *testing.T) {
 		t.Fatalf("init = %#v", result)
 	}
 
-	result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "create", "feature/login", "--data-dir", data, "--path", target)
+	result := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/login", "--data-dir", data, "--path", target)
 	if result.Err != nil || result.Stderr != "" {
 		t.Fatalf("create error = %v, result = %#v", result.Err, result)
 	}
@@ -101,7 +101,7 @@ func TestExecuteCreateFromJSONVerboseAndForceContracts(t *testing.T) {
 		t.Fatalf("init = %#v", result)
 	}
 	target := filepath.Join(t.TempDir(), "workspace")
-	jsonResult := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "create", "feature/base", "--from", "HEAD~1", "--data-dir", data, "--path", target, "--json", "--verbose")
+	jsonResult := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/base", "--from", "HEAD~1", "--data-dir", data, "--path", target, "--json", "--verbose")
 	if jsonResult.Err != nil || jsonResult.Stderr != "" {
 		t.Fatalf("JSON create = %#v", jsonResult)
 	}
@@ -120,7 +120,7 @@ func TestExecuteCreateFromJSONVerboseAndForceContracts(t *testing.T) {
 	}
 
 	forceTarget := filepath.Join(t.TempDir(), "force")
-	force := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "create", "feature/force", "--data-dir", data, "--path", forceTarget, "--force")
+	force := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/force", "--data-dir", data, "--path", forceTarget, "--force")
 	if force.Err == nil || cli.ExitCode(force.Err) != 2 {
 		t.Fatalf("create --force = %#v, want invalid arguments", force)
 	}
@@ -136,7 +136,7 @@ func TestExecuteCreateVerboseHumanOutput(t *testing.T) {
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "create", "feature/verbose", "--data-dir", data, "--path", target, "--verbose")
+	result := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/verbose", "--data-dir", data, "--path", target, "--verbose")
 	if result.Err != nil || strings.Contains(result.Stdout, "execute_started") || !strings.Contains(result.Stdout, "Created workspace: feature/verbose\n") || !strings.Contains(result.Stderr, "execute_started create_branch:root\n") {
 		t.Fatalf("verbose create = %#v", result)
 	}
@@ -153,7 +153,7 @@ func TestExecuteContextCancellationStopsCreateBeforeMutation(t *testing.T) {
 	cancel()
 	result := testutil.RunCommand(t, func(args []string, stdout, stderr io.Writer) error {
 		return cli.ExecuteContext(ctx, args, stdout, stderr)
-	}, "--project", project.Path, "create", "feature/canceled", "--data-dir", data, "--path", target)
+	}, "create", "--project", project.Path, "feature/canceled", "--data-dir", data, "--path", target)
 	if result.Err == nil {
 		t.Fatal("canceled create succeeded")
 	}
@@ -175,7 +175,7 @@ func TestExecuteCreateDryRunRejectsGitInvalidBranchNames(t *testing.T) {
 	for _, branch := range []string{".feature", "feature/", "foo/.bar", "foo..bar", "foo.lock", "foo@{bar", "feature//child"} {
 		t.Run(branch, func(t *testing.T) {
 			target := filepath.Join(t.TempDir(), "workspace")
-			result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "create", branch, "--dry-run", "--data-dir", data, "--path", target, "--json")
+			result := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, branch, "--dry-run", "--data-dir", data, "--path", target, "--json")
 			if result.Err == nil || cli.ExitCode(result.Err) != 5 {
 				t.Fatalf("create %q = %#v, want validation error", branch, result)
 			}
@@ -197,11 +197,11 @@ func TestExecuteCheckoutDryRunAndRejectsUnsupportedFrom(t *testing.T) {
 		t.Fatalf("init = %#v", result)
 	}
 	project.Run(t, "branch", "feature")
-	result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "checkout", "feature", "--dry-run", "--data-dir", data, "--path", target)
+	result := testutil.RunCommand(t, cli.Execute, "checkout", "--project", project.Path, "feature", "--dry-run", "--data-dir", data, "--path", target)
 	if result.Err != nil || !strings.Contains(result.Stdout, "Operation: checkout\n") || !strings.Contains(result.Stdout, "No changes made.\n") || result.Stderr != "" {
 		t.Fatalf("checkout dry-run = %#v", result)
 	}
-	unsupported := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "checkout", "feature", "--from", "main", "--dry-run", "--data-dir", data, "--path", target)
+	unsupported := testutil.RunCommand(t, cli.Execute, "checkout", "--project", project.Path, "feature", "--from", "main", "--dry-run", "--data-dir", data, "--path", target)
 	if unsupported.Err == nil || cli.ExitCode(unsupported.Err) != 2 {
 		t.Fatalf("checkout --from = %#v, want invalid arguments", unsupported)
 	}
@@ -226,7 +226,7 @@ func TestExecuteCreateDryRunAppliesRepeatedMountsToNestedRepositories(t *testing
 		t.Fatalf("init = %#v", result)
 	}
 	result := testutil.RunCommand(t, cli.Execute,
-		"--project", root.Path, "create", "feature", "--dry-run", "--data-dir", data, "--path", target,
+		"create", "--project", root.Path, "feature", "--dry-run", "--data-dir", data, "--path", target,
 		"--mount", "backend=api", "--mount", "shared=common", "--json")
 	if result.Err != nil {
 		t.Fatalf("create = %#v", result)
@@ -320,7 +320,7 @@ func TestExecuteInitRejectsRootProjectSelector(t *testing.T) {
 	repository := testutil.NewGitRepository(t)
 	repository.CommitFile("readme", "x\n", "initial")
 	for _, arguments := range [][]string{
-		{"--project", repository.Path, "init", repository.Path},
+		{"init", "--project", repository.Path, repository.Path},
 		{"init", repository.Path, "--project", repository.Path},
 	} {
 		t.Run(strings.Join(arguments[:1], " "), func(t *testing.T) {
@@ -343,7 +343,7 @@ func TestInspectionAndDryRunPlansDoNotReconcileStaleRegistry(t *testing.T) {
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "create", "feature/retained", "--data-dir", data, "--path", target); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/retained", "--data-dir", data, "--path", target); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}
 	project.Run(t, "branch", "feature/checkout")
@@ -363,7 +363,6 @@ func TestInspectionAndDryRunPlansDoNotReconcileStaleRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := []string{"--project", project.Path}
 	tests := []struct {
 		name string
 		args []string
@@ -380,7 +379,8 @@ func TestInspectionAndDryRunPlansDoNotReconcileStaleRegistry(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			result := testutil.RunCommand(t, cli.Execute, append(append([]string(nil), base...), test.args...)...)
+			arguments := append(append([]string(nil), test.args...), "--project", project.Path)
+			result := testutil.RunCommand(t, cli.Execute, arguments...)
 			if result.Err != nil {
 				t.Fatalf("%s = %#v", test.name, result)
 			}
@@ -418,7 +418,7 @@ func TestCreateReconcilesOnlyAfterSuccessfulPreflight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	invalid := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "create", ".invalid", "--data-dir", data, "--path", filepath.Join(t.TempDir(), "invalid"))
+	invalid := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, ".invalid", "--data-dir", data, "--path", filepath.Join(t.TempDir(), "invalid"))
 	if invalid.Err == nil || cli.ExitCode(invalid.Err) != 5 {
 		t.Fatalf("invalid create = %#v", invalid)
 	}
@@ -429,7 +429,7 @@ func TestCreateReconcilesOnlyAfterSuccessfulPreflight(t *testing.T) {
 	if string(afterInvalid) != string(before) {
 		t.Fatalf("failed preflight rewrote registry: before=%q after=%q", before, afterInvalid)
 	}
-	valid := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "create", "feature/valid", "--data-dir", data, "--path", filepath.Join(t.TempDir(), "valid"))
+	valid := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/valid", "--data-dir", data, "--path", filepath.Join(t.TempDir(), "valid"))
 	if valid.Err != nil {
 		t.Fatalf("valid create = %#v", valid)
 	}

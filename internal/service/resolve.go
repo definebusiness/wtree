@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	ErrNoProjectContext = errors.New("No wtree project could be determined from the current directory.\n\nUse:\n  wtree init\nor:\n  wtree --project <path> <command>")
+	ErrNoProjectContext = errors.New("No wtree project could be determined from the current directory.\n\nUse:\n  wtree init\nor:\n  wtree <command> --project <path>")
 	ErrAmbiguousProject = errors.New("multiple wtree projects match the current repository; use --project")
 	ErrStaleRegistry    = errors.New("wtree project registry contains stale project information")
 )

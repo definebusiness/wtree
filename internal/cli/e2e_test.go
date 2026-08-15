@@ -35,10 +35,10 @@ func TestEndToEndNestedWorkspaceLifecycle(t *testing.T) {
 	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "create", "feature/e2e", "--data-dir", data, "--path", target, "--mount", "backend=api"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", root.Path, "feature/e2e", "--data-dir", data, "--path", target, "--mount", "backend=api"); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}
-	path := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "path", "feature/e2e", "--data-dir", data)
+	path := testutil.RunCommand(t, cli.Execute, "path", "--project", root.Path, "feature/e2e", "--data-dir", data)
 	if path.Err != nil || path.Stdout != target+"\n" {
 		t.Fatalf("path = %#v", path)
 	}
@@ -57,23 +57,23 @@ func TestEndToEndNestedWorkspaceLifecycle(t *testing.T) {
 	if err := os.Chdir(previous); err != nil {
 		t.Fatal(err)
 	}
-	status := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "status", "feature/e2e", "--data-dir", data, "--json")
+	status := testutil.RunCommand(t, cli.Execute, "status", "--project", root.Path, "feature/e2e", "--data-dir", data, "--json")
 	var report struct {
 		Repositories []struct{ ID, Status string } `json:"repositories"`
 	}
 	if status.Err != nil || json.Unmarshal([]byte(status.Stdout), &report) != nil || len(report.Repositories) != 2 {
 		t.Fatalf("status = %#v report=%#v", status, report)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "remove", "feature/e2e", "--data-dir", data); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "remove", "--project", root.Path, "feature/e2e", "--data-dir", data); result.Err != nil {
 		t.Fatalf("remove = %#v", result)
 	}
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Fatalf("remove retained target: %v", err)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "checkout", "feature/e2e", "--data-dir", data); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "checkout", "--project", root.Path, "feature/e2e", "--data-dir", data); result.Err != nil {
 		t.Fatalf("checkout = %#v", result)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "delete", "feature/e2e", "--data-dir", data); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "delete", "--project", root.Path, "feature/e2e", "--data-dir", data); result.Err != nil {
 		t.Fatalf("delete = %#v", result)
 	}
 	if _, err := service.RequireWorkspace(mustProject(t, root.Path, data), data, "feature/e2e"); err == nil {
@@ -90,7 +90,7 @@ func TestEndToEndImportWorkflow(t *testing.T) {
 	}
 	root.Run(t, "branch", "feature/import")
 	root.Run(t, "worktree", "add", target, "feature/import")
-	if result := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "import", target, "--name", "imported", "--data-dir", data); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "import", "--project", root.Path, target, "--name", "imported", "--data-dir", data); result.Err != nil {
 		t.Fatalf("import = %#v", result)
 	}
 	workspace, err := service.RequireWorkspace(mustProject(t, root.Path, data), data, "imported")
@@ -118,7 +118,7 @@ func TestEndToEndImportMapsRenamedNestedCheckoutByIdentity(t *testing.T) {
 	root.Run(t, "worktree", "add", target, "feature/import")
 	backend.Run(t, "branch", "feature/import")
 	backend.Run(t, "worktree", "add", filepath.Join(target, "api"), "feature/import")
-	if result := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "import", target, "--name", "renamed", "--data-dir", data, "--json"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "import", "--project", root.Path, target, "--name", "renamed", "--data-dir", data, "--json"); result.Err != nil {
 		t.Fatalf("import = %#v", result)
 	}
 	workspace, err := service.RequireWorkspace(mustProject(t, root.Path, data), data, "renamed")
@@ -156,7 +156,7 @@ func TestEndToEndCreateRollbackIncompleteWritesRecovery(t *testing.T) {
 	}
 	buildGitFailureHelper(t, shimDir, realGit, canonicalBackend)
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	result := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "create", "feature/recovery", "--data-dir", data, "--path", target, "--json")
+	result := testutil.RunCommand(t, cli.Execute, "create", "--project", root.Path, "feature/recovery", "--data-dir", data, "--path", target, "--json")
 	if result.Err == nil || cli.ExitCode(result.Err) != 9 || !strings.Contains(result.Stdout, `"code":"rollback_incomplete"`) || result.Stderr != "" {
 		t.Fatalf("create recovery = %#v", result)
 	}
@@ -222,7 +222,7 @@ func TestEndToEndDoctorSurfacesRecoveryRecordWithoutMutatingState(t *testing.T) 
 	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "create", "feature/recovery", "--data-dir", data, "--path", target); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", root.Path, "feature/recovery", "--data-dir", data, "--path", target); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}
 	project := mustProject(t, root.Path, data)
@@ -239,7 +239,7 @@ func TestEndToEndDoctorSurfacesRecoveryRecordWithoutMutatingState(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "doctor", "feature/recovery", "--data-dir", data, "--json")
+	result := testutil.RunCommand(t, cli.Execute, "doctor", "--project", root.Path, "feature/recovery", "--data-dir", data, "--json")
 	if result.Err != nil || !strings.Contains(result.Stdout, `"code":"recovery-record"`) {
 		t.Fatalf("doctor recovery = %#v", result)
 	}

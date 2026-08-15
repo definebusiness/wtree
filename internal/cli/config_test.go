@@ -71,11 +71,11 @@ func TestExecuteConfigProjectScopeUsesRootProjectSelector(t *testing.T) {
 		t.Fatalf("global config set = %#v", result)
 	}
 	projectValue := filepath.Join(t.TempDir(), "project-worktrees")
-	set := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "config", "set", "--project", "worktrees.root", projectValue)
+	set := testutil.RunCommand(t, cli.Execute, "config", "-p", project.Path, "set", "worktrees.root", projectValue, "--project")
 	if set.Err != nil || set.Stderr != "" {
 		t.Fatalf("project config set = %#v", set)
 	}
-	get := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "config", "get", "--project", "worktrees.root", "--json")
+	get := testutil.RunCommand(t, cli.Execute, "config", "-p", project.Path, "get", "worktrees.root", "--project", "--json")
 	if get.Err != nil || get.Stderr != "" {
 		t.Fatalf("project config get = %#v", get)
 	}
@@ -102,18 +102,18 @@ func TestExecuteConfigUnsetFallsBackAndListReportsEffectiveSource(t *testing.T) 
 	projectValue := filepath.Join(t.TempDir(), "project-worktrees")
 	for _, arguments := range [][]string{
 		{"config", "set", "worktrees.root", global},
-		{"--project", project.Path, "config", "set", "--project", "worktrees.root", projectValue},
-		{"--project", project.Path, "config", "unset", "--project", "worktrees.root"},
+		{"config", "-p", project.Path, "set", "worktrees.root", projectValue, "--project"},
+		{"config", "-p", project.Path, "unset", "worktrees.root", "--project"},
 	} {
 		if result := testutil.RunCommand(t, cli.Execute, arguments...); result.Err != nil {
 			t.Fatalf("%v = %#v", arguments, result)
 		}
 	}
-	get := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "config", "get", "--project", "worktrees.root")
+	get := testutil.RunCommand(t, cli.Execute, "config", "-p", project.Path, "get", "worktrees.root", "--project")
 	if get.Err != nil || get.Stdout != global+"\n" || get.Stderr != "" {
 		t.Fatalf("config get after unset = %#v", get)
 	}
-	list := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "config", "list", "--project")
+	list := testutil.RunCommand(t, cli.Execute, "config", "-p", project.Path, "list", "--project")
 	if list.Err != nil || !strings.Contains(list.Stdout, "worktrees.root = "+global+" (global)\n") || list.Stderr != "" {
 		t.Fatalf("config list = %#v", list)
 	}
@@ -125,7 +125,7 @@ func TestExecuteConfigRejectsInvalidKeysValuesScopesAndOptions(t *testing.T) {
 		{"config", "set", "unknown.key", "value"},
 		{"config", "set", "worktrees.root", ""},
 		{"config", "get", "worktrees.root", "--dry-run"},
-		{"config", "set", "--project", "worktrees.root", "value"},
+		{"config", "set", "value", "--project", "worktrees.root"},
 	} {
 		result := testutil.RunCommand(t, cli.Execute, arguments...)
 		if result.Err == nil {

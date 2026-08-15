@@ -141,7 +141,7 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 const rootHelp = `wtree — manage synchronized Git workspaces across nested repositories
 
 USAGE
-  wtree [global options] <command> [arguments] [options]
+  wtree <command> [arguments] [options]
 
 DESCRIPTION
   wtree creates, imports, restores, inspects, and safely removes one logical
@@ -288,12 +288,12 @@ func detailedCommandHelp(command *cobra.Command) string {
 	if isConfigCommand(command) {
 		builder.WriteString(`
 CONFIGURATION PROJECT SELECTION
-  Place the global project selector before config:
-    wtree --project <path> config get <key>
+  Place the explicit project selector after config:
+    wtree config -p <path> get <key>
   A bare --project after config selects project-scoped configuration:
     wtree config get <key> --project
   Both forms may be combined:
-    wtree --project <path> config get <key> --project
+    wtree config -p <path> get <key> --project
 `)
 	}
 	builder.WriteString(`

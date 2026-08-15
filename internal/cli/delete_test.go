@@ -18,10 +18,10 @@ func TestExecuteDeleteDryRunJSONDoesNotMutate(t *testing.T) {
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "create", "feature/delete", "--data-dir", data, "--path", target); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/delete", "--data-dir", data, "--path", target); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}
-	result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "delete", "feature/delete", "--data-dir", data, "--dry-run", "--json")
+	result := testutil.RunCommand(t, cli.Execute, "delete", "--project", project.Path, "feature/delete", "--data-dir", data, "--dry-run", "--json")
 	if result.Err != nil || result.Stderr != "" {
 		t.Fatalf("delete dry-run = %#v", result)
 	}
@@ -49,7 +49,7 @@ func TestExecuteDeleteForceReportsDirtyAndUnmergedOverridesJSON(t *testing.T) {
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "create", "feature/delete", "--data-dir", data, "--path", target); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/delete", "--data-dir", data, "--path", target); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}
 	checkout := testutil.GitRepository{Path: target}
@@ -57,11 +57,11 @@ func TestExecuteDeleteForceReportsDirtyAndUnmergedOverridesJSON(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	refused := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "delete", "feature/delete", "--data-dir", data, "--json")
+	refused := testutil.RunCommand(t, cli.Execute, "delete", "--project", project.Path, "feature/delete", "--data-dir", data, "--json")
 	if refused.Err == nil || cli.ExitCode(refused.Err) != 7 || !strings.Contains(refused.Stdout, "\"code\":\"dirty_workspace\"") {
 		t.Fatalf("dirty delete = %#v", refused)
 	}
-	forced := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "delete", "feature/delete", "--data-dir", data, "--force", "--json")
+	forced := testutil.RunCommand(t, cli.Execute, "delete", "--project", project.Path, "feature/delete", "--data-dir", data, "--force", "--json")
 	if forced.Err != nil || forced.Stderr != "" {
 		t.Fatalf("forced delete = %#v", forced)
 	}

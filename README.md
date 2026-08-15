@@ -172,6 +172,9 @@ or Git repository identity. Inspect the conflict with `wtree project list`,
 then use `project prune` only when its stale evidence allows it or explicitly
 `project unregister` the intended registration before retrying `wtree init`.
 Both cleanup commands remain registry-only and retain Git and project data.
+See the
+[duplicate-project troubleshooting steps](docs/TROUBLESHOOTING.md#duplicate-project-after-reinitializing)
+for the complete recovery sequence.
 
 If a workspace was created manually, record its verified Git identities and
 checkout layout without rewriting it:
@@ -206,6 +209,8 @@ Run `wtree --how-to` for the installed workflow guide, or
 
 - Follow the [hands-on tutorial](tutorial/README.md) to clone a portable local
   multi-repository fixture and work with synchronized workspaces.
+- See [Troubleshooting](docs/TROUBLESHOOTING.md) for duplicate project
+  registrations, workspace drift, dirty worktrees, and incomplete rollbacks.
 - See the [AI-assisted delivery process](docs/ai/README.md) for this
   repository's planning, implementation, independent-review, and verification
   loop.

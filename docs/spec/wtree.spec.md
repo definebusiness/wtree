@@ -617,13 +617,13 @@ Automatic discovery is convenience, not identity.
 All relevant commands should allow:
 
 ```bash
-wtree --project /path/to/project ...
+wtree <command> --project /path/to/project ...
 ```
 
 Short form:
 
 ```bash
-wtree -p /path/to/project ...
+wtree <command> -p /path/to/project ...
 ```
 
 This is useful for scripts and AI agents.
@@ -1993,7 +1993,7 @@ Example structure:
 wtree — manage synchronized Git workspaces across nested repositories
 
 USAGE
-  wtree [global options] <command> [arguments] [options]
+  wtree <command> [arguments] [options]
 
 DESCRIPTION
   ...
@@ -2669,7 +2669,7 @@ No wtree project could be determined from the current directory.
 Use:
   wtree init
 or:
-  wtree --project <path> status
+  wtree status --project <path>
 ```
 
 Do not silently pick an arbitrary registered project.

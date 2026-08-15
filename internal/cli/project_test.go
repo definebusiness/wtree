@@ -43,7 +43,7 @@ func TestProjectListHumanJSONAndUnsupportedOptions(t *testing.T) {
 	if human.Err != nil || human.Stderr != "" || !containsAll(human.Stdout, "project-a", "missing-default-state", configPath) {
 		t.Fatalf("human = %#v", human)
 	}
-	for _, arguments := range [][]string{{"project", "list", "unexpected"}, {"project", "list", "--dry-run"}, {"project", "list", "--force"}, {"project", "list", "--force=false"}, {"project", "list", "--verbose"}, {"project", "list", "--verbose=false"}, {"--project", ".", "project", "list"}, {"--project", ".", "project"}} {
+	for _, arguments := range [][]string{{"project", "list", "unexpected"}, {"project", "list", "--dry-run"}, {"project", "list", "--force"}, {"project", "list", "--force=false"}, {"project", "list", "--verbose"}, {"project", "list", "--verbose=false"}, {"project", "--project", ".", "list"}, {"project", "--project", "."}} {
 		result := testutil.RunCommand(t, cli.Execute, arguments...)
 		if result.Err == nil || cli.ExitCode(result.Err) != 2 {
 			t.Fatalf("%v = %#v", arguments, result)
@@ -141,7 +141,7 @@ func TestProjectPruneErrorsFlagsHelpAndBrokenWriter(t *testing.T) {
 	for _, arguments := range [][]string{
 		{"project", "prune"}, {"project", "prune", "stale", "extra"}, {"project", "prune", "../stale", "--data-dir", data},
 		{"project", "prune", "stale", "--force", "--data-dir", data}, {"project", "prune", "stale", "--verbose", "--data-dir", data},
-		{"--project", ".", "project", "prune", "stale", "--data-dir", data},
+		{"project", "--project", ".", "prune", "stale", "--data-dir", data},
 	} {
 		result := testutil.RunCommand(t, cli.Execute, arguments...)
 		if result.Err == nil || cli.ExitCode(result.Err) != 2 {
@@ -290,7 +290,7 @@ func TestProjectUnregisterErrorsFlagsHelpAndBrokenWriters(t *testing.T) {
 	for _, arguments := range [][]string{
 		{"project", "unregister"}, {"project", "unregister", "keeper", "extra"}, {"project", "unregister", "../keeper", "--data-dir", data},
 		{"project", "unregister", "keeper", "--force", "--data-dir", data}, {"project", "unregister", "keeper", "--verbose", "--data-dir", data},
-		{"--project", ".", "project", "unregister", "keeper", "--data-dir", data},
+		{"project", "--project", ".", "unregister", "keeper", "--data-dir", data},
 	} {
 		result := testutil.RunCommand(t, cli.Execute, arguments...)
 		if result.Err == nil || cli.ExitCode(result.Err) != 2 {

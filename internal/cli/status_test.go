@@ -20,7 +20,7 @@ func TestExecuteStatusRendersCleanWorkspaceJSON(t *testing.T) {
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "create", "feature/status", "--data-dir", data, "--path", target); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/status", "--data-dir", data, "--path", target); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}
 	// State directories are keyed by project ID; obtain it from the project
@@ -39,7 +39,7 @@ func TestExecuteStatusRendersCleanWorkspaceJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "status", "feature/status", "--data-dir", data, "--json")
+	result := testutil.RunCommand(t, cli.Execute, "status", "--project", project.Path, "feature/status", "--data-dir", data, "--json")
 	if result.Err != nil || result.Stderr != "" {
 		t.Fatalf("status = %#v", result)
 	}
@@ -77,7 +77,7 @@ func TestExecuteStatusInfersCurrentWorkspaceAndRendersHumanTable(t *testing.T) {
 	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "create", "feature/inferred", "--data-dir", data, "--path", target, "--mount", "backend=api"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", root.Path, "feature/inferred", "--data-dir", data, "--path", target, "--mount", "backend=api"); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}
 	previous, err := os.Getwd()

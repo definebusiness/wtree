@@ -5,6 +5,11 @@ required content and update rules for files in `docs/ai/runs/`.
 
 ## File identity and ownership
 
+- **NEVER create or modify any file under `docs/ai/runs/` outside the specific
+  authorized orchestrated plan run that the file records.** All unrelated
+  tasks must treat run ledgers as read-only. This prohibition includes
+  documentation corrections, command-example normalization, formatting, and
+  cleanup. Completed run ledgers are immutable.
 - Create exactly one tracked ledger at
   `docs/ai/runs/<plan-basename>.md`, where `<plan-basename>` is the plan
   filename without its extension.

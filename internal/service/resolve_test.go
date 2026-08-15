@@ -191,7 +191,7 @@ func TestResolverRejectsNoContextAmbiguousAndStaleRegistry(t *testing.T) {
 		if err == nil || !errors.Is(err, service.ErrNoProjectContext) {
 			t.Fatalf("Resolve() error = %v, want no project context", err)
 		}
-		for _, want := range []string{"wtree init", "wtree --project <path>"} {
+		for _, want := range []string{"wtree init", "wtree <command> --project <path>"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Fatalf("no-context error = %q, want guidance %q", err, want)
 			}

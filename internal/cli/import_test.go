@@ -20,7 +20,7 @@ func TestExecuteImportDryRunJSONFromExternalWorkspace(t *testing.T) {
 	}
 	root.Run(t, "branch", "feature/import")
 	root.Run(t, "worktree", "add", target, "feature/import")
-	result := testutil.RunCommand(t, cli.Execute, "--project", root.Path, "import", target, "--name", "imported", "--data-dir", data, "--dry-run", "--json")
+	result := testutil.RunCommand(t, cli.Execute, "import", "--project", root.Path, target, "--name", "imported", "--data-dir", data, "--dry-run", "--json")
 	if result.Err != nil || result.Stderr != "" {
 		t.Fatalf("import dry-run = %#v", result)
 	}
@@ -91,11 +91,11 @@ func TestExecuteImportRequiresNameForDivergentCheckouts(t *testing.T) {
 	backend.Run(t, "branch", "feature/backend")
 	backend.Run(t, "worktree", "add", filepath.Join(target, "api"), "feature/backend")
 
-	unnamed := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "import", target, "--data-dir", data)
+	unnamed := testutil.RunCommand(t, cli.Execute, "import", "--project", project.Path, target, "--data-dir", data)
 	if unnamed.Err == nil || cli.ExitCode(unnamed.Err) != 5 || unnamed.Stdout != "" || unnamed.Stderr != "" {
 		t.Fatalf("unnamed import = %#v", unnamed)
 	}
-	named := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "import", target, "--name", "named", "--data-dir", data, "--json")
+	named := testutil.RunCommand(t, cli.Execute, "import", "--project", project.Path, target, "--name", "named", "--data-dir", data, "--json")
 	if named.Err != nil || named.Stderr != "" {
 		t.Fatalf("named import = %#v", named)
 	}
@@ -110,7 +110,7 @@ func TestExecuteImportDryRunDoesNotRewriteStaleRegistry(t *testing.T) {
 		{
 			name: "explicit project",
 			command: func(project, target, data string) []string {
-				return []string{"--project", project, "import", target, "--name", "imported", "--data-dir", data, "--dry-run", "--json"}
+				return []string{"import", "--project", project, target, "--name", "imported", "--data-dir", data, "--dry-run", "--json"}
 			},
 		},
 		{
@@ -192,7 +192,7 @@ func TestExecuteImportReconcilesStaleRegistryOnlyWhenExecuting(t *testing.T) {
 	if err := store.WriteRegistry(registryPath, registry); err != nil {
 		t.Fatal(err)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "import", target, "--name", "imported", "--data-dir", data); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "import", "--project", project.Path, target, "--name", "imported", "--data-dir", data); result.Err != nil {
 		t.Fatalf("executing import = %#v", result)
 	}
 	registry, err = store.ReadRegistry(registryPath)

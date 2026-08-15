@@ -20,7 +20,7 @@ func newConfigCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 		Use:   "config",
 		Short: "inspect and update global or project configuration",
 		Long: "Inspect and update configuration. By default config changes the global user configuration. " +
-			"Use `config <command> --project` for project scope; root project selection remains `wtree --project <path> config ...`.",
+			"Use `config <command> --project` for project scope; select an explicit project with `wtree config -p <path> ...`.",
 		Args: noArguments,
 	}
 	command.PersistentFlags().BoolVar(&projectScope, "project-scope", false, "project configuration scope")

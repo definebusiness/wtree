@@ -17,6 +17,17 @@ summary of completed milestones; it does not replace the durable run ledger.
 The main agent maintains the active milestone ledger with all of the following
 fields:
 
+### Run-ledger isolation
+
+**NEVER create, edit, reformat, normalize, or otherwise change a file under
+`docs/ai/runs/` outside the specific authorized orchestrated plan run that the
+file records.** Unrelated implementation, documentation, cleanup, consistency,
+and formatting work must treat every run ledger as read-only, even when its
+historical content no longer matches current conventions. A completed run
+ledger is immutable because there is no active orchestrated run authorized to
+change it. Corrections or new policy belong in the current source plan or
+process definition, never in another run's historical record.
+
 The ledger's required Markdown layout, field invariants, checkpoint contents,
 transition procedure, and pre-final audit are defined in
 [`run-ledger-layout.md`](run-ledger-layout.md). That document is normative for

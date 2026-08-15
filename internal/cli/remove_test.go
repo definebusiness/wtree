@@ -18,10 +18,10 @@ func TestExecuteRemoveDryRunJSONDoesNotMutate(t *testing.T) {
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "create", "feature/remove", "--data-dir", data, "--path", target); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/remove", "--data-dir", data, "--path", target); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}
-	result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "remove", "feature/remove", "--data-dir", data, "--dry-run", "--json")
+	result := testutil.RunCommand(t, cli.Execute, "remove", "--project", project.Path, "feature/remove", "--data-dir", data, "--dry-run", "--json")
 	if result.Err != nil || result.Stderr != "" {
 		t.Fatalf("remove dry-run = %#v", result)
 	}
@@ -49,20 +49,20 @@ func TestExecuteRemoveRefusesDirtyWorkspaceUnlessForceAndReportsOverrideJSON(t *
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	if result := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "create", "feature/remove", "--data-dir", data, "--path", target); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/remove", "--data-dir", data, "--path", target); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}
 	if err := os.WriteFile(filepath.Join(target, "untracked.txt"), []byte("new\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	refused := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "remove", "feature/remove", "--data-dir", data, "--json")
+	refused := testutil.RunCommand(t, cli.Execute, "remove", "--project", project.Path, "feature/remove", "--data-dir", data, "--json")
 	if refused.Err == nil || cli.ExitCode(refused.Err) != 7 || !strings.Contains(refused.Stdout, "\"code\":\"dirty_workspace\"") {
 		t.Fatalf("dirty remove = %#v", refused)
 	}
 	if _, err := os.Stat(target); err != nil {
 		t.Fatalf("dirty refusal removed workspace: %v", err)
 	}
-	forced := testutil.RunCommand(t, cli.Execute, "--project", project.Path, "remove", "feature/remove", "--data-dir", data, "--force", "--json")
+	forced := testutil.RunCommand(t, cli.Execute, "remove", "--project", project.Path, "feature/remove", "--data-dir", data, "--force", "--json")
 	if forced.Err != nil || forced.Stderr != "" {
 		t.Fatalf("forced remove = %#v", forced)
 	}
