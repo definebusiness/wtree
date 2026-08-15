@@ -11,12 +11,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marcel/wtree/internal/cli"
-	"github.com/marcel/wtree/internal/domain"
-	"github.com/marcel/wtree/internal/pathutil"
-	"github.com/marcel/wtree/internal/service"
-	"github.com/marcel/wtree/internal/store"
-	"github.com/marcel/wtree/internal/testutil"
+	"github.com/definebusiness/wtree/internal/cli"
+	"github.com/definebusiness/wtree/internal/domain"
+	"github.com/definebusiness/wtree/internal/pathutil"
+	"github.com/definebusiness/wtree/internal/service"
+	"github.com/definebusiness/wtree/internal/store"
+	"github.com/definebusiness/wtree/internal/testutil"
 )
 
 // This black-box command test uses real nested repositories through the public

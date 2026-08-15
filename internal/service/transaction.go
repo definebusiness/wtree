@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/marcel/wtree/internal/lock"
-	"github.com/marcel/wtree/internal/plan"
-	"github.com/marcel/wtree/internal/store"
-	"github.com/marcel/wtree/internal/transaction"
+	"github.com/definebusiness/wtree/internal/lock"
+	"github.com/definebusiness/wtree/internal/plan"
+	"github.com/definebusiness/wtree/internal/store"
+	"github.com/definebusiness/wtree/internal/transaction"
 )
 
 // ProjectLocker is the small locking boundary required for workspace mutation.

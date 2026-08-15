@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/marcel/wtree/internal/domain"
-	gitadapter "github.com/marcel/wtree/internal/git"
+	"github.com/definebusiness/wtree/internal/domain"
+	gitadapter "github.com/definebusiness/wtree/internal/git"
 )
 
 // WorkspaceStatus is a read-only reconciliation of persisted workspace state

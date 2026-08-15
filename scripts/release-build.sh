@@ -6,7 +6,7 @@ set -eu
 
 version=${VERSION:?VERSION is required, for example VERSION=1.2.3}
 dist_dir=${DIST_DIR:-dist}
-ldflags="-s -w -X github.com/marcel/wtree/internal/cli.Version=${version}"
+ldflags="-s -w -X github.com/definebusiness/wtree/internal/cli.Version=${version}"
 
 mkdir -p "$dist_dir"
 parent_dir=$(dirname "$dist_dir")

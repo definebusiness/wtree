@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/marcel/wtree/internal/store"
+	"github.com/definebusiness/wtree/internal/store"
 )
 
 func TestStoreRoundTripsVersionedStateAtomicallyWithPrivatePermissions(t *testing.T) {

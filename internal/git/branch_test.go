@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marcel/wtree/internal/git"
-	"github.com/marcel/wtree/internal/testutil"
+	"github.com/definebusiness/wtree/internal/git"
+	"github.com/definebusiness/wtree/internal/testutil"
 )
 
 func TestAdapterValidatesGitBranchGrammar(t *testing.T) {

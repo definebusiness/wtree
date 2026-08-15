@@ -3,7 +3,7 @@ package git_test
 import (
 	"testing"
 
-	"github.com/marcel/wtree/internal/git"
+	"github.com/definebusiness/wtree/internal/git"
 )
 
 func FuzzParseStatus(f *testing.F) {

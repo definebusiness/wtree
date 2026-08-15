@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marcel/wtree/internal/pathutil"
+	"github.com/definebusiness/wtree/internal/pathutil"
 )
 
 func TestResolveMountKeepsNestedRepositoriesInsideWorkspace(t *testing.T) {

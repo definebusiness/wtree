@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marcel/wtree/internal/config"
+	"github.com/definebusiness/wtree/internal/config"
 )
 
 func TestLoadProjectConfigStrictlyDecodesVersionOne(t *testing.T) {

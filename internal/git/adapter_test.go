@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marcel/wtree/internal/git"
-	"github.com/marcel/wtree/internal/testutil"
+	"github.com/definebusiness/wtree/internal/git"
+	"github.com/definebusiness/wtree/internal/testutil"
 )
 
 func TestAdapterReadsHermeticRepositoryFacts(t *testing.T) {

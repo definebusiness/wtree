@@ -1,4 +1,4 @@
-module github.com/marcel/wtree
+module github.com/definebusiness/wtree
 
 go 1.26.5
 

@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	gitadapter "github.com/marcel/wtree/internal/git"
+	gitadapter "github.com/definebusiness/wtree/internal/git"
 )
 
 type Repository struct {

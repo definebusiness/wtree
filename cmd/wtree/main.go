@@ -5,7 +5,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/marcel/wtree/internal/cli"
+	"github.com/definebusiness/wtree/internal/cli"
 )
 
 func main() {

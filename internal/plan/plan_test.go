@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/marcel/wtree/internal/plan"
+	"github.com/definebusiness/wtree/internal/plan"
 )
 
 func TestWorkspacePlanIsSerializableAndHasParentFirstReversibleSteps(t *testing.T) {

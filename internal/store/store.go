@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/marcel/wtree/internal/fsutil"
+	"github.com/definebusiness/wtree/internal/fsutil"
 )
 
 const Version = 1

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marcel/wtree/internal/render"
-	"github.com/marcel/wtree/internal/service"
+	"github.com/definebusiness/wtree/internal/render"
+	"github.com/definebusiness/wtree/internal/service"
 	"github.com/spf13/cobra"
 )
 

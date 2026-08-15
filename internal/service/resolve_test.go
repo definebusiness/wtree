@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	gitadapter "github.com/marcel/wtree/internal/git"
-	"github.com/marcel/wtree/internal/service"
-	"github.com/marcel/wtree/internal/store"
-	"github.com/marcel/wtree/internal/testutil"
+	gitadapter "github.com/definebusiness/wtree/internal/git"
+	"github.com/definebusiness/wtree/internal/service"
+	"github.com/definebusiness/wtree/internal/store"
+	"github.com/definebusiness/wtree/internal/testutil"
 )
 
 func TestResolverFindsProjectAndDefaultWorkspaceFromNestedRepository(t *testing.T) {

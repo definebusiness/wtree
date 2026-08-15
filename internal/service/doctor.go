@@ -10,10 +10,10 @@ import (
 	"sort"
 	"time"
 
-	"github.com/marcel/wtree/internal/domain"
-	gitadapter "github.com/marcel/wtree/internal/git"
-	"github.com/marcel/wtree/internal/lock"
-	"github.com/marcel/wtree/internal/store"
+	"github.com/definebusiness/wtree/internal/domain"
+	gitadapter "github.com/definebusiness/wtree/internal/git"
+	"github.com/definebusiness/wtree/internal/lock"
+	"github.com/definebusiness/wtree/internal/store"
 )
 
 // DoctorFinding is a stable, machine-readable diagnosis. Severity is one of

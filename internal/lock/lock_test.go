@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marcel/wtree/internal/lock"
+	"github.com/definebusiness/wtree/internal/lock"
 )
 
 func TestManagerReportsContentionBeforeTimeout(t *testing.T) {

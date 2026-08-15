@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marcel/wtree/internal/domain"
+	"github.com/definebusiness/wtree/internal/domain"
 )
 
 func TestEffectivePathsRelocatesDescendantsWhenParentMountChanges(t *testing.T) {

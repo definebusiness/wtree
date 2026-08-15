@@ -6,8 +6,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marcel/wtree/internal/render"
-	"github.com/marcel/wtree/internal/service"
+	"github.com/definebusiness/wtree/internal/render"
+	"github.com/definebusiness/wtree/internal/service"
 )
 
 type failingWriter struct{ err error }

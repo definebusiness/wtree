@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/marcel/wtree/internal/pathutil"
+	"github.com/definebusiness/wtree/internal/pathutil"
 )
 
 const CurrentVersion = 1

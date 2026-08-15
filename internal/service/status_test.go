@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marcel/wtree/internal/domain"
-	gitadapter "github.com/marcel/wtree/internal/git"
-	"github.com/marcel/wtree/internal/service"
-	"github.com/marcel/wtree/internal/testutil"
+	"github.com/definebusiness/wtree/internal/domain"
+	gitadapter "github.com/definebusiness/wtree/internal/git"
+	"github.com/definebusiness/wtree/internal/service"
+	"github.com/definebusiness/wtree/internal/testutil"
 )
 
 func TestStatusReconcilesCleanlinessAndStructuralDrift(t *testing.T) {

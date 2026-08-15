@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marcel/wtree/internal/cli"
-	"github.com/marcel/wtree/internal/testutil"
+	"github.com/definebusiness/wtree/internal/cli"
+	"github.com/definebusiness/wtree/internal/testutil"
 )
 
 func TestExecuteDoctorJSONIsReadOnlyAndSupportsFixDryRun(t *testing.T) {

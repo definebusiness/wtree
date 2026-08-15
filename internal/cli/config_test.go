@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marcel/wtree/internal/cli"
-	"github.com/marcel/wtree/internal/config"
-	"github.com/marcel/wtree/internal/testutil"
+	"github.com/definebusiness/wtree/internal/cli"
+	"github.com/definebusiness/wtree/internal/config"
+	"github.com/definebusiness/wtree/internal/testutil"
 )
 
 type brokenPipeWriter struct{ err error }

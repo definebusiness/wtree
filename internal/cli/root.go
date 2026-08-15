@@ -11,11 +11,11 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/marcel/wtree/internal/config"
-	gitadapter "github.com/marcel/wtree/internal/git"
-	"github.com/marcel/wtree/internal/plan"
-	"github.com/marcel/wtree/internal/render"
-	"github.com/marcel/wtree/internal/service"
+	"github.com/definebusiness/wtree/internal/config"
+	gitadapter "github.com/definebusiness/wtree/internal/git"
+	"github.com/definebusiness/wtree/internal/plan"
+	"github.com/definebusiness/wtree/internal/render"
+	"github.com/definebusiness/wtree/internal/service"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )

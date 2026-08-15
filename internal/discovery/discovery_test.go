@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/marcel/wtree/internal/discovery"
-	"github.com/marcel/wtree/internal/testutil"
+	"github.com/definebusiness/wtree/internal/discovery"
+	"github.com/definebusiness/wtree/internal/testutil"
 )
 
 func TestDiscoverFindsRootAndIndependentNestedRepositories(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marcel/wtree/internal/plan"
-	"github.com/marcel/wtree/internal/service"
+	"github.com/definebusiness/wtree/internal/plan"
+	"github.com/definebusiness/wtree/internal/service"
 )
 
 func TestRenderCleanRollbackDiagnosticUsesStderrOnlyForHumanOutput(t *testing.T) {

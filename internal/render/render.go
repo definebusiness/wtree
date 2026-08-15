@@ -8,7 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/marcel/wtree/internal/service"
+	"github.com/definebusiness/wtree/internal/service"
 )
 
 // JSON writes exactly one JSON value followed by a newline.

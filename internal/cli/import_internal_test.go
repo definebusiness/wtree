@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/marcel/wtree/internal/service"
+	"github.com/definebusiness/wtree/internal/service"
 )
 
 func TestRenderImportPlanAlignsEveryColumn(t *testing.T) {

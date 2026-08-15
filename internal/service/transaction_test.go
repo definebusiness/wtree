@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marcel/wtree/internal/lock"
-	"github.com/marcel/wtree/internal/plan"
-	"github.com/marcel/wtree/internal/store"
-	"github.com/marcel/wtree/internal/transaction"
+	"github.com/definebusiness/wtree/internal/lock"
+	"github.com/definebusiness/wtree/internal/plan"
+	"github.com/definebusiness/wtree/internal/store"
+	"github.com/definebusiness/wtree/internal/transaction"
 )
 
 func TestWorkspaceTransactionCommitsStateOnlyAfterValidatedSuccess(t *testing.T) {

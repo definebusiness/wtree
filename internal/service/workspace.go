@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/marcel/wtree/internal/domain"
-	"github.com/marcel/wtree/internal/plan"
-	"github.com/marcel/wtree/internal/store"
-	"github.com/marcel/wtree/internal/transaction"
+	"github.com/definebusiness/wtree/internal/domain"
+	"github.com/definebusiness/wtree/internal/plan"
+	"github.com/definebusiness/wtree/internal/store"
+	"github.com/definebusiness/wtree/internal/transaction"
 )
 
 // WorkspaceCheckoutRequest contains the checkout-specific inputs. If state

@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	configuration "github.com/marcel/wtree/internal/config"
-	"github.com/marcel/wtree/internal/plan"
-	"github.com/marcel/wtree/internal/render"
-	"github.com/marcel/wtree/internal/service"
-	"github.com/marcel/wtree/internal/transaction"
+	configuration "github.com/definebusiness/wtree/internal/config"
+	"github.com/definebusiness/wtree/internal/plan"
+	"github.com/definebusiness/wtree/internal/render"
+	"github.com/definebusiness/wtree/internal/service"
+	"github.com/definebusiness/wtree/internal/transaction"
 	"github.com/spf13/cobra"
 )
 

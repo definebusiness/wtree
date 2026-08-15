@@ -10,12 +10,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/marcel/wtree/internal/config"
-	"github.com/marcel/wtree/internal/discovery"
-	"github.com/marcel/wtree/internal/fsutil"
-	gitadapter "github.com/marcel/wtree/internal/git"
-	"github.com/marcel/wtree/internal/lock"
-	"github.com/marcel/wtree/internal/store"
+	"github.com/definebusiness/wtree/internal/config"
+	"github.com/definebusiness/wtree/internal/discovery"
+	"github.com/definebusiness/wtree/internal/fsutil"
+	gitadapter "github.com/definebusiness/wtree/internal/git"
+	"github.com/definebusiness/wtree/internal/lock"
+	"github.com/definebusiness/wtree/internal/store"
 	"gopkg.in/yaml.v3"
 )
 

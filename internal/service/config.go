@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	configuration "github.com/marcel/wtree/internal/config"
-	"github.com/marcel/wtree/internal/lock"
+	configuration "github.com/definebusiness/wtree/internal/config"
+	"github.com/definebusiness/wtree/internal/lock"
 )
 
 const ConfigKeyWorktreesRoot = "worktrees.root"

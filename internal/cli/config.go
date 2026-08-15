@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"runtime"
 
-	configuration "github.com/marcel/wtree/internal/config"
-	"github.com/marcel/wtree/internal/render"
-	"github.com/marcel/wtree/internal/service"
+	configuration "github.com/definebusiness/wtree/internal/config"
+	"github.com/definebusiness/wtree/internal/render"
+	"github.com/definebusiness/wtree/internal/service"
 	"github.com/spf13/cobra"
 )
 

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marcel/wtree/internal/pathutil"
+	"github.com/definebusiness/wtree/internal/pathutil"
 )
 
 func TestStorageNameIsDeterministicReadableAndCollisionSafe(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marcel/wtree/internal/store"
+	"github.com/definebusiness/wtree/internal/store"
 )
 
 func FuzzReadVersionedJSON(f *testing.F) {

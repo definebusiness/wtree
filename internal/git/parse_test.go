@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/marcel/wtree/internal/git"
+	"github.com/definebusiness/wtree/internal/git"
 )
 
 func TestParseWorktreeListPorcelain(t *testing.T) {

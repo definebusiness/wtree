@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marcel/wtree/internal/config"
-	"github.com/marcel/wtree/internal/service"
+	"github.com/definebusiness/wtree/internal/config"
+	"github.com/definebusiness/wtree/internal/service"
 )
 
 func TestConfigServiceConcurrentSetLeavesReadableGlobalConfig(t *testing.T) {
