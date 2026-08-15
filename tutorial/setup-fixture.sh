@@ -81,6 +81,8 @@ cat > "$seed_dir/acme-shop/.gitignore" <<'EOF'
 /.wtree.yml
 /backend/
 /frontend/
+/api/
+/web/
 EOF
 init_seed acme-shop
 cat > "$seed_dir/acme-shop/README.md" <<'EOF'

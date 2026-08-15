@@ -23,6 +23,7 @@ type Git interface {
 	ListWorktrees(context.Context, string) ([]Worktree, error)
 	Status(context.Context, string) (Status, error)
 	IsClean(context.Context, string) (bool, error)
+	IsIgnoredAt(context.Context, string, string, string) (bool, error)
 	BranchExists(context.Context, string, string) (bool, error)
 	BranchMerged(context.Context, string, string) (bool, error)
 	BranchCheckedOut(context.Context, string, string) (bool, error)
@@ -147,6 +148,77 @@ func (a *Adapter) IsClean(ctx context.Context, repository string) (bool, error) 
 		return false, err
 	}
 	return len(status.Entries) == 0, nil
+}
+
+// IsIgnoredAt reports whether path is ignored by a committed .gitignore in
+// ref. It deliberately excludes uncommitted rules and repository-local or
+// global excludes because those rules will not protect a newly added worktree.
+func (a *Adapter) IsIgnoredAt(ctx context.Context, repository, ref, path string) (bool, error) {
+	commit, err := a.ResolveRef(ctx, repository, ref)
+	if err != nil {
+		return false, err
+	}
+	worktree, err := os.MkdirTemp("", "wtree-ignore-")
+	if err != nil {
+		return false, fmt.Errorf("create temporary ignore worktree: %w", err)
+	}
+	defer os.RemoveAll(worktree)
+
+	mount := filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))
+	directories := []string{"."}
+	parent := filepath.ToSlash(filepath.Dir(filepath.FromSlash(mount)))
+	if parent != "." {
+		current := ""
+		for _, component := range strings.Split(parent, "/") {
+			current = filepath.ToSlash(filepath.Join(current, component))
+			directories = append(directories, current)
+		}
+	}
+	for _, directory := range directories {
+		ignorePath := filepath.ToSlash(filepath.Join(directory, ".gitignore"))
+		if directory == "." {
+			ignorePath = ".gitignore"
+		}
+		contents, showErr := a.runFact(ctx, repository, "show", commit+":"+ignorePath)
+		if showErr == nil {
+			destination := filepath.Join(worktree, filepath.FromSlash(ignorePath))
+			if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+				return false, fmt.Errorf("prepare temporary ignore worktree: %w", err)
+			}
+			if err := os.WriteFile(destination, contents, 0o600); err != nil {
+				return false, fmt.Errorf("write temporary ignore rules: %w", err)
+			}
+		} else if !isMissingObject(showErr) {
+			return false, showErr
+		}
+	}
+
+	// A trailing slash makes check-ignore evaluate the mount as a directory,
+	// including the common anchored rule /mount/ before the directory exists.
+	mount += "/"
+	output, err := a.runFact(ctx, repository, "--work-tree="+worktree, "check-ignore", "-v", "--no-index", "--", mount)
+	if err != nil {
+		var gitError *Error
+		if errors.As(err, &gitError) && gitError.ExitCode == 1 {
+			return false, nil
+		}
+		return false, err
+	}
+	metadata, _, found := strings.Cut(strings.TrimSpace(string(output)), "\t")
+	if !found {
+		return false, fmt.Errorf("parse check-ignore output")
+	}
+	source, _, found := strings.Cut(metadata, ":")
+	if !found {
+		return false, fmt.Errorf("parse check-ignore source")
+	}
+	source = filepath.ToSlash(source)
+	return source == ".gitignore" || strings.HasSuffix(source, "/.gitignore"), nil
+}
+
+func isMissingObject(err error) bool {
+	var gitError *Error
+	return errors.As(err, &gitError) && gitError.ExitCode == 128
 }
 func (a *Adapter) CreateBranch(ctx context.Context, repository, branch, base string) error {
 	_, err := a.run(ctx, repository, "branch", branch, base)

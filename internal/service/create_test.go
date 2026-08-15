@@ -321,6 +321,7 @@ func createFixture(t *testing.T) (domain.Project, testutil.GitRepository, testut
 	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	root.CommitFile(".gitignore", "/api/\n/api space/\n", "ignore custom mounts")
 	resolution, err := service.NewResolver().Resolve(context.Background(), service.ResolveRequest{Path: root.Path, ProjectPath: root.Path, DataDir: data})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -349,6 +350,8 @@ func createThreeLevelFixture(t *testing.T) (domain.Project, testutil.GitReposito
 	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	root.CommitFile(".gitignore", "/api/\n", "ignore custom backend mount")
+	backend.CommitFile(".gitignore", "/common/\n", "ignore custom shared mount")
 	resolution, err := service.NewResolver().Resolve(context.Background(), service.ResolveRequest{Path: root.Path, ProjectPath: root.Path, DataDir: data})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)

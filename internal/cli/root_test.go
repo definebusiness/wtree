@@ -23,7 +23,7 @@ func TestExecuteVersion(t *testing.T) {
 			if result.Err != nil {
 				t.Fatalf("Execute() error = %v", result.Err)
 			}
-			if got, want := result.Stdout, "wtree 0.1.0\n"; got != want {
+			if got, want := result.Stdout, "wtree 0.2.0\n"; got != want {
 				t.Errorf("stdout = %q, want %q", got, want)
 			}
 			if result.Stderr != "" {
@@ -46,6 +46,7 @@ func TestExecuteCreateDryRunRendersDeterministicJSONPlanWithoutMutation(t *testi
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
+	project.CommitFile(".gitignore", "/api/\n", "ignore custom mount")
 	result := testutil.RunCommand(t, cli.Execute,
 		"create", "--project", project.Path, "feature/login", "--dry-run", "--data-dir", data, "--path", target, "--mount", "backend=api", "--json")
 	if result.Err != nil || result.Stderr != "" {
@@ -225,6 +226,9 @@ func TestExecuteCreateDryRunAppliesRepeatedMountsToNestedRepositories(t *testing
 	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
+	root.CommitFile(".gitignore", "/api/\n", "ignore custom backend mount")
+	backend.Path = backendPath
+	backend.CommitFile(".gitignore", "/common/\n", "ignore custom shared mount")
 	result := testutil.RunCommand(t, cli.Execute,
 		"create", "--project", root.Path, "feature", "--dry-run", "--data-dir", data, "--path", target,
 		"--mount", "backend=api", "--mount", "shared=common", "--json")

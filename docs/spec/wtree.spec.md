@@ -839,6 +839,13 @@ workspace/
 
 Mount overrides are workspace-specific.
 
+Every override that changes a nested repository's configured mount must be
+ignored by a committed `.gitignore` rule in its parent repository at the
+parent's selected base commit. Uncommitted rules, global excludes, and
+repository-local excludes do not satisfy this requirement because they do not
+protect the new parent worktree. Preflight must reject a missing rule before
+creating any branch, worktree, or state.
+
 ---
 
 # 19. Create Order

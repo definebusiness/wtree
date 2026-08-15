@@ -35,6 +35,7 @@ func TestEndToEndNestedWorkspaceLifecycle(t *testing.T) {
 	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
+	root.CommitFile(".gitignore", "/api/\n", "ignore custom mount")
 	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", root.Path, "feature/e2e", "--data-dir", data, "--path", target, "--mount", "backend=api"); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}

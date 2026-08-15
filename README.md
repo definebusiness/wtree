@@ -121,10 +121,15 @@ cd "$(wtree path feature/login)"
 ```
 
 Create from another ref, or change a nested repository's mount in this one
-workspace:
+workspace. A custom mount must already be ignored by a committed `.gitignore`
+in its parent repository at the selected base ref; otherwise `create` stops
+before making branches or worktrees:
 
 ```sh
-wtree create feature/login --from main
+wtree create feature/from-main --from main
+
+printf '/api/\n' >> .gitignore
+git add .gitignore && git commit -m 'ignore api workspace mount'
 wtree create feature/login --mount backend=api
 ```
 

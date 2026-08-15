@@ -97,6 +97,7 @@ func TestExecuteCheckoutRestoresRetainedRenamedMountAndLookupFromNestedCheckout(
 	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
+	root.CommitFile(".gitignore", "/api/\n", "ignore custom mount")
 	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", root.Path, "feature/restore", "--data-dir", data, "--path", target, "--mount", "backend=api"); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}
@@ -162,6 +163,8 @@ func TestExecuteCheckoutOverlayRetainsUnspecifiedMounts(t *testing.T) {
 	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
+	root.CommitFile(".gitignore", "/api/\n/services/\n", "ignore custom backend mounts")
+	backend.CommitFile(".gitignore", "/common/\n", "ignore custom shared mount")
 	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", root.Path, "feature/overlay", "--data-dir", data, "--path", target, "--mount", "backend=api", "--mount", "shared=common"); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}

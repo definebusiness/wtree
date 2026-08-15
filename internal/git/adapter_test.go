@@ -42,6 +42,39 @@ func TestAdapterReadsHermeticRepositoryFacts(t *testing.T) {
 	}
 }
 
+func TestAdapterChecksCommittedGitignoreAtRequestedRef(t *testing.T) {
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile(".gitignore", "/api/\n/services/generated/\n", "ignore mounts")
+	adapter := git.NewAdapter("git")
+	ctx := context.Background()
+
+	for _, path := range []string{"api", "services/generated"} {
+		ignored, err := adapter.IsIgnoredAt(ctx, repository.Path, "HEAD", path)
+		if err != nil || !ignored {
+			t.Fatalf("IsIgnoredAt(%q) = %t, %v; want true, nil", path, ignored, err)
+		}
+	}
+	ignored, err := adapter.IsIgnoredAt(ctx, repository.Path, "HEAD", "other")
+	if err != nil || ignored {
+		t.Fatalf("IsIgnoredAt(other) = %t, %v; want false, nil", ignored, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(repository.Path, ".gitignore"), []byte("/other/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ignored, err = adapter.IsIgnoredAt(ctx, repository.Path, "HEAD", "other")
+	if err != nil || ignored {
+		t.Fatalf("IsIgnoredAt(other) with uncommitted rule = %t, %v; want false, nil", ignored, err)
+	}
+	if err := os.WriteFile(filepath.Join(repository.Path, ".git", "info", "exclude"), []byte("/other/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ignored, err = adapter.IsIgnoredAt(ctx, repository.Path, "HEAD", "other")
+	if err != nil || ignored {
+		t.Fatalf("IsIgnoredAt(other) with local exclude = %t, %v; want false, nil", ignored, err)
+	}
+}
+
 func TestAdapterCanonicalizesCommonGitDirFromSymlinkedCheckout(t *testing.T) {
 	repository := testutil.NewGitRepository(t)
 	repository.CommitFile("readme.txt", "initial\n", "initial")

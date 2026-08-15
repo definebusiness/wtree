@@ -22,7 +22,7 @@ import (
 
 // Version is replaced by release builds when needed. Its development value is
 // deterministic so local builds and tests have a stable identity.
-var Version = "0.1.0"
+var Version = "0.2.0"
 
 // Execute runs wtree without taking process-level actions such as os.Exit.
 func Execute(args []string, stdout, stderr io.Writer) error {

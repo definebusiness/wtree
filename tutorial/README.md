@@ -362,7 +362,10 @@ wtree list --json
 Unlike `checkout`, `create` makes a new local branch in every repository. Use
 `--from main` to resolve `main` independently in all three repositories. This
 example also changes the workspace-specific mounts from `backend/` to `api/`
-and from `frontend/` to `web/`:
+and from `frontend/` to `web/`. Those custom mounts are already covered by
+committed `/api/` and `/web/` rules in the parent repository's `.gitignore`;
+`wtree` rejects an override before mutation when its selected base does not
+contain an effective `.gitignore` rule:
 
 ```sh
 wtree create tutorial/new-workspace \

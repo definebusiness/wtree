@@ -31,6 +31,7 @@ func TestWorkspacePlannerBuildsParentFirstCreatePlanWithIndependentHEADBases(t *
 	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data}); err != nil {
 		t.Fatal(err)
 	}
+	root.CommitFile(".gitignore", "/api/\n", "ignore custom mount")
 	resolved, err := service.NewResolver().Resolve(context.Background(), service.ResolveRequest{Path: root.Path, DataDir: data})
 	if err != nil {
 		t.Fatal(err)
@@ -60,6 +61,35 @@ func TestWorkspacePlannerBuildsParentFirstCreatePlanWithIndependentHEADBases(t *
 	}
 	if got, want := stepSummary(result), []string{"create_branch:root", "add_worktree:root", "create_branch:backend", "add_worktree:backend"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("steps = %v, want %v", got, want)
+	}
+}
+
+func TestWorkspacePlannerRejectsCustomMountWithoutCommittedParentGitignoreRule(t *testing.T) {
+	project, root, backend, data := plannerFixture(t)
+	root.Run(t, "branch", "base-without-ignore")
+	backend.Run(t, "branch", "base-without-ignore")
+	request := service.WorkspacePlanRequest{
+		Operation: plan.Create, WorkspaceName: "feature", WorktreeRoot: filepath.Join(data, "worktrees"), DataDir: data,
+		Mounts: []service.MountOverride{{RepositoryID: "backend", Mount: "api"}},
+	}
+
+	_, err := service.NewWorkspacePlanner().Plan(context.Background(), project, request)
+	if err == nil || !contains(err.Error(), "mount \"api\"") || !contains(err.Error(), "not ignored") || !contains(err.Error(), ".gitignore") {
+		t.Fatalf("Plan() error = %v, want committed parent .gitignore diagnostic", err)
+	}
+	if exists, branchErr := gitBranchExists(root, "feature"); branchErr != nil || exists {
+		t.Fatalf("root feature branch exists=%t error=%v, want false nil", exists, branchErr)
+	}
+
+	root.CommitFile(".gitignore", "/api/\n", "ignore custom mount")
+	if _, err := service.NewWorkspacePlanner().Plan(context.Background(), project, request); err != nil {
+		t.Fatalf("Plan() after committed ignore rule: %v", err)
+	}
+	request.WorkspaceName = "from-old-base"
+	request.From = "base-without-ignore"
+	_, err = service.NewWorkspacePlanner().Plan(context.Background(), project, request)
+	if err == nil || !contains(err.Error(), "not ignored") {
+		t.Fatalf("Plan() from base without ignore rule = %v, want rejection", err)
 	}
 }
 

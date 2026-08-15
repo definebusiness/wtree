@@ -95,6 +95,9 @@ func (p *WorkspacePlanner) Plan(ctx context.Context, project domain.Project, req
 			Branch: request.WorkspaceName, Mount: effectiveMount(repository, mounts), Path: paths[repository.ID],
 		})
 	}
+	if err := p.preflightMountIgnores(ctx, project, mounts, repositories); err != nil {
+		return plan.WorkspacePlan{}, err
+	}
 	value := plan.WorkspacePlan{
 		Version:       plan.Version,
 		Operation:     request.Operation,
@@ -109,6 +112,38 @@ func (p *WorkspacePlanner) Plan(ctx context.Context, project domain.Project, req
 		return plan.WorkspacePlan{}, NewError(ErrorValidation, fmt.Errorf("validate workspace plan: %w", err))
 	}
 	return value, nil
+}
+
+func (p *WorkspacePlanner) preflightMountIgnores(ctx context.Context, project domain.Project, mounts map[string]string, repositories []plan.RepositoryPlan) error {
+	configured := make(map[string]domain.Repository, len(project.Repositories))
+	bases := make(map[string]string, len(repositories))
+	for _, repository := range project.Repositories {
+		configured[repository.ID] = repository
+	}
+	for _, repository := range repositories {
+		bases[repository.ID] = repository.Base
+	}
+	for _, repository := range project.ParentFirst() {
+		mount, overridden := mounts[repository.ID]
+		if !overridden {
+			continue
+		}
+		if mount == repository.DefaultMount {
+			continue
+		}
+		if repository.ParentID == "" {
+			continue
+		}
+		parent := configured[repository.ParentID]
+		ignored, err := p.git.IsIgnoredAt(ctx, parent.SourcePath, bases[parent.ID], mount)
+		if err != nil {
+			return NewError(ErrorGit, fmt.Errorf("verify mount %q for repository %q is ignored by parent repository %q: %w", mount, repository.ID, parent.ID, err))
+		}
+		if !ignored {
+			return NewError(ErrorValidation, fmt.Errorf("mount %q for repository %q is not ignored by parent repository %q at base %s; add and commit an appropriate rule to the parent .gitignore", mount, repository.ID, parent.ID, bases[parent.ID]))
+		}
+	}
+	return nil
 }
 
 func (p *WorkspacePlanner) preflightRepositories(ctx context.Context, project domain.Project, request WorkspacePlanRequest, paths map[string]string) error {

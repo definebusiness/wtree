@@ -31,6 +31,7 @@ const globalHowTo = `WTREE HOW-TO
    Run: wtree create feature/login --from main
 12. Override nested repository mounts
    Run: wtree create feature/login --mount backend=api
+   Commit an effective /api/ rule to the parent repository's .gitignore first.
 13. Work inside a workspace
    Jump to a branch workspace: cd "$(wtree path feature/login)"
    Jump back to the original clone (the default workspace): cd "$(wtree path default)"
@@ -129,6 +130,8 @@ EXAMPLES
   wtree create feature/login
   wtree create feature/login --from main
   wtree create feature/login --mount backend=api --dry-run
+
+Custom mounts must be ignored by a committed parent .gitignore at the selected base.
 `,
 	"import": `HOW TO: import
 
