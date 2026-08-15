@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -34,7 +35,7 @@ func (manager Manager) RegistryLock(ctx context.Context, dataDir string, timeout
 	return manager.Acquire(ctx, filepath.Join(dataDir, "registry.lock"), timeout)
 }
 func (manager Manager) ProjectLock(ctx context.Context, dataDir, projectID string, timeout time.Duration) (Handle, error) {
-	if projectID == "" || projectID != filepath.Base(projectID) || projectID == "." {
+	if projectID == "" || projectID == "." || projectID == ".." || filepath.IsAbs(projectID) || projectID != filepath.Base(projectID) || filepath.Clean(projectID) != projectID || strings.ContainsAny(projectID, "/\\\x00") {
 		return nil, fmt.Errorf("unsafe project ID %q", projectID)
 	}
 	directory := filepath.Join(dataDir, "projects", projectID)

@@ -117,6 +117,7 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 		_, _ = fmt.Fprint(stdout, rootHelp)
 	})
 	commands := []*cobra.Command{
+		newProjectCommand(stdout, &projectPath),
 		newInitCommand(stdout, &projectPath),
 		newConfigCommand(stdout, &projectPath),
 		newWorkspacePlanCommand(stdout, stderr, &projectPath, plan.Create),
@@ -155,6 +156,7 @@ GLOBAL OPTIONS
                           combinations are rejected rather than ignored.
 
 COMMANDS
+  project    inspect globally registered projects and manage registrations safely
   init       discover repositories and initialize a project
   import     record an existing workspace by Git identity
   create     create synchronized branches and worktrees
@@ -181,6 +183,9 @@ WORKTREE LOCATION
 
 EXAMPLES
   wtree init
+  wtree project list
+  wtree project prune stale-project-id --dry-run
+  wtree project unregister project-id --dry-run
   wtree create feature/login
   cd "$(wtree path feature/login)"
   wtree status feature/login --json
@@ -200,24 +205,28 @@ for detailed command reference and practical workflows.
 
 func applyCommandDocumentation(command *cobra.Command) {
 	examples := map[string]string{
-		"wtree init":         "  wtree init\n  wtree init --dry-run\n",
-		"wtree import":       "  wtree import /work/login --name feature/login\n  wtree import /work/login --dry-run --json\n",
-		"wtree create":       "  wtree create feature/login\n  wtree create feature/login --from main\n  wtree create feature/login --mount backend=api --dry-run\n",
-		"wtree checkout":     "  wtree checkout feature/login\n  wtree checkout feature/login --dry-run\n",
-		"wtree list":         "  wtree list\n  wtree list --json\n",
-		"wtree status":       "  wtree status feature/login\n  wtree status feature/login --json\n",
-		"wtree path":         "  wtree path feature/login\n",
-		"wtree repo":         "  wtree repo path backend\n  wtree repo get backend --json\n",
-		"wtree repo path":    "  wtree repo path backend\n",
-		"wtree repo get":     "  wtree repo get backend --json\n",
-		"wtree remove":       "  wtree remove feature/login\n  wtree remove feature/login --dry-run\n",
-		"wtree delete":       "  wtree delete feature/login\n  wtree delete feature/login --force\n",
-		"wtree doctor":       "  wtree doctor feature/login\n  wtree doctor feature/login --fix --dry-run\n",
-		"wtree config":       "  wtree config get worktrees.root\n  wtree config set worktrees.root /worktrees\n",
-		"wtree config get":   "  wtree config get worktrees.root\n",
-		"wtree config set":   "  wtree config set worktrees.root /worktrees\n",
-		"wtree config unset": "  wtree config unset worktrees.root\n",
-		"wtree config list":  "  wtree config list\n",
+		"wtree project":            "  wtree project list\n  wtree project prune stale-project-id --dry-run\n  wtree project unregister project-id --dry-run\n",
+		"wtree project list":       "  wtree project list\n  wtree project list --json\n",
+		"wtree project prune":      "  wtree project prune stale-project-id --dry-run\n  wtree project prune stale-project-id --json\n",
+		"wtree project unregister": "  wtree project unregister project-id --dry-run\n  wtree project unregister project-id --json\n",
+		"wtree init":               "  wtree init\n  wtree init --dry-run\n",
+		"wtree import":             "  wtree import /work/login --name feature/login\n  wtree import /work/login --dry-run --json\n",
+		"wtree create":             "  wtree create feature/login\n  wtree create feature/login --from main\n  wtree create feature/login --mount backend=api --dry-run\n",
+		"wtree checkout":           "  wtree checkout feature/login\n  wtree checkout feature/login --dry-run\n",
+		"wtree list":               "  wtree list\n  wtree list --json\n",
+		"wtree status":             "  wtree status feature/login\n  wtree status feature/login --json\n",
+		"wtree path":               "  wtree path feature/login\n",
+		"wtree repo":               "  wtree repo path backend\n  wtree repo get backend --json\n",
+		"wtree repo path":          "  wtree repo path backend\n",
+		"wtree repo get":           "  wtree repo get backend --json\n",
+		"wtree remove":             "  wtree remove feature/login\n  wtree remove feature/login --dry-run\n",
+		"wtree delete":             "  wtree delete feature/login\n  wtree delete feature/login --force\n",
+		"wtree doctor":             "  wtree doctor feature/login\n  wtree doctor feature/login --fix --dry-run\n",
+		"wtree config":             "  wtree config get worktrees.root\n  wtree config set worktrees.root /worktrees\n",
+		"wtree config get":         "  wtree config get worktrees.root\n",
+		"wtree config set":         "  wtree config set worktrees.root /worktrees\n",
+		"wtree config unset":       "  wtree config unset worktrees.root\n",
+		"wtree config list":        "  wtree config list\n",
 	}
 	commandPath := fullCommandPath(command)
 	if example, found := examples[commandPath]; found {
@@ -310,11 +319,15 @@ func showInheritedFlag(command *cobra.Command, flag *pflag.Flag) bool {
 	if flag.Name != "project" {
 		return true
 	}
-	return command.Name() != "init" && !isConfigCommand(command)
+	return command.Name() != "init" && !isConfigCommand(command) && !isProjectCommand(command)
 }
 
 func isConfigCommand(command *cobra.Command) bool {
 	return command.Name() == "config" || (command.Parent() != nil && command.Parent().Name() == "config")
+}
+
+func isProjectCommand(command *cobra.Command) bool {
+	return command.Name() == "project" || (command.Parent() != nil && command.Parent().Name() == "project")
 }
 
 func newInitCommand(stdout io.Writer, projectPath *string) *cobra.Command {
@@ -324,7 +337,7 @@ func newInitCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "init [path]",
 		Short: "initialize a project from independent nested Git repositories",
-		Long:  "Discover the root and independent nested Git repositories, write .wtree.yml, and register the project.\n\nThe original source checkout is recorded as the default workspace. Use --dry-run to preflight without writing state.",
+		Long:  "Discover the root and independent nested Git repositories, write .wtree.yml, and register the project.\n\nThe original source checkout is recorded as the default workspace. Use --dry-run to preflight without writing state. If a missing local configuration is already registered by path or repository identity, init refuses the duplicate and directs you to `wtree project list` for inspection and explicit registry cleanup.",
 		Args:  maximumOneArgument,
 		RunE: func(command *cobra.Command, args []string) error {
 			if *projectPath != "" {

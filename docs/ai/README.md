@@ -46,6 +46,38 @@ Read these documents in this order when using or changing the process:
 4. [run-ledger-layout.md](run-ledger-layout.md) — required durable-ledger
    format, state invariants, checkpoints, and final-response audit.
 
+## Approve and run a plan
+
+From the repository root, give the main agent this prompt after reviewing and
+approving a ready-to-execute plan. Replace `<plan-name>` with the plan filename
+without `.md`:
+
+```text
+I approve docs/plans/<plan-name>.md.
+
+Run it continuously from the first unchecked milestone using the repository's
+milestone supervision process. Create and maintain the durable run ledger at
+docs/ai/runs/<plan-name>.md.
+
+Use implementer, reviewer, and remediation agents exactly as specified by the
+plan and AGENTS.md. Preserve unrelated worktree changes. Do not commit,
+publish, deploy, install, or modify real user data unless I separately
+authorize it.
+
+Continue unattended until every milestone is approved or a valid terminal
+blocker is recorded.
+```
+
+If a run is interrupted, resume it with:
+
+```text
+Resume docs/plans/<plan-name>.md.
+
+Reconcile the plan, durable ledger, current worktree, and recorded evidence.
+Append the reconciliation checkpoint, then perform the ledger's exact
+"Resume from" action. Continue unattended until complete or validly blocked.
+```
+
 ## Required stabilization: a state-machine tool
 
 The current workflow is defined in Markdown and agent coordination, but it

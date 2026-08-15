@@ -12,6 +12,9 @@ vet:
 build:
 	go build -o ./bin/wtree ./cmd/wtree
 
+install:
+	go install ./cmd/wtree
+
 # release creates only local artifacts; publishing is intentionally out of scope.
 release:
 	VERSION=$${VERSION:?set VERSION, for example VERSION=1.2.3} DIST_DIR=$${DIST_DIR:-dist} ./scripts/release-build.sh

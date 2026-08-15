@@ -62,7 +62,16 @@ const globalHowTo = `WTREE HOW-TO
     Run: wtree --project /path/to/project <command> when context is ambiguous.
 27. AI coding agent workflow
     Create, resolve with path, work in the checkout, inspect status, then remove or delete.
-28. Important safety semantics
+28. Inspect registered projects
+    Run: wtree project list. It reports registry inconsistencies without changing projects or Git data.
+29. Prune only a stale registry registration
+    Run: wtree project prune <project-id> --dry-run. It removes no Git worktree,
+    repository, project config, workspace state, recovery data, or lock file.
+30. Intentionally unregister a project registration
+    Run: wtree project unregister <project-id> --dry-run. It retains every project
+    artifact; the retained local config can register the project again after a later
+    mutating command is run from that project.
+31. Important safety semantics
     Clone, update, and sync preflight first; destructive reconciliation requires explicit intent.
 `
 
@@ -73,8 +82,15 @@ Discover the complete local repository tree after every repository has been push
 
 EXAMPLES
   wtree init
-  wtree init --manifest-source https://git.example.com/acme/project.wtree.yml
+  wtree init --worktree-root /worktrees
   wtree init --dry-run --json
+
+If .wtree.yml was removed but this checkout remains registered, init refuses to
+publish another project ID. Inspect the registration with wtree project list.
+Use wtree project prune <id> only for an objectively stale registration, or
+wtree project unregister <id> for intentional registry-only removal; neither
+operation deletes Git repositories, worktrees, configuration, or state. Once
+the intended registration is explicitly removed, retry wtree init.
 `,
 	"clone": `HOW TO: clone
 
@@ -150,6 +166,18 @@ EXAMPLES
   wtree doctor feature/login --json
   wtree doctor feature/login --fix --dry-run
 `,
+	"project": `HOW TO: project
+
+Inspect globally registered projects and their registry diagnostics. To remove an objectively stale registration only, inspect its complete read-only plan with prune. To intentionally remove any exact registration, use unregister. Neither operation deletes Git worktrees, repositories, project configuration, workspace state, recovery data, or lock files. After unregister, the retained local configuration can register the project again when a later mutating command runs from it.
+
+EXAMPLES
+  wtree project list
+  wtree project list --json
+  wtree project prune stale-project-id --dry-run
+  wtree project prune stale-project-id --json
+  wtree project unregister project-id --dry-run
+  wtree project unregister project-id --json
+`,
 }
 
 func renderHowToIfRequested(writer io.Writer, arguments []string) (bool, error) {
@@ -175,5 +203,5 @@ func renderHowToIfRequested(writer io.Writer, arguments []string) (bool, error) 
 			return true, err
 		}
 	}
-	return true, invalidArgumentsError{cause: fmt.Errorf("--how-to is valid only as `wtree --how-to` or `wtree {init,clone,update,sync,create,import,remove,delete,doctor} --how-to`")}
+	return true, invalidArgumentsError{cause: fmt.Errorf("--how-to is valid only as `wtree --how-to` or `wtree {project,init,clone,update,sync,create,import,remove,delete,doctor} --how-to`")}
 }

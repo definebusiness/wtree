@@ -37,7 +37,9 @@ func TestNamedRegistryAndProjectLocks(t *testing.T) {
 }
 
 func TestProjectLockRejectsTraversalID(t *testing.T) {
-	if _, err := (lock.Manager{}).ProjectLock(context.Background(), t.TempDir(), "../escape", time.Second); err == nil {
-		t.Fatal("traversal project ID accepted")
+	for _, id := range []string{"..", "../escape", "a/b", `a\\b`} {
+		if _, err := (lock.Manager{}).ProjectLock(context.Background(), t.TempDir(), id, time.Second); err == nil {
+			t.Fatalf("unsafe project ID accepted: %q", id)
+		}
 	}
 }

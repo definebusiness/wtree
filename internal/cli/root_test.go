@@ -257,6 +257,65 @@ func TestExecuteInitDryRunJSON(t *testing.T) {
 	}
 }
 
+func TestExecuteInitRejectsRegisteredMissingConfigUntilExplicitRegistryCleanup(t *testing.T) {
+	for _, operation := range []string{"prune", "unregister"} {
+		t.Run(operation, func(t *testing.T) {
+			repository := testutil.NewGitRepository(t)
+			repository.CommitFile("readme", "x\n", "initial")
+			data := t.TempDir()
+			if result := testutil.RunCommand(t, cli.Execute, "init", repository.Path, "--data-dir", data); result.Err != nil {
+				t.Fatalf("first init = %#v", result)
+			}
+			registryPath := filepath.Join(data, "registry.json")
+			registry, err := store.ReadRegistry(registryPath)
+			if err != nil || len(registry.Projects) != 1 {
+				t.Fatalf("first registry = %#v, %v", registry, err)
+			}
+			var firstID string
+			for id := range registry.Projects {
+				firstID = id
+			}
+			if err := os.Remove(filepath.Join(repository.Path, ".wtree.yml")); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(registryPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, dryRun := range []bool{true, false} {
+				arguments := []string{"init", repository.Path, "--data-dir", data, "--json"}
+				if dryRun {
+					arguments = append(arguments, "--dry-run")
+				}
+				result := testutil.RunCommand(t, cli.Execute, arguments...)
+				var envelope struct {
+					Error struct {
+						Code, Message string
+					} `json:"error"`
+				}
+				if result.Err == nil || result.Stderr != "" || cli.ExitCode(result.Err) != 8 || json.Unmarshal([]byte(result.Stdout), &envelope) != nil || envelope.Error.Code != "conflict" || !strings.Contains(envelope.Error.Message, firstID) || !strings.Contains(envelope.Error.Message, "wtree project list") {
+					t.Fatalf("duplicate init dryRun=%t = %#v envelope=%#v", dryRun, result, envelope)
+				}
+				after, readErr := os.ReadFile(registryPath)
+				if readErr != nil || string(after) != string(before) {
+					t.Fatalf("duplicate init rewrote registry: %v", readErr)
+				}
+			}
+			if result := testutil.RunCommand(t, cli.Execute, "project", operation, firstID, "--data-dir", data); result.Err != nil {
+				t.Fatalf("%s = %#v", operation, result)
+			}
+			if result := testutil.RunCommand(t, cli.Execute, "init", repository.Path, "--data-dir", data); result.Err != nil {
+				t.Fatalf("init after explicit cleanup = %#v", result)
+			}
+			registry, err = store.ReadRegistry(registryPath)
+			_, oldRegistrationRemains := registry.Projects[firstID]
+			if err != nil || len(registry.Projects) != 1 || oldRegistrationRemains {
+				t.Fatalf("retry registry = %#v, %v", registry, err)
+			}
+		})
+	}
+}
+
 func TestExecuteInitRejectsRootProjectSelector(t *testing.T) {
 	repository := testutil.NewGitRepository(t)
 	repository.CommitFile("readme", "x\n", "initial")
@@ -394,7 +453,7 @@ func TestExecuteInitHelpDocumentsDiscoveryAndDefaultWorkspace(t *testing.T) {
 	if result.Err != nil {
 		t.Fatal(result.Err)
 	}
-	for _, want := range []string{"independent nested Git repositories", "default workspace", "--worktree-root", "--dry-run", "--json"} {
+	for _, want := range []string{"independent nested Git repositories", "default workspace", "wtree project list", "--worktree-root", "--dry-run", "--json"} {
 		if !strings.Contains(result.Stdout, want) {
 			t.Fatalf("init help missing %q:\n%s", want, result.Stdout)
 		}

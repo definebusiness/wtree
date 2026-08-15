@@ -9,13 +9,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/definebusiness/wtree/internal/config"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
 	"github.com/definebusiness/wtree/internal/lock"
 	"github.com/definebusiness/wtree/internal/service"
 	"github.com/definebusiness/wtree/internal/store"
 	"github.com/definebusiness/wtree/internal/testutil"
+	"github.com/google/uuid"
 	"time"
 )
 

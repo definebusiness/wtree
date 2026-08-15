@@ -53,6 +53,36 @@ func TestExecuteListIncludesDefaultAndCreatedWorkspace(t *testing.T) {
 	}
 }
 
+func TestExecutePathDefaultFromUnmanagedLinkedWorktree(t *testing.T) {
+	project := testutil.NewGitRepository(t)
+	project.CommitFile("root.txt", "root\n", "root")
+	data := t.TempDir()
+	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
+		t.Fatalf("init = %#v", result)
+	}
+
+	project.Run(t, "branch", "unmanaged")
+	linked := filepath.Join(t.TempDir(), "unmanaged")
+	project.Run(t, "worktree", "add", linked, "unmanaged")
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(linked); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+
+	result := testutil.RunCommand(t, cli.Execute, "path", "default", "--data-dir", data)
+	canonicalProjectPath, err := filepath.EvalSymlinks(project.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Err != nil || result.Stderr != "" || result.Stdout != canonicalProjectPath+"\n" {
+		t.Fatalf("path default = %#v, want %q", result, canonicalProjectPath)
+	}
+}
+
 func TestExecuteCheckoutRestoresRetainedRenamedMountAndLookupFromNestedCheckout(t *testing.T) {
 	root := testutil.NewGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")

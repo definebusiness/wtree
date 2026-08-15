@@ -230,11 +230,11 @@ func resolveWorkspaceProject(ctx context.Context, projectPath, dataDir string) (
 		}
 		dataDir = paths.DataDir
 	}
-	resolution, err := service.NewResolver().ResolveReadOnly(ctx, service.ResolveRequest{Path: ".", ProjectPath: projectPath, DataDir: dataDir})
+	project, err := service.NewResolver().ResolveProject(ctx, service.ResolveRequest{Path: ".", ProjectPath: projectPath, DataDir: dataDir})
 	if err != nil {
 		return domain.Project{}, "", err
 	}
-	return resolution.Project, dataDir, nil
+	return project, dataDir, nil
 }
 
 func resolveCurrentWorkspace(ctx context.Context, projectPath, dataDir string) (service.Resolution, error) {

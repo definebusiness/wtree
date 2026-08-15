@@ -61,29 +61,37 @@ func (r *Resolver) ResolveProject(ctx context.Context, request ResolveRequest) (
 	if err != nil {
 		return domain.Project{}, err
 	}
-	var project domain.Project
 	switch {
 	case request.ProjectPath != "":
 		configPath, err := explicitConfigPath(request.ProjectPath)
 		if err != nil {
 			return domain.Project{}, err
 		}
-		project, err = r.loadProject(ctx, configPath)
-		if err != nil {
-			return domain.Project{}, err
-		}
+		return r.loadProject(ctx, configPath)
 	case findConfigPath(path) != "":
-		project, err = r.loadProject(ctx, findConfigPath(path))
+		configPath := findConfigPath(path)
+		projectID, err := projectIDFromConfig(configPath)
 		if err != nil {
 			return domain.Project{}, err
 		}
+		project, found, err := r.registeredProject(ctx, projectID, registry)
+		if err != nil {
+			return domain.Project{}, err
+		}
+		if found {
+			return project, nil
+		}
+		return r.loadProject(ctx, configPath)
 	default:
-		project, err = r.projectFromGitIdentity(ctx, path, registry)
+		project, found, err := r.projectForPersistedWorkspace(ctx, request.DataDir, path, registry)
 		if err != nil {
 			return domain.Project{}, err
 		}
+		if found {
+			return project, nil
+		}
+		return r.projectFromGitIdentity(ctx, path, registry)
 	}
-	return project, nil
 }
 
 // ReconcileProject records a relocated project only after a mutating command

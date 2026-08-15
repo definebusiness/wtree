@@ -7,15 +7,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/definebusiness/wtree/internal/config"
 	"github.com/definebusiness/wtree/internal/discovery"
 	"github.com/definebusiness/wtree/internal/fsutil"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
 	"github.com/definebusiness/wtree/internal/lock"
 	"github.com/definebusiness/wtree/internal/store"
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -38,6 +40,9 @@ type Initializer struct {
 	writeWorkspace func(string, store.WorkspaceState) error
 	rename         func(string, string) error
 	remove         func(string) error
+	// beforeLockedRegistryPreflight is a package-private test seam for the
+	// registration change that can occur after the unlocked preflight.
+	beforeLockedRegistryPreflight func()
 }
 
 func NewInitializer() *Initializer {
@@ -102,30 +107,47 @@ func (i *Initializer) Init(ctx context.Context, request InitRequest) (InitResult
 	}
 	registryPath := filepath.Join(request.DataDir, "registry.json")
 	if request.DryRun {
-		if _, _, err := loadRegistry(registryPath); err != nil {
+		registry, _, err := loadRegistry(registryPath)
+		if err != nil {
+			return InitResult{}, err
+		}
+		if err := rejectRegistrationConflicts(configPath, identityMap, registry); err != nil {
 			return InitResult{}, err
 		}
 		return result, nil
+	}
+	registry, _, err := loadRegistry(registryPath)
+	if err != nil {
+		return InitResult{}, err
+	}
+	if err := rejectRegistrationConflicts(configPath, identityMap, registry); err != nil {
+		return InitResult{}, err
 	}
 	registryLock, err := (lock.Manager{}).RegistryLock(ctx, request.DataDir, time.Second)
 	if err != nil {
 		return InitResult{}, err
 	}
 	defer registryLock.Unlock()
-	projectLock, err := (lock.Manager{}).ProjectLock(ctx, request.DataDir, projectID, time.Second)
-	if err != nil {
-		return InitResult{}, err
-	}
-	defer projectLock.Unlock()
 	if _, err := os.Stat(configPath); err == nil {
 		return InitResult{}, ErrAlreadyInitialized
 	} else if !os.IsNotExist(err) {
 		return InitResult{}, err
 	}
+	if i.beforeLockedRegistryPreflight != nil {
+		i.beforeLockedRegistryPreflight()
+	}
 	registry, hadRegistry, err := loadRegistry(registryPath)
 	if err != nil {
 		return InitResult{}, err
 	}
+	if err := rejectRegistrationConflicts(configPath, identityMap, registry); err != nil {
+		return InitResult{}, err
+	}
+	projectLock, err := (lock.Manager{}).ProjectLock(ctx, request.DataDir, projectID, time.Second)
+	if err != nil {
+		return InitResult{}, err
+	}
+	defer projectLock.Unlock()
 	previousRegistry := cloneRegistry(registry)
 	registry = cloneRegistry(registry)
 	if existing, ok := registry.Projects[projectID]; ok && existing.ConfigPath != configPath {
@@ -164,6 +186,26 @@ func (i *Initializer) Init(ctx context.Context, request InitRequest) (InitResult
 		return InitResult{}, initPublicationError("publish default workspace", err, i.rollbackInit(configPath, workspacePath, registryPath, previousRegistry, hadRegistry))
 	}
 	return result, nil
+}
+
+func rejectRegistrationConflicts(configPath string, repositoryIDs map[string]string, registry store.Registry) error {
+	identities := make([]string, 0, len(repositoryIDs))
+	for identity := range repositoryIDs {
+		identities = append(identities, identity)
+	}
+	sort.Strings(identities)
+	candidates := make([]RegistrationConflictCandidate, 0, len(registry.Projects))
+	for id, project := range registry.Projects {
+		registeredIdentities := make([]string, 0, len(project.RepositoryIDs))
+		for identity := range project.RepositoryIDs {
+			registeredIdentities = append(registeredIdentities, identity)
+		}
+		candidates = append(candidates, RegistrationConflictCandidate{ID: id, ConfigPath: project.ConfigPath, RepositoryIdentities: registeredIdentities})
+	}
+	if ids := RegistrationConflictIDs(configPath, identities, candidates); len(ids) != 0 {
+		return NewError(ErrorConflict, fmt.Errorf("project registration conflicts with existing project IDs %s; inspect registrations with `wtree project list`", strings.Join(ids, ", ")))
+	}
+	return nil
 }
 
 func initPublicationError(operation string, cause, cleanup error) error {

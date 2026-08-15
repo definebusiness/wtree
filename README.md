@@ -136,6 +136,43 @@ wtree status feature/login
 wtree status feature/login --json
 ```
 
+Inspect the global project registry from any directory. This is read-only and
+reports inconsistent registrations without pruning repositories, worktrees, or
+configuration:
+
+```sh
+wtree project list
+wtree project list --json
+```
+
+When an entry is objectively stale, preview a registry-only cleanup before
+applying it. `project prune` removes only that one registry registration; it
+does not prune Git worktrees or delete repositories, project configuration,
+workspace state, recovery data, or lock files.
+
+```sh
+wtree project prune stale-project-id --dry-run
+wtree project prune stale-project-id --json
+```
+
+To intentionally remove an exact project registration even when it is not
+stale, use `project unregister`. This remains registry-only: it retains all
+project configuration, workspace state, recovery data, locks, repositories,
+and Git worktrees. The retained local configuration can register the project
+again if a later mutating command is run from that project.
+
+```sh
+wtree project unregister project-id --dry-run
+wtree project unregister project-id --json
+```
+
+If `.wtree.yml` is later removed while its checkout remains registered, `wtree
+init` refuses to publish a second registration for the same configuration path
+or Git repository identity. Inspect the conflict with `wtree project list`,
+then use `project prune` only when its stale evidence allows it or explicitly
+`project unregister` the intended registration before retrying `wtree init`.
+Both cleanup commands remain registry-only and retain Git and project data.
+
 If a workspace was created manually, record its verified Git identities and
 checkout layout without rewriting it:
 

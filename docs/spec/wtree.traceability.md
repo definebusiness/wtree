@@ -13,14 +13,14 @@ itself labels the feature optional; no required MVP section is deferred.
 | 4 | repository hierarchy and effective paths | `domain.Project`, `pathutil` | project/mount/plan tests |
 | 5 | synchronized branch model | planner/create/checkout services | plan/create/workspace tests |
 | 6 | workspace storage precedence | `config.ResolveWorktreeRoot` | config/plan tests; `path` help |
-| 7 | stable project identity | initializer, config, registry | init/resolve tests |
+| 7 | stable project identity | initializer, config, registry, project inventory | init/resolve/project-inventory tests; `project list` help |
 | 8 | project configuration | `internal/config`, domain validation | config/init/resolve tests |
 | 9 | global configuration | config service/files | config CLI/service tests |
 | 10 | runtime state model | `store.WorkspaceState` | store/workspace tests |
 | 11 | command invocation context | `service.Resolver` | resolve tests; root help |
 | 12 | local/Git project discovery | resolver | resolve tests |
 | 13 | explicit `--project` selection | root persistent option, resolver | root/resolve tests |
-| 14 | `init` | initializer and init command | init service/CLI tests; init help |
+| 14 | `init` | initializer, registration-conflict policy, and init command | init/registration-conflict service/CLI tests; init help/how-to |
 | 15 | nested repository discovery | initializer/Git adapter | init tests |
 | 16 | `create` | planner, creator, create command | plan/create/CLI E2E; create help/how-to |
 | 17 | `create --from` | planner request and Git adapter | plan/create tests; create help |
@@ -29,7 +29,7 @@ itself labels the feature optional; no required MVP section is deferred.
 | 20 | creation algorithm | creator/transaction runner | create/transaction/E2E tests |
 | 21 | transactional operations | `internal/transaction`, service transaction | transaction tests; recovery diagnostics |
 | 22 | complete preflight | planner/remover/deleter | plan/remove/delete tests |
-| 23 | dry-run has no mutation | CLI plan commands and read-only resolver | root/import/doctor tests; command help |
+| 23 | dry-run has no mutation | CLI plan commands and read-only resolver | root/import/doctor/project-prune/project-unregister tests; command help |
 | 24 | `checkout` | workspace creator/checkout command | workspace/CLI tests; checkout help |
 | 25 | `list` | workspace service/list command | workspace CLI tests; list help |
 | 26 | `status` | status service/Git adapter | status tests; status help |
@@ -72,8 +72,8 @@ itself labels the feature optional; no required MVP section is deferred.
 | 63 | GitAdapter | `internal/git.Adapter` | adapter/parse/branch tests; fuzz |
 | 64 | WorkspacePlanner | `service.WorkspacePlanner`, `internal/plan` | plan tests |
 | 65 | TransactionRunner | `internal/transaction` | transaction tests |
-| 66 | state commit ordering | service transaction/store | transaction tests |
-| 67 | concurrency | project locks and transaction revalidation | transaction/create/config tests |
+| 66 | state commit ordering | service transaction/store/registry remover | transaction/project-registry-removal/store atomic tests for prune/unregister |
+| 67 | concurrency | project locks and transaction/registry-removal/init locked revalidation | transaction/create/config/project-registry-removal/init tests for prune/unregister and duplicate registration |
 | 68 | path safety | `internal/pathutil`, domain validators | pathutil/domain fuzz and tests |
 | 69 | mount conflicts | planner validation | plan tests |
 | 70 | root content versus nested mount | planner/preflight | plan tests |
@@ -82,14 +82,14 @@ itself labels the feature optional; no required MVP section is deferred.
 | 73 | imported workspace names | importer validation | import tests |
 | 74 | import branch mismatch | importer/status facts | import/status tests |
 | 75 | status drift detection | status service | status tests |
-| 76 | project registry | store/initializer/resolver | init/resolve/import/doctor tests; registry fuzz |
+| 76 | project registry | store/initializer/registration-conflict policy/resolver/project inventory/registry remover | init/registration-conflict/resolve/import/doctor/project-inventory/project-registry-removal tests; registry fuzz; `wtree project list`, `wtree project prune`, `wtree project unregister` |
 | 77 | source checkout as workspace | initializer/default workspace | init/resolve tests |
 | 78 | current workspace detection | resolver | resolve/workspace/status tests |
 | 79 | no project context | resolver error mapping | resolve/root tests |
-| 80 | ambiguous project detection | resolver | resolve tests |
+| 80 | ambiguous project detection | resolver/registration-conflict policy/project inventory/registry removal diagnostics | resolve/registration-conflict/project-inventory/project-registry-removal tests; `wtree project list`, guarded `wtree project prune`, intentional exact `wtree project unregister` |
 | 81 | verbose logging | CLI transaction progress renderer | root/help tests |
 | 82 | actionable error context | typed errors and transaction recovery rendering | errors/transaction/CLI tests |
-| 83 | no partial logical state | transaction rollback/recovery | transaction/remove/delete tests |
+| 83 | no partial logical state | transaction rollback/recovery/read-only inventory/atomic registry removal | transaction/remove/delete/project-inventory/project-registry-removal/store atomic prune/unregister no-mutation tests |
 | 84 | repository ordering | domain graph/planner ordering | project/plan/remove/delete tests |
 | 85 | configuration validation | config/domain loading | config/resolve tests |
 | 86 | config/state/registry versioning | config/store migration boundaries | config/store tests and fuzz |
