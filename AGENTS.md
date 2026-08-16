@@ -1,5 +1,71 @@
 # Agent instructions
 
+## Repository document language
+
+All repository documentation must be written in English, regardless of the
+language used to communicate with Codex. This includes README files,
+specifications, implementation plans, idea documents, tutorials, runbooks,
+and other explanatory prose maintained in the repository. Preserve verbatim
+third-party quotations only when their original wording is materially
+required.
+
+## Idea, specification, and plan lifecycle
+
+Documents under `docs/ideas/`, `docs/spec/`, and `docs/plans/` must declare a
+`Status:` near the top of the document. Agents must maintain the status and
+the relationships described below automatically as part of creating or
+implementing these documents; the user does not need to request the metadata
+or reciprocal-link updates separately.
+
+Use these lifecycle states:
+
+- Idea: `initial` -> `specified`
+- Specification: `initial` -> `planned` -> `implemented`
+- Plan: `initial` -> `implemented`
+- Any non-terminal state may become `superseded` or `abandoned`, but only on
+  explicit user request. Never infer either terminal state from inactivity,
+  replacement work, implementation changes, or conversation context.
+
+Apply these creation and transition rules:
+
+1. A newly created idea has `Status: initial`.
+2. An idea is optional. A specification may be created directly without an
+   idea; in that case it has `Status: initial` and records
+   `Source idea: none (created directly)`.
+3. When a specification is created from an idea, the new specification has
+   `Status: initial`, the idea changes to `Status: specified`, and both
+   documents receive relative Markdown links to each other.
+4. A plan must be based on a specification. If a plan is requested and no
+   specification exists, create the necessary specification first. When an
+   applicable idea exists, derive the specification from it and apply rule 3;
+   otherwise create the specification directly and apply rule 2.
+5. When a plan is created from a specification, the new plan has
+   `Status: initial`, the specification changes to `Status: planned`, and both
+   documents receive relative Markdown links to each other. A specification
+   may link to multiple implementation plans.
+6. A plan changes to `Status: implemented` only after its entire scope is
+   implemented, reviewed, and verified. Starting work or completing only some
+   milestones does not change the plan status.
+7. A specification changes to `Status: implemented` only when the delivered
+   and verified implementation satisfies its full scope and all plans required
+   for that scope are implemented.
+
+Document lifecycle status is separate from execution state. Active, paused,
+blocked, remediation, and completion checkpoints for an authorized plan run
+belong in its durable ledger, not in the plan's `Status:` value.
+
+When the user explicitly requests `superseded`, add a `Superseded by:` link to
+the replacement and a reciprocal `Supersedes:` link in the replacement. When
+the user explicitly requests `abandoned`, record a concise `Abandonment
+reason:`. Treat both states as terminal: make no further substantive changes
+to that document except correcting lifecycle metadata or links. Resumed work
+requires a new document that links to the terminal document.
+
+These rules apply immediately to every newly created lifecycle document. They
+do not require a bulk migration of existing documents, but an existing idea,
+specification, or plan must be brought into compliance when an agent edits it
+or creates a new lifecycle relationship involving it.
+
 For work driven by an implementation plan with milestones, follow
 [`docs/ai/milestone-supervision.md`](docs/ai/milestone-supervision.md).
 It defines the required implementation, review, remediation, verification, and

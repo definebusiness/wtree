@@ -1,6 +1,6 @@
 # Idea: allow workspaces when a branch is missing from some repositories
 
-Status: design idea; not an accepted specification or implementation plan.
+Status: initial
 
 ## Summary
 

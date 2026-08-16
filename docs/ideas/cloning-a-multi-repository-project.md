@@ -1,6 +1,7 @@
 # Idea: clone and synchronize a multi-repository project
 
-Status: design idea; not an accepted specification or implementation plan.
+Status: specified
+Specification: [Portable manifest clone specification](../spec/portable-manifest-clone.md)
 
 ## Summary
 

@@ -1,7 +1,8 @@
 # `wtree` incremental implementation plan
 
-Status: ready to execute  
-Source of truth: [`docs/spec/wtree.spec.md`](../spec/wtree.spec.md)  
+Status: implemented
+Source specification: [`wtree` specification](../spec/wtree.spec.md)
+Source of truth: [`docs/spec/wtree.spec.md`](../spec/wtree.spec.md)
 Delivery style: test-first, one reviewed milestone at a time
 
 ## Execution contract for Codex

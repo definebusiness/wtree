@@ -1,5 +1,9 @@
 # `wtree` specification traceability
 
+Status: implemented
+Source specification: [`wtree` specification](wtree.spec.md)
+Implementation plan: [`wtree` incremental implementation plan](../plans/wtree-implementation-plan.md)
+
 This matrix maps every numbered section of [`wtree.spec.md`](wtree.spec.md) to
 the owning implementation, behavioral evidence, and, where it is user-facing,
 the installed help/how-to.  “Optional” is used only where the specification

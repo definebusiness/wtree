@@ -1,7 +1,8 @@
 # Project registry inspection and lifecycle implementation plan
 
-Status: ready to execute  
-Source of truth: user-approved CLI contract (`wtree project list` and `wtree project (prune|unregister) <id>`, 2026-08-15); [`docs/spec/wtree.spec.md` §§7, 14, 23, 66–67, 76, 80, 83](../spec/wtree.spec.md); [`internal/store/store.go`](../../internal/store/store.go); [`internal/lock/lock.go`](../../internal/lock/lock.go); [`internal/service/init.go`](../../internal/service/init.go); [`internal/service/resolve.go`](../../internal/service/resolve.go); [`internal/cli/root.go`](../../internal/cli/root.go)  
+Status: implemented
+Source specification: [`wtree` specification](../spec/wtree.spec.md)
+Source of truth: user-approved CLI contract (`wtree project list` and `wtree project (prune|unregister) <id>`, 2026-08-15); [`docs/spec/wtree.spec.md` §§7, 14, 23, 66–67, 76, 80, 83](../spec/wtree.spec.md); [`internal/store/store.go`](../../internal/store/store.go); [`internal/lock/lock.go`](../../internal/lock/lock.go); [`internal/service/init.go`](../../internal/service/init.go); [`internal/service/resolve.go`](../../internal/service/resolve.go); [`internal/cli/root.go`](../../internal/cli/root.go)
 Delivery style: test-first, one reviewed milestone at a time; no registry schema migration, repository deletion, publishing, or commits
 
 ## Execution contract for Codex

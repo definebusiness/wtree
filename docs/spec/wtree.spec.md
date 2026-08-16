@@ -1,5 +1,16 @@
 # `wtree` – Specification
 
+Status: implemented
+Source idea: none (created directly)
+Implementation plans:
+
+- [`wtree` incremental implementation plan](../plans/wtree-implementation-plan.md)
+- [Project registry inspection and lifecycle implementation plan](../plans/project-registry-management.md)
+
+Related documents:
+
+- [`wtree` specification traceability](wtree.traceability.md)
+
 ## 1. Purpose
 
 `wtree` is a command-line tool for managing Git worktrees across projects that consist of multiple nested Git repositories.
