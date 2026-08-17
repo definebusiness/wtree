@@ -841,7 +841,11 @@ func (i *Initializer) removeOwnedFile(owned fileSnapshot) (result error) {
 		restoreErr := restoreCapturedFile(i, capturedPath, owned.path)
 		return errors.Join(fmt.Errorf("refusing concurrently replaced generation at removal boundary: %w", err), restoreErr)
 	}
-	if err := revalidateSnapshot(fileSnapshot{path: owned.path}); err != nil {
+	// snapshotFile represents a missing file with its default mode. Preserve
+	// that representation here so the successfully emptied public path is not
+	// mistaken for a concurrent change merely because a zero-value snapshot has
+	// a different mode.
+	if err := revalidateSnapshot(fileSnapshot{path: owned.path, mode: 0o644}); err != nil {
 		cleanupErr := i.remove(capturedPath)
 		return errors.Join(fmt.Errorf("refusing concurrently replaced public generation after capture: %w", err), cleanupErr)
 	}
