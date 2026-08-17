@@ -1,6 +1,6 @@
 # Documentation status overview
 
-Last reviewed: 2026-08-17
+Last reviewed: 2026-08-18
 
 This document summarizes lifecycle metadata for the idea, specification, and
 implementation-plan documents under `docs/`. Operational documentation,

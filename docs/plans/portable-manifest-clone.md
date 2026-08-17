@@ -1,6 +1,6 @@
 # Portable manifest clone implementation plan
 
-Status: initial
+Status: implemented
 Source specification: [Portable manifest clone specification](../spec/portable-manifest-clone.md)
 Related idea: [Clone and synchronize a multi-repository project](../ideas/cloning-a-multi-repository-project.md)
 Source of truth: [`docs/spec/portable-manifest-clone.md`](../spec/portable-manifest-clone.md); [`docs/spec/nested-mount-ignore-management.md`](../spec/nested-mount-ignore-management.md) for immediate-parent ignore ownership and committed-rule semantics; [`docs/spec/wtree.spec.md` §§7, 12–15, 21–23, 47–49, 66–72, 76–85](../spec/wtree.spec.md); [`internal/config/config.go`](../../internal/config/config.go); [`internal/discovery/discovery.go`](../../internal/discovery/discovery.go); [`internal/git/adapter.go`](../../internal/git/adapter.go); [`internal/service/init.go`](../../internal/service/init.go); [`internal/service/resolve.go`](../../internal/service/resolve.go); [`internal/store/store.go`](../../internal/store/store.go); [`internal/lock/lock.go`](../../internal/lock/lock.go); [`internal/cli/root.go`](../../internal/cli/root.go)
