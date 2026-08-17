@@ -78,24 +78,23 @@ wtree init
 git add .gitignore project.wtree.yml
 ```
 
-Clone a complete project from a local portable manifest or a URL that returns
-one directly:
+`project.wtree.yml` is a portable, reviewable authoring artifact. `init` never
+stages, commits, or pushes; review and commit the portable manifest and any
+`.gitignore` change yourself.
+
+Clone a published project from a local manifest file or an HTTP(S) URL. The
+optional destination defaults to the manifest's safe project name. A dry run
+reads the manifest, checks every remote, and renders the exact-commit plan
+without creating directories or local state:
 
 ```sh
-wtree clone ./project.wtree.yml ~/code/product
-wtree clone https://git.example.com/acme/project.wtree.yml ~/code/product
+wtree clone ./project.wtree.yml ./product --dry-run
+wtree clone ./project.wtree.yml ./product
 ```
 
-The clone remembers its manifest source. Reinspect local repositories and
-refresh both configurations with `update`, or reconcile an existing clone to
-its published manifest with `sync`:
-
-```sh
-wtree update
-wtree update --json --dry-run
-wtree sync
-wtree sync --json --dry-run
-```
+The clone is verified and registered as the `default` workspace. `update`,
+`sync`, and release-lock manifests remain future ideas; they are not commands
+in this release.
 
 Choose where newly created workspaces live (this is optional; otherwise the
 platform default is used):
@@ -212,8 +211,8 @@ Run `wtree --how-to` for the installed workflow guide, or
 
 ## Learn and contribute
 
-- Follow the [hands-on tutorial](tutorial/README.md) to clone a portable local
-  multi-repository fixture and work with synchronized workspaces.
+- The [hands-on tutorial](tutorial/README.md) walks through the portable clone
+  workflow and the existing workspace lifecycle commands.
 - See [Troubleshooting](docs/TROUBLESHOOTING.md) for duplicate project
   registrations, workspace drift, dirty worktrees, and incomplete rollbacks.
 - See the [AI-assisted delivery process](docs/ai/README.md) for this

@@ -75,6 +75,23 @@ func TestAdapterChecksCommittedGitignoreAtRequestedRef(t *testing.T) {
 	}
 }
 
+func TestAdapterWorkingTreeIgnoreUsesGitSemanticsAndExcludesInfoRules(t *testing.T) {
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile(".gitignore", "/literal\\[name\\]/\n", "ignore literal mount")
+	adapter := git.NewAdapter("git")
+	ignored, err := adapter.IsIgnoredWorkingTree(context.Background(), repository.Path, "literal[name]")
+	if err != nil || !ignored {
+		t.Fatalf("IsIgnoredWorkingTree(literal) = %t, %v", ignored, err)
+	}
+	if err := os.WriteFile(filepath.Join(repository.Path, ".git", "info", "exclude"), []byte("/excluded/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ignored, err = adapter.IsIgnoredWorkingTree(context.Background(), repository.Path, "excluded")
+	if err != nil || ignored {
+		t.Fatalf("IsIgnoredWorkingTree(info/exclude) = %t, %v", ignored, err)
+	}
+}
+
 func TestAdapterCanonicalizesCommonGitDirFromSymlinkedCheckout(t *testing.T) {
 	repository := testutil.NewGitRepository(t)
 	repository.CommitFile("readme.txt", "initial\n", "initial")

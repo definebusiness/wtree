@@ -51,6 +51,19 @@ func TestResolveMountRejectsUnsafeMounts(t *testing.T) {
 	}
 }
 
+func TestValidateMountPreservesLegacyRuntimeForms(t *testing.T) {
+	for _, mount := range []string{`services\api`, "aux", "NUL.txt", "services/../api"} {
+		if err := pathutil.ValidateMount(mount, false); err != nil {
+			t.Errorf("ValidateMount(%q) error = %v, want legacy acceptance", mount, err)
+		}
+	}
+	workspaceRoot := t.TempDir()
+	resolved, err := pathutil.ResolveMount(workspaceRoot, workspaceRoot, `services\api`, false)
+	if err != nil || resolved != filepath.Join(workspaceRoot, "services", "api") {
+		t.Fatalf("ResolveMount(backslash) = %q, %v", resolved, err)
+	}
+}
+
 func TestCheckResolvedWithinRejectsSymlinkEscape(t *testing.T) {
 	workspaceRoot := t.TempDir()
 	outside := t.TempDir()

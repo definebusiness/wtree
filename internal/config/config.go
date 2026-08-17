@@ -13,27 +13,41 @@ import (
 const Version = 1
 
 type Project struct {
-	ID   string `yaml:"id"`
-	Name string `yaml:"name"`
+	ID   string `yaml:"id" json:"id"`
+	Name string `yaml:"name" json:"name"`
 }
 type Repository struct {
-	Source        string `yaml:"source"`
-	Parent        string `yaml:"parent"`
-	DefaultMount  string `yaml:"mount"`
-	DefaultBranch string `yaml:"default_branch"`
+	Source        string `yaml:"source" json:"source"`
+	Parent        string `yaml:"parent" json:"parent"`
+	DefaultMount  string `yaml:"mount" json:"mount"`
+	DefaultBranch string `yaml:"default_branch" json:"defaultBranch"`
 }
 type Worktrees struct {
-	Root string `yaml:"root"`
+	Root string `yaml:"root" json:"root"`
 }
 type Discovery struct {
-	Ignore []string `yaml:"ignore,omitempty"`
+	Ignore []string `yaml:"ignore,omitempty" json:"ignore,omitempty"`
 }
+
+// ManifestMetadata records the portable manifest associated with a local
+// project configuration. It is intentionally optional so existing v1 local
+// configurations remain valid.
+type ManifestMetadata struct {
+	Path   string `yaml:"path" json:"path"`
+	Source string `yaml:"source" json:"source"`
+}
+
+func (metadata ManifestMetadata) IsZero() bool {
+	return metadata.Path == "" && metadata.Source == ""
+}
+
 type ProjectConfig struct {
-	Version      int                   `yaml:"version"`
-	Project      Project               `yaml:"project"`
-	Repositories map[string]Repository `yaml:"repositories"`
-	Worktrees    Worktrees             `yaml:"worktrees"`
-	Discovery    Discovery             `yaml:"discovery,omitempty"`
+	Version      int                   `yaml:"version" json:"version"`
+	Project      Project               `yaml:"project" json:"project"`
+	Repositories map[string]Repository `yaml:"repositories" json:"repositories"`
+	Worktrees    Worktrees             `yaml:"worktrees" json:"worktrees"`
+	Discovery    Discovery             `yaml:"discovery,omitempty" json:"discovery,omitempty"`
+	Manifest     ManifestMetadata      `yaml:"manifest,omitempty" json:"manifest,omitempty"`
 }
 type GlobalConfig struct {
 	Version   int       `yaml:"version"`
@@ -47,6 +61,9 @@ func LoadProject(data []byte) (ProjectConfig, error) {
 	}
 	if config.Version != Version {
 		return ProjectConfig{}, fmt.Errorf("unsupported project config version %d", config.Version)
+	}
+	if err := ValidateManifestMetadata(config.Manifest); err != nil {
+		return ProjectConfig{}, err
 	}
 	return config, nil
 }

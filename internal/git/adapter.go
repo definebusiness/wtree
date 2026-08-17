@@ -24,6 +24,7 @@ type Git interface {
 	Status(context.Context, string) (Status, error)
 	IsClean(context.Context, string) (bool, error)
 	IsIgnoredAt(context.Context, string, string, string) (bool, error)
+	IsIgnoredWorkingTree(context.Context, string, string) (bool, error)
 	BranchExists(context.Context, string, string) (bool, error)
 	BranchMerged(context.Context, string, string) (bool, error)
 	BranchCheckedOut(context.Context, string, string) (bool, error)
@@ -35,6 +36,16 @@ type Git interface {
 	WorktreeRepair(context.Context, string) error
 	HasSubmodules(context.Context, string) (bool, error)
 	AheadBehind(context.Context, string) (ahead, behind int, upstream bool, err error)
+	Upstream(context.Context, string) (Upstream, error)
+	PublishedUpstream(context.Context, string) (Upstream, error)
+	PublishedRepositoryFacts(context.Context, string) (PublishedRepositoryFacts, error)
+	AdvertisedCommit(context.Context, string, string) (string, error)
+	InitialCommits(context.Context, string, string) ([]string, error)
+	ContainsCommits(context.Context, string, []string) (bool, error)
+	TrackedFile(context.Context, string, string, string) ([]byte, error)
+	Clone(context.Context, string, string, string) error
+	FetchCommit(context.Context, string, string, string) error
+	CheckoutTrackingBranch(context.Context, string, string, string, string, string) error
 }
 
 // Adapter invokes Git only through locale-neutral, non-interactive subprocesses.
@@ -208,12 +219,72 @@ func (a *Adapter) IsIgnoredAt(ctx context.Context, repository, ref, path string)
 	if !found {
 		return false, fmt.Errorf("parse check-ignore output")
 	}
-	source, _, found := strings.Cut(metadata, ":")
-	if !found {
+	source, parseErr := checkIgnoreSource(metadata)
+	if parseErr != nil {
 		return false, fmt.Errorf("parse check-ignore source")
 	}
-	source = filepath.ToSlash(source)
-	return source == ".gitignore" || strings.HasSuffix(source, "/.gitignore"), nil
+	return isRootGitIgnoreSource(source, worktree), nil
+}
+
+// IsIgnoredWorkingTree reports only a rule sourced from the repository's
+// .gitignore; info/global excludes never qualify authoring output.
+func (a *Adapter) IsIgnoredWorkingTree(ctx context.Context, repository, path string) (bool, error) {
+	output, err := a.runFact(ctx, repository, "check-ignore", "-v", "--no-index", "--", filepath.ToSlash(path)+"/")
+	if err != nil {
+		var gitError *Error
+		if errors.As(err, &gitError) && gitError.ExitCode == 1 {
+			return false, nil
+		}
+		return false, err
+	}
+	metadata, _, found := strings.Cut(strings.TrimSpace(string(output)), "\t")
+	if !found {
+		return false, fmt.Errorf("parse check-ignore output")
+	}
+	source, parseErr := checkIgnoreSource(metadata)
+	if parseErr != nil {
+		return false, fmt.Errorf("parse check-ignore output")
+	}
+	root, rootErr := a.TopLevel(ctx, repository)
+	if rootErr != nil {
+		return false, rootErr
+	}
+	return isRootGitIgnoreSource(source, root), nil
+}
+
+func checkIgnoreSource(metadata string) (string, error) {
+	for index := 0; index < len(metadata); index++ {
+		if metadata[index] != ':' {
+			continue
+		}
+		end := index + 1
+		for end < len(metadata) && metadata[end] >= '0' && metadata[end] <= '9' {
+			end++
+		}
+		if end > index+1 && end < len(metadata) && metadata[end] == ':' {
+			return metadata[:index], nil
+		}
+	}
+	return "", fmt.Errorf("missing ignore source")
+}
+
+func isRootGitIgnoreSource(source, root string) bool {
+	source = filepath.Clean(filepath.FromSlash(source))
+	if source == ".gitignore" {
+		return true
+	}
+	if !filepath.IsAbs(source) {
+		return false
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false
+	}
+	canonicalSource, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		return false
+	}
+	return canonicalSource == filepath.Join(canonicalRoot, ".gitignore")
 }
 
 func isMissingObject(err error) bool {
@@ -354,11 +425,18 @@ func (a *Adapter) factEnvironment() []string {
 }
 
 func (a *Adapter) runWithEnvironment(ctx context.Context, repository string, environment []string, args ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, a.binary, append([]string{"-C", repository}, args...)...)
+	commandArgs := append([]string(nil), args...)
+	if repository != "" {
+		commandArgs = append([]string{"-C", repository}, commandArgs...)
+	}
+	command := exec.CommandContext(ctx, a.binary, commandArgs...)
 	command.Env = environment
 	output, err := command.Output()
 	if err == nil {
 		return output, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
 	}
 	stderr := ""
 	exitCode := 1
@@ -367,7 +445,15 @@ func (a *Adapter) runWithEnvironment(ctx context.Context, repository string, env
 		exitCode = exitError.ExitCode()
 		stderr = string(exitError.Stderr)
 	}
-	return nil, &Error{Command: args, Repository: repository, ExitCode: exitCode, Stderr: boundedStderr(stderr)}
+	return nil, &Error{Command: redactGitArguments(args), Repository: repository, ExitCode: exitCode, Stderr: redactGitText(boundedStderr(stderr))}
+}
+
+func redactGitArguments(args []string) []string {
+	redacted := make([]string, len(args))
+	for index, arg := range args {
+		redacted[index] = redactGitText(arg)
+	}
+	return redacted
 }
 
 var _ Git = (*Adapter)(nil)

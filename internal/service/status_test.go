@@ -107,7 +107,7 @@ func TestStatusReconcilesCleanlinessAndStructuralDrift(t *testing.T) {
 		{
 			name: "unknown repository",
 			change: func(t *testing.T, workspace *domain.Workspace, _ testutil.GitRepository, _ testutil.GitRepository, _ string) {
-				other := testutil.NewGitRepository(t)
+				other := testutil.NewPushedGitRepository(t)
 				other.CommitFile("other.txt", "other\n", "other")
 				for index := range workspace.Checkouts {
 					if workspace.Checkouts[index].RepositoryID == "root" {

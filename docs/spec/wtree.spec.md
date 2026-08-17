@@ -10,6 +10,7 @@ Implementation plans:
 Related documents:
 
 - [`wtree` specification traceability](wtree.traceability.md)
+- [Portable manifest clone specification](portable-manifest-clone.md) (implemented command extension)
 
 ## 1. Purpose
 
@@ -3176,3 +3177,17 @@ An implementation plan derived from this specification should explicitly cover:
 - cross-platform behavior
 
 The implementation plan should preferably be split into independently testable milestones, beginning with the domain model and Git abstraction before implementing destructive workspace operations.
+
+---
+
+# 94. Portable Manifest Clone Extension
+
+The portable-manifest extension is specified authoritatively in
+[Portable manifest clone specification](portable-manifest-clone.md). It adds a
+tracked `project.wtree.yml` contract alongside the existing local `.wtree.yml`
+configuration, while preserving the configuration, identity, path-safety,
+preflight, transaction, error, JSON, and non-goal rules in this specification.
+
+The installed command surface includes `clone` for local and HTTP(S) manifest
+sources, read-only planning, verified private staging, and atomic publication.
+`update`, `sync`, and release locking remain future work.

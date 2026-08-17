@@ -16,7 +16,7 @@ import (
 )
 
 func TestExecuteListIncludesDefaultAndCreatedWorkspace(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
@@ -54,7 +54,7 @@ func TestExecuteListIncludesDefaultAndCreatedWorkspace(t *testing.T) {
 }
 
 func TestExecutePathDefaultFromUnmanagedLinkedWorktree(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	data := t.TempDir()
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
@@ -84,9 +84,9 @@ func TestExecutePathDefaultFromUnmanagedLinkedWorktree(t *testing.T) {
 }
 
 func TestExecuteCheckoutRestoresRetainedRenamedMountAndLookupFromNestedCheckout(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")
-	backend := testutil.NewGitRepository(t)
+	backend := testutil.NewPushedGitRepository(t)
 	backend.CommitFile("backend.txt", "backend\n", "backend")
 	backendPath := filepath.Join(root.Path, "backend")
 	if err := os.Rename(backend.Path, backendPath); err != nil {
@@ -94,7 +94,7 @@ func TestExecuteCheckoutRestoresRetainedRenamedMountAndLookupFromNestedCheckout(
 	}
 	backend.Path = backendPath
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	root.CommitFile(".gitignore", "/api/\n", "ignore custom mount")
@@ -143,11 +143,11 @@ func TestExecuteCheckoutRestoresRetainedRenamedMountAndLookupFromNestedCheckout(
 }
 
 func TestExecuteCheckoutOverlayRetainsUnspecifiedMounts(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")
-	backend := testutil.NewGitRepository(t)
+	backend := testutil.NewPushedGitRepository(t)
 	backend.CommitFile("backend.txt", "backend\n", "backend")
-	shared := testutil.NewGitRepository(t)
+	shared := testutil.NewPushedGitRepository(t)
 	shared.CommitFile("shared.txt", "shared\n", "shared")
 	backendPath := filepath.Join(root.Path, "backend")
 	if err := os.Rename(backend.Path, backendPath); err != nil {
@@ -160,7 +160,7 @@ func TestExecuteCheckoutOverlayRetainsUnspecifiedMounts(t *testing.T) {
 	}
 	shared.Path = sharedPath
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	root.CommitFile(".gitignore", "/api/\n/services/\n", "ignore custom backend mounts")
@@ -181,7 +181,7 @@ func TestExecuteCheckoutOverlayRetainsUnspecifiedMounts(t *testing.T) {
 }
 
 func TestExecuteCheckoutAndLookupFailuresDoNotMutate(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
@@ -215,7 +215,7 @@ func TestExecuteCheckoutAndLookupFailuresDoNotMutate(t *testing.T) {
 }
 
 func TestExecuteCheckoutExistingUnmappedBranchCreatesState(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	project.Run(t, "branch", "feature/existing")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
@@ -236,20 +236,20 @@ func TestExecuteCheckoutExistingUnmappedBranchCreatesState(t *testing.T) {
 }
 
 func TestExecuteListIncludesPartialWorkspaceJSON(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")
-	backend := testutil.NewGitRepository(t)
+	backend := testutil.NewPushedGitRepository(t)
 	backend.CommitFile("backend.txt", "backend\n", "backend")
 	backendPath := filepath.Join(root.Path, "backend")
 	if err := os.Rename(backend.Path, backendPath); err != nil {
 		t.Fatal(err)
 	}
 	data := t.TempDir()
-	initialized := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data)
+	initialized := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore")
 	if initialized.Err != nil {
 		t.Fatalf("init = %#v", initialized)
 	}
-	projectID := strings.TrimSpace(strings.TrimPrefix(initialized.Stdout, "initialized "))
+	projectID := strings.Fields(initialized.Stdout)[1]
 	head, err := gitadapter.NewAdapter("git").Head(context.Background(), root.Path)
 	if err != nil {
 		t.Fatal(err)
@@ -279,7 +279,7 @@ func TestExecuteListIncludesPartialWorkspaceJSON(t *testing.T) {
 }
 
 func TestExecuteCheckoutRefusesPersistedPartialDetachedAndDivergentStateWithoutMutation(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	project.Run(t, "branch", "feature/state")
 	data := t.TempDir()
@@ -287,7 +287,7 @@ func TestExecuteCheckoutRefusesPersistedPartialDetachedAndDivergentStateWithoutM
 	if initialized.Err != nil {
 		t.Fatalf("init = %#v", initialized)
 	}
-	projectID := strings.TrimSpace(strings.TrimPrefix(initialized.Stdout, "initialized "))
+	projectID := strings.Fields(initialized.Stdout)[1]
 	head, err := gitadapter.NewAdapter("git").Head(context.Background(), project.Path)
 	if err != nil {
 		t.Fatal(err)

@@ -18,8 +18,8 @@ func TestRootHelpDescribesCommandsConceptsSafetyAndExamples(t *testing.T) {
 	}
 	for _, want := range []string{
 		"USAGE", "GLOBAL OPTIONS", "COMMANDS", "CONCEPTS", "WORKTREE LOCATION", "EXAMPLES", "EXIT CODES",
-		"init", "import", "create", "checkout", "list", "status", "path", "repo", "remove", "delete", "doctor", "config",
-		"project", "workspace", "repository identity", "wtree create feature/login", "wtree <command> --help",
+		"init", "clone", "import", "create", "checkout", "list", "status", "path", "repo", "remove", "delete", "doctor", "config",
+		"project", "workspace", "repository identity", "wtree clone ./project.wtree.yml ./product --dry-run", "wtree create feature/login", "wtree <command> --help",
 	} {
 		if !strings.Contains(result.Stdout, want) {
 			t.Errorf("root help missing %q:\n%s", want, result.Stdout)
@@ -33,7 +33,7 @@ func TestHowToCoversAllTopicsAndCommandGuides(t *testing.T) {
 		t.Fatalf("global how-to = %#v", guide)
 	}
 	for _, want := range []string{
-		"What wtree is", "Clone a published multi-repository project", "Initialize and publish an existing project", "Keep local configuration private", "Refresh the portable manifest from local repositories", "Synchronize a clone from its published manifest", "Preview manifest changes for tools", "Configure worktree storage", "Create a workspace", "Create from HEAD", "Create from another branch/ref", "Override nested repository mounts", "Work inside a workspace", "Resolve workspace paths", "Resolve repository paths", "Inspect status", "Import an existing workspace", "Import renamed nested checkouts", "Remove a workspace", "Restore an existing branch with checkout", "Delete workspace and branches", "Diagnose inconsistencies", "Use --dry-run", "Use --json", "Use wtree from nested directories", "Use --project explicitly", "AI coding agent workflow", "Inspect registered projects", "Prune only a stale registry registration", "Intentionally unregister a project registration", "Important safety semantics",
+		"What wtree is", "Initialize and publish an existing project", "Keep local configuration private", "Configure worktree storage", "Clone a published project", "Preview a clone without changing anything", "Create a workspace", "Create from HEAD", "Create from another branch/ref", "Override nested repository mounts", "Work inside a workspace", "Resolve workspace paths", "Resolve repository paths", "Inspect status", "Import an existing workspace", "Import renamed nested checkouts", "Remove a workspace", "Restore an existing branch with checkout", "Delete workspace and branches", "Diagnose inconsistencies", "Use --dry-run", "Use --json", "Use wtree from nested directories", "Use --project explicitly", "AI coding agent workflow", "Inspect registered projects", "Prune only a stale registry registration", "Intentionally unregister a project registration", "Important safety semantics",
 	} {
 		if !strings.Contains(guide.Stdout, want) {
 			t.Errorf("global how-to missing %q", want)
@@ -44,7 +44,7 @@ func TestHowToCoversAllTopicsAndCommandGuides(t *testing.T) {
 			t.Errorf("global how-to missing workspace jump %q", want)
 		}
 	}
-	for _, command := range []string{"project", "init", "clone", "update", "sync", "create", "import", "remove", "delete", "doctor"} {
+	for _, command := range []string{"project", "init", "clone", "create", "import", "remove", "delete", "doctor"} {
 		result := testutil.RunCommand(t, cli.Execute, command, "--how-to")
 		if result.Err != nil || result.Stderr != "" || !strings.Contains(result.Stdout, "HOW TO: "+command) || !strings.Contains(result.Stdout, "EXAMPLES") {
 			t.Errorf("%s how-to = %#v", command, result)
@@ -68,7 +68,7 @@ func TestHowToIsValidatedTerminalCommand(t *testing.T) {
 }
 
 func TestDetailedCommandHelpAndUnsupportedOptionMatrix(t *testing.T) {
-	for _, command := range []string{"init", "import", "create", "checkout", "list", "status", "path", "repo", "remove", "delete", "doctor", "config"} {
+	for _, command := range []string{"init", "clone", "import", "create", "checkout", "list", "status", "path", "repo", "remove", "delete", "doctor", "config"} {
 		result := testutil.RunCommand(t, cli.Execute, command, "--help")
 		if result.Err != nil || result.Stderr != "" || !strings.Contains(result.Stdout, "USAGE") || !strings.Contains(result.Stdout, "EXAMPLES") || !strings.Contains(result.Stdout, "SAFETY AND OUTPUT") || !strings.Contains(result.Stdout, "EXIT CODES") {
 			t.Errorf("%s help = %#v", command, result)
@@ -112,6 +112,10 @@ func TestHelpAccuratelyDocumentsProjectSelectorAndConfigScopeMarker(t *testing.T
 	if strings.Contains(initHelp.Stdout, "--project") {
 		t.Fatalf("init help advertises rejected --project selector:\n%s", initHelp.Stdout)
 	}
+	cloneHelp := testutil.RunCommand(t, cli.Execute, "clone", "--help")
+	if cloneHelp.Err != nil || strings.Contains(cloneHelp.Stdout, "--project") {
+		t.Fatalf("clone help advertises rejected --project selector: %#v", cloneHelp)
+	}
 
 	configHelp := testutil.RunCommand(t, cli.Execute, "config", "get", "--help")
 	if configHelp.Err != nil {
@@ -132,7 +136,7 @@ func TestHelpAccuratelyDocumentsProjectSelectorAndConfigScopeMarker(t *testing.T
 }
 
 func TestDocumentedConfigProjectFormsExecuteWithTheirStatedSemantics(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("readme", "x\n", "initial")
 	isolateCLIPathEnvironment(t)
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path); result.Err != nil {
@@ -165,7 +169,7 @@ func TestEveryPrintedWTREEExampleParsesAsAnExecutableCommand(t *testing.T) {
 	helpCommands := [][]string{
 		nil,
 		{"project"}, {"project", "list"}, {"project", "prune"}, {"project", "unregister"},
-		{"init"}, {"import"}, {"create"}, {"checkout"}, {"list"}, {"status"}, {"path"},
+		{"init"}, {"clone"}, {"import"}, {"create"}, {"checkout"}, {"list"}, {"status"}, {"path"},
 		{"repo"}, {"repo", "path"}, {"repo", "get"}, {"remove"}, {"delete"}, {"doctor"},
 		{"config"}, {"config", "get"}, {"config", "set"}, {"config", "unset"}, {"config", "list"},
 	}
@@ -196,7 +200,7 @@ func TestEveryPrintedWTREEExampleParsesAsAnExecutableCommand(t *testing.T) {
 }
 
 func TestVerboseProgressNeverLeaksEnvironmentValues(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {

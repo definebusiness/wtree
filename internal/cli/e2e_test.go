@@ -22,9 +22,9 @@ import (
 // This black-box command test uses real nested repositories through the public
 // Execute boundary and validates the normal lifecycle without package internals.
 func TestEndToEndNestedWorkspaceLifecycle(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")
-	backend := testutil.NewGitRepository(t)
+	backend := testutil.NewPushedGitRepository(t)
 	backend.CommitFile("backend.txt", "backend\n", "backend")
 	backendPath := filepath.Join(root.Path, "backend")
 	if err := os.Rename(backend.Path, backendPath); err != nil {
@@ -32,8 +32,8 @@ func TestEndToEndNestedWorkspaceLifecycle(t *testing.T) {
 	}
 	backend.Path = backendPath
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
-		t.Fatalf("init = %#v", result)
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
+		t.Fatalf("init error = %v", result.Err)
 	}
 	root.CommitFile(".gitignore", "/api/\n", "ignore custom mount")
 	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", root.Path, "feature/e2e", "--data-dir", data, "--path", target, "--mount", "backend=api"); result.Err != nil {
@@ -83,10 +83,10 @@ func TestEndToEndNestedWorkspaceLifecycle(t *testing.T) {
 }
 
 func TestEndToEndImportWorkflow(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "imported")
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	root.Run(t, "branch", "feature/import")
@@ -102,9 +102,9 @@ func TestEndToEndImportWorkflow(t *testing.T) {
 }
 
 func TestEndToEndImportMapsRenamedNestedCheckoutByIdentity(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")
-	backend := testutil.NewGitRepository(t)
+	backend := testutil.NewPushedGitRepository(t)
 	backend.CommitFile("backend.txt", "backend\n", "backend")
 	backendPath := filepath.Join(root.Path, "backend")
 	if err := os.Rename(backend.Path, backendPath); err != nil {
@@ -112,7 +112,7 @@ func TestEndToEndImportMapsRenamedNestedCheckoutByIdentity(t *testing.T) {
 	}
 	backend.Path = backendPath
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "external")
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	root.Run(t, "branch", "feature/import")
@@ -134,16 +134,16 @@ func TestEndToEndImportMapsRenamedNestedCheckoutByIdentity(t *testing.T) {
 }
 
 func TestEndToEndCreateRollbackIncompleteWritesRecovery(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")
-	backend := testutil.NewGitRepository(t)
+	backend := testutil.NewPushedGitRepository(t)
 	backend.CommitFile("backend.txt", "backend\n", "backend")
 	backendPath := filepath.Join(root.Path, "backend")
 	if err := os.Rename(backend.Path, backendPath); err != nil {
 		t.Fatal(err)
 	}
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "rollback")
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	realGit, err := exec.LookPath("git")
@@ -217,7 +217,7 @@ func main() {
 }
 
 func TestEndToEndDoctorSurfacesRecoveryRecordWithoutMutatingState(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "recovery")
 	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {

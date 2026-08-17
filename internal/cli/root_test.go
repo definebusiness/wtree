@@ -34,16 +34,16 @@ func TestExecuteVersion(t *testing.T) {
 }
 
 func TestExecuteCreateDryRunRendersDeterministicJSONPlanWithoutMutation(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
-	backend := testutil.NewGitRepository(t)
+	backend := testutil.NewPushedGitRepository(t)
 	backend.CommitFile("backend.txt", "backend\n", "backend")
 	backendPath := filepath.Join(project.Path, "backend")
 	if err := os.Rename(backend.Path, backendPath); err != nil {
 		t.Fatal(err)
 	}
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
-	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	project.CommitFile(".gitignore", "/api/\n", "ignore custom mount")
@@ -76,7 +76,7 @@ func TestExecuteCreateDryRunRendersDeterministicJSONPlanWithoutMutation(t *testi
 }
 
 func TestExecuteCreateCreatesBranchWorktreeAndState(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
@@ -94,7 +94,7 @@ func TestExecuteCreateCreatesBranchWorktreeAndState(t *testing.T) {
 }
 
 func TestExecuteCreateFromJSONVerboseAndForceContracts(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("first.txt", "first\n", "first")
 	project.CommitFile("second.txt", "second\n", "second")
 	data := t.TempDir()
@@ -131,7 +131,7 @@ func TestExecuteCreateFromJSONVerboseAndForceContracts(t *testing.T) {
 }
 
 func TestExecuteCreateVerboseHumanOutput(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
@@ -144,7 +144,7 @@ func TestExecuteCreateVerboseHumanOutput(t *testing.T) {
 }
 
 func TestExecuteContextCancellationStopsCreateBeforeMutation(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
@@ -167,7 +167,7 @@ func TestExecuteContextCancellationStopsCreateBeforeMutation(t *testing.T) {
 }
 
 func TestExecuteCreateDryRunRejectsGitInvalidBranchNames(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	data := t.TempDir()
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
@@ -191,7 +191,7 @@ func TestExecuteCreateDryRunRejectsGitInvalidBranchNames(t *testing.T) {
 }
 
 func TestExecuteCheckoutDryRunAndRejectsUnsupportedFrom(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
@@ -209,11 +209,11 @@ func TestExecuteCheckoutDryRunAndRejectsUnsupportedFrom(t *testing.T) {
 }
 
 func TestExecuteCreateDryRunAppliesRepeatedMountsToNestedRepositories(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")
-	backend := testutil.NewGitRepository(t)
+	backend := testutil.NewPushedGitRepository(t)
 	backend.CommitFile("backend.txt", "backend\n", "backend")
-	shared := testutil.NewGitRepository(t)
+	shared := testutil.NewPushedGitRepository(t)
 	shared.CommitFile("shared.txt", "shared\n", "shared")
 	backendPath := filepath.Join(root.Path, "backend")
 	if err := os.Rename(backend.Path, backendPath); err != nil {
@@ -223,7 +223,7 @@ func TestExecuteCreateDryRunAppliesRepeatedMountsToNestedRepositories(t *testing
 		t.Fatal(err)
 	}
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	root.CommitFile(".gitignore", "/api/\n", "ignore custom backend mount")
@@ -250,7 +250,7 @@ func TestExecuteCreateDryRunAppliesRepeatedMountsToNestedRepositories(t *testing
 }
 
 func TestExecuteInitDryRunJSON(t *testing.T) {
-	repository := testutil.NewGitRepository(t)
+	repository := testutil.NewPushedGitRepository(t)
 	repository.CommitFile("readme", "x\n", "initial")
 	result := testutil.RunCommand(t, cli.Execute, "init", repository.Path, "--data-dir", t.TempDir(), "--dry-run", "--json")
 	if result.Err != nil {
@@ -264,7 +264,7 @@ func TestExecuteInitDryRunJSON(t *testing.T) {
 func TestExecuteInitRejectsRegisteredMissingConfigUntilExplicitRegistryCleanup(t *testing.T) {
 	for _, operation := range []string{"prune", "unregister"} {
 		t.Run(operation, func(t *testing.T) {
-			repository := testutil.NewGitRepository(t)
+			repository := testutil.NewPushedGitRepository(t)
 			repository.CommitFile("readme", "x\n", "initial")
 			data := t.TempDir()
 			if result := testutil.RunCommand(t, cli.Execute, "init", repository.Path, "--data-dir", data); result.Err != nil {
@@ -321,7 +321,7 @@ func TestExecuteInitRejectsRegisteredMissingConfigUntilExplicitRegistryCleanup(t
 }
 
 func TestExecuteInitRejectsRootProjectSelector(t *testing.T) {
-	repository := testutil.NewGitRepository(t)
+	repository := testutil.NewPushedGitRepository(t)
 	repository.CommitFile("readme", "x\n", "initial")
 	for _, arguments := range [][]string{
 		{"init", "--project", repository.Path, repository.Path},
@@ -341,7 +341,7 @@ func TestExecuteInitRejectsRootProjectSelector(t *testing.T) {
 }
 
 func TestInspectionAndDryRunPlansDoNotReconcileStaleRegistry(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
@@ -400,7 +400,7 @@ func TestInspectionAndDryRunPlansDoNotReconcileStaleRegistry(t *testing.T) {
 }
 
 func TestCreateReconcilesOnlyAfterSuccessfulPreflight(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	data := t.TempDir()
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
@@ -510,7 +510,7 @@ func TestExecuteInitPreflightErrorUsesOnlyTheJSONEnvelope(t *testing.T) {
 }
 
 func TestExecuteInitUsesEnvironmentDataHome(t *testing.T) {
-	repository := testutil.NewGitRepository(t)
+	repository := testutil.NewPushedGitRepository(t)
 	repository.CommitFile("readme", "x\n", "initial")
 	home, data := t.TempDir(), t.TempDir()
 	t.Setenv("HOME", home)

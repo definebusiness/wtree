@@ -438,7 +438,7 @@ Every milestone must satisfy all applicable items below before approval:
 
 ## Milestones
 
-### [ ] M00 — Specify and validate portable/local manifest contracts
+### [x] M00 — Specify and validate portable/local manifest contracts
 
 Specification coverage: portable manifest clone specification §§2–4 and 10.
 
@@ -490,7 +490,7 @@ Exit criteria: the portable/local schemas and compatibility policy are
 authoritative, strict, deterministic, fuzz-safe, and independently reviewable;
 no current CLI behavior has changed.
 
-### [ ] M01 — Establish Git upstream, identity, and clone operations
+### [x] M01 — Establish Git upstream, identity, and clone operations
 
 Specification coverage: portable manifest clone specification §§3–4 and 7–9.
 
@@ -541,7 +541,7 @@ Exit criteria: init and clone can consume one complete typed, hermetic Git
 boundary for upstream discovery, remote preflight, cloning, configuration, and
 identity verification; no service or CLI directly parses Git output.
 
-### [ ] M02 — Publish portable manifests transactionally from `init`
+### [x] M02 — Publish portable manifests transactionally from `init`
 
 Specification coverage: portable manifest clone specification §§2–4.
 
@@ -590,7 +590,7 @@ Exit criteria: one `wtree init` safely and deterministically publishes a
 reviewable portable manifest plus compatible local state from verified pushed
 repositories, with full dry-run and rollback evidence.
 
-### [ ] M03 — Build bounded manifest loading and immutable clone planning
+### [x] M03 — Build bounded manifest loading and immutable clone planning
 
 Specification coverage: portable manifest clone specification §§5–7.
 
@@ -641,7 +641,7 @@ Exit criteria: local and HTTP(S) sources produce one fully validated,
 deterministic clone plan; every unsafe/unavailable input fails read-only; the
 executor needs no raw CLI or unvalidated manifest decisions.
 
-### [ ] M04 — Execute clone through private staging and atomic publication
+### [x] M04 — Execute clone through private staging and atomic publication
 
 Specification coverage: portable manifest clone specification §§8–10.
 
@@ -698,7 +698,7 @@ Exit criteria: the service can materialize and register a complete verified
 multi-repository project transactionally from an immutable plan, and every
 effect/failure/cancellation/concurrency boundary has safety evidence.
 
-### [ ] M05 — Expose `wtree clone` and align public documentation
+### [x] M05 — Expose `wtree clone` and align public documentation
 
 Specification coverage: portable manifest clone specification §§1 and 5–10.
 
@@ -750,7 +750,7 @@ workflow; all examples work; cloned projects are immediately usable by current
 commands; deferred commands are no longer advertised as implemented; and all
 prior milestones remain green.
 
-### [ ] M06 — Perform final portability, security, and acceptance review
+### [x] M06 — Perform final portability, security, and acceptance review
 
 Specification coverage: the complete portable manifest clone specification
 and completed clone traceability mapping.
@@ -809,3 +809,10 @@ Append entries during execution; do not rewrite earlier evidence.
 
 | Date | Milestone | Verification | Review | Commit |
 |---|---|---|---|---|
+| 2026-08-16 | M00 | Focused config/domain/path tests, focused race, 5-second config fuzz, vet, full tests, full race, `make check`, and release-build passed. M00-scoped whitespace check passed; global whitespace check was obstructed only by preserved unrelated `docs/ideas/workflow/final-reviewer.md`. | Approved by normal reviewer after user-authorized R1/R6 remediation; R1–R6 resolved with no material findings. | Not committed (not authorized). |
+| 2026-08-16 | M01 | Focused Git/testutil tests and race, vet, full tests, full race, `make check`, and release-build passed. M01-scoped whitespace passed; global whitespace retained only the unrelated idea-file obstruction. | Approved by normal reviewer after R1–R3 remediation for hook suppression, optional-lock remote facts, and complete adversarial coverage. | Not committed (not authorized). |
+| 2026-08-16 | M02 | Plan-focused init/manifest tests and race, repeated rollback injection, Windows cross-build, diff checks, vet, uncached full tests, uncached full race, `make check`, and release-build passed. Main post-approval verification repeated focused/race, diff, vet, release, full/full-race, and `make check` successfully. | Approved by normal reviewer after R1–R7 remediation, including exact owned-ignore source attribution, umask-aware creation, durable modes, and deterministic rename-boundary rollback. | Not committed (not authorized). |
+| 2026-08-16 | M03 | Exact/expanded/repeated focused normal/race, scoped whitespace, vet, uncached full/full-race, `make check`, release-build, and Windows cross-build passed. Main post-approval verification repeated focused/race, scoped whitespace, vet, release, full/full-race, and `make check`; global whitespace remained obstructed only by unrelated `docs/ideas/bugs.md`. | Approved by normal reviewer after R1–R5 remediation for ancestor safety, self-contained ignore actions, genuine plan-result outcomes, stable registry generations, and bounded remote diagnostics. | Not committed (not authorized). |
+| 2026-08-16 | M04 | Exact/expanded focused normal/race, repeated adversarial race, scoped whitespace, vet, uncached full/full-race, `make check`, release-build, and Windows cross-build passed. Main post-approval verification repeated focused/race, scoped whitespace, vet, release, full/full-race, and `make check`; global whitespace remained obstructed only by unrelated `docs/ideas/bugs.md`. | Approved by normal reviewer after R1–R6 remediation for identity-bound store rollback, staging publication, complete cleanup refusal, exact config/recovery collision handling, and terminal progress semantics. | Not committed (not authorized). |
+| 2026-08-17 | M05 | Public CLI/help/how-to/docs/local+HTTP E2E and M04 root-metadata remediation focused normal/race passed. Clean full normal/race, vet, `make check`, release build, and Windows AMD64 cross-build passed; global whitespace remained obstructed only by unrelated `docs/ideas/bugs.md`. | Approved by normal reviewer after M05-R1 remediation: atomic rename is a path transition only; real post-rename root mutation yields rollback-incomplete and retained destination. | Not committed (not authorized). |
+| 2026-08-17 | M06 | Clean-room acceptance, adversarial transaction/credential/portability review, full normal/race, vet, check, release, fuzz smoke, and Windows AMD64 evidence passed. | Approved after reset M06-R1 review: both pre- and post-capture replacements retain attacker bytes and report rollback-incomplete; R3/R4 remain resolved. | Not committed (not authorized). |

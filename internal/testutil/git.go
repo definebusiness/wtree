@@ -23,6 +23,35 @@ func NewGitRepository(t testing.TB) GitRepository {
 	return GitRepository{Path: path}
 }
 
+// PushedGitRepository is an explicit fixture for consumers that require a
+// configured, published upstream. Ordinary GitRepository behavior stays local.
+type PushedGitRepository struct{ GitRepository }
+
+func NewPushedGitRepository(t testing.TB) PushedGitRepository {
+	t.Helper()
+	repository := NewGitRepository(t)
+	remote := NewBareGitRemote(t)
+	repository.Run(t, "remote", "add", "origin", remote)
+	return PushedGitRepository{repository}
+}
+
+func (r PushedGitRepository) CommitFile(name, contents, message string) {
+	r.GitRepository.CommitFile(name, contents, message)
+	r.RunPanic("push", "-u", "origin", "main")
+}
+
+func (r GitRepository) RunPanic(args ...string) { runGitPanic(r.Path, args...) }
+
+// NewBareGitRemote creates an isolated bare remote for clone and advertised
+// reference tests. It shares the fixture's no-network, no-user-config setup.
+func NewBareGitRemote(t testing.TB) string {
+	t.Helper()
+	parent := t.TempDir()
+	path := filepath.Join(parent, "remote.git")
+	runGit(t, parent, "init", "--bare", path)
+	return path
+}
+
 // CommitFile writes and commits one fixture file.
 func (r GitRepository) CommitFile(name, contents, message string) {
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(r.Path, name)), 0o755); err != nil {

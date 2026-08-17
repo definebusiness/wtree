@@ -308,9 +308,9 @@ func runConcurrentCreates(project domain.Project, first, second service.Workspac
 
 func createFixture(t *testing.T) (domain.Project, testutil.GitRepository, testutil.GitRepository, string) {
 	t.Helper()
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")
-	backend := testutil.NewGitRepository(t)
+	backend := testutil.NewPushedGitRepository(t)
 	backend.CommitFile("backend.txt", "backend\n", "backend")
 	backendPath := filepath.Join(root.Path, "backend")
 	if err := os.Rename(backend.Path, backendPath); err != nil {
@@ -318,7 +318,7 @@ func createFixture(t *testing.T) (domain.Project, testutil.GitRepository, testut
 	}
 	backend.Path = backendPath
 	data := t.TempDir()
-	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data}); err != nil {
+	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	root.CommitFile(".gitignore", "/api/\n/api space/\n", "ignore custom mounts")
@@ -326,16 +326,16 @@ func createFixture(t *testing.T) (domain.Project, testutil.GitRepository, testut
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	return resolution.Project, root, backend, data
+	return resolution.Project, root.GitRepository, backend.GitRepository, data
 }
 
 func createThreeLevelFixture(t *testing.T) (domain.Project, testutil.GitRepository, testutil.GitRepository, testutil.GitRepository, string) {
 	t.Helper()
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")
-	backend := testutil.NewGitRepository(t)
+	backend := testutil.NewPushedGitRepository(t)
 	backend.CommitFile("backend.txt", "backend\n", "backend")
-	shared := testutil.NewGitRepository(t)
+	shared := testutil.NewPushedGitRepository(t)
 	shared.CommitFile("shared.txt", "shared\n", "shared")
 	backendPath := filepath.Join(root.Path, "backend")
 	if err := os.Rename(backend.Path, backendPath); err != nil {
@@ -347,7 +347,7 @@ func createThreeLevelFixture(t *testing.T) (domain.Project, testutil.GitReposito
 	}
 	backend.Path, shared.Path = backendPath, sharedPath
 	data := t.TempDir()
-	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data}); err != nil {
+	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	root.CommitFile(".gitignore", "/api/\n", "ignore custom backend mount")
@@ -356,7 +356,7 @@ func createThreeLevelFixture(t *testing.T) (domain.Project, testutil.GitReposito
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	return resolution.Project, root, backend, shared, data
+	return resolution.Project, root.GitRepository, backend.GitRepository, shared.GitRepository, data
 }
 
 type failingCreateGit struct {

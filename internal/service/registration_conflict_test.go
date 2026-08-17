@@ -40,7 +40,7 @@ func TestRegistrationConflictIDsCanonicalizePathsAndKeepIdentityCaseExact(t *tes
 }
 
 func TestInitializerRejectsExistingRegistrationBeforePublishing(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
 	first, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data})
@@ -73,7 +73,7 @@ func TestInitializerRejectsExistingRegistrationBeforePublishing(t *testing.T) {
 }
 
 func TestInitializerReportsSortedPathAndIdentityConflictsWithoutArtifacts(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
 	common, err := gitadapter.NewAdapter("git").CommonGitDir(context.Background(), root.Path)
@@ -117,7 +117,7 @@ func TestInitializerReportsSortedPathAndIdentityConflictsWithoutArtifacts(t *tes
 }
 
 func TestInitializerRejectsIdentityOnlyRegistrationConflict(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
 	common, err := gitadapter.NewAdapter("git").CommonGitDir(context.Background(), root.Path)

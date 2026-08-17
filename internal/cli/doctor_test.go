@@ -12,7 +12,7 @@ import (
 )
 
 func TestExecuteDoctorJSONIsReadOnlyAndSupportsFixDryRun(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	data := t.TempDir()
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
@@ -60,7 +60,7 @@ func TestExecuteDoctorReadOnlyResolutionPreservesMovedRegistry(t *testing.T) {
 		}},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			project := testutil.NewGitRepository(t)
+			project := testutil.NewPushedGitRepository(t)
 			project.CommitFile("root.txt", "root\n", "root")
 			data := t.TempDir()
 			if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {

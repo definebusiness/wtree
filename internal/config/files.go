@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/definebusiness/wtree/internal/fsutil"
 	"gopkg.in/yaml.v3"
@@ -43,6 +42,9 @@ func WriteProjectFile(path string, value ProjectConfig) error {
 	if value.Version != Version {
 		return fmt.Errorf("unsupported project config version %d", value.Version)
 	}
+	if err := ValidateManifestMetadata(value.Manifest); err != nil {
+		return err
+	}
 	return writeYAML(path, value)
 }
 
@@ -51,46 +53,7 @@ func writeYAML(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	directory := filepath.Dir(path)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(directory, "."+filepath.Base(path)+"-*")
-	if err != nil {
-		return err
-	}
-	temporaryName := temporary.Name()
-	defer os.Remove(temporaryName)
-	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
-		return err
-	}
-	if _, err := temporary.Write(data); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := fsutil.Sync(temporary); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	if err := configAtomicHook("before-rename"); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryName, path); err != nil {
-		return err
-	}
-	if err := configAtomicHook("dir-sync"); err != nil {
-		return err
-	}
-	directoryHandle, err := os.Open(directory)
-	if err != nil {
-		return err
-	}
-	defer directoryHandle.Close()
-	return fsutil.Sync(directoryHandle)
+	return fsutil.WriteFileAtomicModeWithHook(path, data, 0o600, configAtomicHook)
 }
 
 func configAtomicHook(step string) error {

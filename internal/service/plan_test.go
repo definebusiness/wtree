@@ -19,16 +19,16 @@ import (
 )
 
 func TestWorkspacePlannerBuildsParentFirstCreatePlanWithIndependentHEADBases(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")
-	backend := testutil.NewGitRepository(t)
+	backend := testutil.NewPushedGitRepository(t)
 	backend.CommitFile("backend.txt", "backend\n", "backend")
 	backendPath := filepath.Join(root.Path, "backend")
 	if err := os.Rename(backend.Path, backendPath); err != nil {
 		t.Fatal(err)
 	}
 	data := t.TempDir()
-	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data}); err != nil {
+	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true}); err != nil {
 		t.Fatal(err)
 	}
 	root.CommitFile(".gitignore", "/api/\n", "ignore custom mount")
@@ -302,23 +302,23 @@ func TestWorkspacePlannerClassifiesBranchValidationRepositoryFailureAsGitError(t
 
 func plannerFixture(t *testing.T) (domain.Project, testutil.GitRepository, testutil.GitRepository, string) {
 	t.Helper()
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")
-	backend := testutil.NewGitRepository(t)
+	backend := testutil.NewPushedGitRepository(t)
 	backend.CommitFile("backend.txt", "backend\n", "backend")
 	if err := os.Rename(backend.Path, filepath.Join(root.Path, "backend")); err != nil {
 		t.Fatal(err)
 	}
 	backend.Path = filepath.Join(root.Path, "backend")
 	data := t.TempDir()
-	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data}); err != nil {
+	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true}); err != nil {
 		t.Fatal(err)
 	}
 	resolution, err := service.NewResolver().Resolve(context.Background(), service.ResolveRequest{Path: root.Path, DataDir: data})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return resolution.Project, root, backend, data
+	return resolution.Project, root.GitRepository, backend.GitRepository, data
 }
 
 func gitBranchExists(repository testutil.GitRepository, branch string) (bool, error) {

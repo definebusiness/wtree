@@ -164,7 +164,7 @@ func TestWorkspaceRemoverRefusesManualMissingOrUnregisteredCheckoutWithoutRepair
 }
 
 func TestWorkspaceRemoverRefusesPresentButUnregisteredCheckoutWithoutRepair(t *testing.T) {
-	source := testutil.NewGitRepository(t)
+	source := testutil.NewPushedGitRepository(t)
 	source.CommitFile("root.txt", "root\n", "root")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
 	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: source.Path, DataDir: data}); err != nil {

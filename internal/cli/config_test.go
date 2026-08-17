@@ -60,7 +60,7 @@ func TestExecuteConfigSetAndGetJSON(t *testing.T) {
 }
 
 func TestExecuteConfigProjectScopeUsesRootProjectSelector(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("readme", "x\n", "initial")
 	isolateCLIPathEnvironment(t)
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path); result.Err != nil {
@@ -92,7 +92,7 @@ func TestExecuteConfigProjectScopeUsesRootProjectSelector(t *testing.T) {
 }
 
 func TestExecuteConfigUnsetFallsBackAndListReportsEffectiveSource(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("readme", "x\n", "initial")
 	isolateCLIPathEnvironment(t)
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path); result.Err != nil {

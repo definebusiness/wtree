@@ -12,7 +12,7 @@ import (
 )
 
 func TestExecuteDeleteDryRunJSONDoesNotMutate(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
@@ -43,7 +43,7 @@ func TestExecuteDeleteDryRunJSONDoesNotMutate(t *testing.T) {
 }
 
 func TestExecuteDeleteForceReportsDirtyAndUnmergedOverridesJSON(t *testing.T) {
-	project := testutil.NewGitRepository(t)
+	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {

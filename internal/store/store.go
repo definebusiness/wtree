@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/definebusiness/wtree/internal/fsutil"
 )
@@ -57,11 +56,14 @@ type RollbackFailure struct {
 }
 
 func WriteWorkspace(path string, value WorkspaceState) error {
+	return WriteWorkspaceCAS(path, value, nil)
+}
+func WriteWorkspaceCAS(path string, value WorkspaceState, compare func() error) error {
 	data, err := WorkspaceBytes(value)
 	if err != nil {
 		return err
 	}
-	return writeBytes(path, data)
+	return writeBytesCAS(path, data, compare)
 }
 
 // WorkspaceBytes returns the exact v1 JSON representation used by
@@ -94,6 +96,18 @@ func ReadWorkspace(path string) (WorkspaceState, error) {
 	return value, err
 }
 
+// DecodeWorkspace strictly decodes one already captured workspace generation.
+func DecodeWorkspace(data []byte) (WorkspaceState, error) {
+	var value WorkspaceState
+	if err := decode(data, &value); err != nil {
+		return WorkspaceState{}, err
+	}
+	if value.Version != Version {
+		return WorkspaceState{}, fmt.Errorf("unsupported workspace version %d", value.Version)
+	}
+	return value, nil
+}
+
 // MigrateWorkspace is the explicit migration boundary. Version one currently needs no rewrite.
 func MigrateWorkspace(value WorkspaceState) (WorkspaceState, error) {
 	if value.Version != Version {
@@ -114,13 +128,31 @@ func MigrateRecovery(value RecoveryRecord) (RecoveryRecord, error) {
 	return value, nil
 }
 func WriteRegistry(path string, value Registry) error {
+	return WriteRegistryCAS(path, value, nil)
+}
+func WriteRegistryCAS(path string, value Registry, compare func() error) error {
+	data, err := RegistryBytes(value)
+	if err != nil {
+		return err
+	}
+	return writeBytesCAS(path, data, compare)
+}
+
+// RegistryBytes returns the exact v1 JSON representation used by
+// WriteRegistry. Transaction coordinators use it to distinguish their own
+// attempted publication from a concurrent writer before restoring anything.
+func RegistryBytes(value Registry) ([]byte, error) {
 	if value.Version == 0 {
 		value.Version = Version
 	}
 	if value.Version != Version {
-		return fmt.Errorf("unsupported registry version %d", value.Version)
+		return nil, fmt.Errorf("unsupported registry version %d", value.Version)
 	}
-	return write(path, value)
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
 }
 func ReadRegistry(path string) (Registry, error) {
 	var value Registry
@@ -130,14 +162,44 @@ func ReadRegistry(path string) (Registry, error) {
 	}
 	return value, err
 }
+
+// DecodeRegistry strictly decodes one already captured registry generation.
+// Read-only planners use it to keep the parsed facts and their byte digest
+// from the same filesystem observation during concurrent changes.
+func DecodeRegistry(data []byte) (Registry, error) {
+	var value Registry
+	if err := decode(data, &value); err != nil {
+		return Registry{}, err
+	}
+	if value.Version != Version {
+		return Registry{}, fmt.Errorf("unsupported registry version %d", value.Version)
+	}
+	return value, nil
+}
 func WriteRecovery(path string, value RecoveryRecord) error {
+	return WriteRecoveryCAS(path, value, nil)
+}
+func WriteRecoveryCAS(path string, value RecoveryRecord, compare func() error) error {
+	data, err := RecoveryBytes(value)
+	if err != nil {
+		return err
+	}
+	return writeBytesCAS(path, data, compare)
+}
+
+// RecoveryBytes returns the exact v1 JSON representation used by WriteRecovery.
+func RecoveryBytes(value RecoveryRecord) ([]byte, error) {
 	if value.Version == 0 {
 		value.Version = Version
 	}
 	if value.Version != Version {
-		return fmt.Errorf("unsupported recovery version %d", value.Version)
+		return nil, fmt.Errorf("unsupported recovery version %d", value.Version)
 	}
-	return write(path, value)
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
 }
 func ReadRecovery(path string) (RecoveryRecord, error) {
 	var value RecoveryRecord
@@ -146,6 +208,18 @@ func ReadRecovery(path string) (RecoveryRecord, error) {
 		err = fmt.Errorf("unsupported recovery version %d", value.Version)
 	}
 	return value, err
+}
+
+// DecodeRecovery strictly decodes one already captured recovery generation.
+func DecodeRecovery(data []byte) (RecoveryRecord, error) {
+	var value RecoveryRecord
+	if err := decode(data, &value); err != nil {
+		return RecoveryRecord{}, err
+	}
+	if value.Version != Version {
+		return RecoveryRecord{}, fmt.Errorf("unsupported recovery version %d", value.Version)
+	}
+	return value, nil
 }
 
 func write(path string, value any) error {
@@ -158,57 +232,18 @@ func write(path string, value any) error {
 }
 
 func writeBytes(path string, data []byte) error {
-	directory := filepath.Dir(path)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(directory, "."+filepath.Base(path)+"-*")
-	if err != nil {
-		return err
-	}
-	temporaryName := temporary.Name()
-	defer os.Remove(temporaryName)
-	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
-		return err
-	}
-	if _, err := temporary.Write(data); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := atomicHook("write"); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := fsutil.Sync(temporary); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := atomicHook("sync"); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	if err := atomicHook("close"); err != nil {
-		return err
-	}
-	if err := atomicHook("before-rename"); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryName, path); err != nil {
-		return err
-	}
-	if err := atomicHook("dir-sync"); err != nil {
-		return err
-	}
-	directoryHandle, err := os.Open(directory)
-	if err != nil {
-		return err
-	}
-	defer directoryHandle.Close()
-	return fsutil.Sync(directoryHandle)
+	return fsutil.WriteFileAtomicModeWithHook(path, data, 0o600, atomicHook)
+}
+func writeBytesCAS(path string, data []byte, compare func() error) error {
+	return fsutil.WriteFileAtomicModeWithHook(path, data, 0o600, func(step string) error {
+		if err := atomicHook(step); err != nil {
+			return err
+		}
+		if step == "before-rename" && compare != nil {
+			return compare()
+		}
+		return nil
+	})
 }
 func atomicHook(step string) error {
 	if atomicStepHook != nil {
@@ -221,6 +256,10 @@ func read(path string, value any) error {
 	if err != nil {
 		return err
 	}
+	return decode(data, value)
+}
+
+func decode(data []byte, value any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(value); err != nil {

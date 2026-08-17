@@ -1,6 +1,6 @@
 # Portable manifest clone specification
 
-Status: planned
+Status: implemented
 Source idea: [Clone and synchronize a multi-repository project](../ideas/cloning-a-multi-repository-project.md)
 Implementation plan: [Portable manifest clone implementation plan](../plans/portable-manifest-clone.md)
 
@@ -292,3 +292,15 @@ staging or commits, tags, pushes, publication, `update`, `sync`, release locks,
 relative repository URLs, named URL profiles, interactive credentials,
 submodules, sparse/partial/shallow clone, LFS orchestration, or destination
 adoption.
+
+## 11. Implementation traceability
+
+| Contract | Enforcement | Focused evidence |
+|---|---|---|
+| portable and local schemas | `internal/config` | `portable_manifest_test.go`, `portable_manifest_fuzz_test.go` |
+| init authoring and publication | `internal/service/init.go`, `internal/cli/root.go` | `init_manifest_test.go`, `init_publication_internal_test.go`, `init_manifest_test.go` in CLI |
+| bounded local and HTTP sources | `internal/service/manifest_source.go` | `manifest_source_test.go` |
+| immutable read-only planning and stable planning JSON | `internal/service/clone_plan.go`, `internal/service/clone_result.go` | `clone_plan_test.go`, `clone_result_test.go`, registry-facts tests |
+| exact-commit staging, verification, publication, and rollback | `internal/service/clone_execute.go`, `internal/git/portable.go` | clone-execute, clone-safety, Git portable, concurrency, and publication tests |
+| command grammar, output, help, and how-to | `internal/cli/clone.go`, `internal/cli/root.go`, `internal/cli/howto.go`, `internal/render` | clone CLI, help/how-to, error-envelope, and `cmd/wtree` process-boundary tests |
+| nested local/served project lifecycle | public CLI boundary plus resolver/current workspace commands | three-level clone E2E covering parent ignores, `git add .`, `path`, `repo path`, `status`, and workspace creation |

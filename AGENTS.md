@@ -66,6 +66,11 @@ do not require a bulk migration of existing documents, but an existing idea,
 specification, or plan must be brought into compliance when an agent edits it
 or creates a new lifecycle relationship involving it.
 
+Whenever a workflow document is created or updated, update
+`docs/status-overview.md` in the same change. Keep its review date, counts,
+document entry, lifecycle status, relationships, and implementation evidence
+consistent with the repository state.
+
 For work driven by an implementation plan with milestones, follow
 [`docs/ai/milestone-supervision.md`](docs/ai/milestone-supervision.md).
 It defines the required implementation, review, remediation, verification, and

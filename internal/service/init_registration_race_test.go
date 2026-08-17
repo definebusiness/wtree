@@ -13,7 +13,7 @@ import (
 )
 
 func TestInitializerRepeatsRegistrationConflictCheckUnderRegistryLock(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
 	canonicalRoot, err := filepath.EvalSymlinks(root.Path)

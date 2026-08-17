@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/definebusiness/wtree/internal/config"
@@ -119,6 +120,7 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	commands := []*cobra.Command{
 		newProjectCommand(stdout, &projectPath),
 		newInitCommand(stdout, &projectPath),
+		newCloneCommand(stdout, stderr, &projectPath),
 		newConfigCommand(stdout, &projectPath),
 		newWorkspacePlanCommand(stdout, stderr, &projectPath, plan.Create),
 		newCheckoutCommand(stdout, stderr, &projectPath),
@@ -158,6 +160,7 @@ GLOBAL OPTIONS
 COMMANDS
   project    inspect globally registered projects and manage registrations safely
   init       discover repositories and initialize a project
+  clone      clone and register a project from a portable manifest
   import     record an existing workspace by Git identity
   create     create synchronized branches and worktrees
   checkout   restore retained workspace state or an existing branch
@@ -183,6 +186,7 @@ WORKTREE LOCATION
 
 EXAMPLES
   wtree init
+  wtree clone ./project.wtree.yml ./product --dry-run
   wtree project list
   wtree project prune stale-project-id --dry-run
   wtree project unregister project-id --dry-run
@@ -210,6 +214,7 @@ func applyCommandDocumentation(command *cobra.Command) {
 		"wtree project prune":      "  wtree project prune stale-project-id --dry-run\n  wtree project prune stale-project-id --json\n",
 		"wtree project unregister": "  wtree project unregister project-id --dry-run\n  wtree project unregister project-id --json\n",
 		"wtree init":               "  wtree init\n  wtree init --dry-run\n",
+		"wtree clone":              "  wtree clone ./project.wtree.yml ./product\n  wtree clone https://example.invalid/project.wtree.yml --dry-run --json\n",
 		"wtree import":             "  wtree import /work/login --name feature/login\n  wtree import /work/login --dry-run --json\n",
 		"wtree create":             "  wtree create feature/login\n  wtree create feature/login --from main\n  wtree create feature/login --mount backend=api --dry-run\n",
 		"wtree checkout":           "  wtree checkout feature/login\n  wtree checkout feature/login --dry-run\n",
@@ -319,7 +324,7 @@ func showInheritedFlag(command *cobra.Command, flag *pflag.Flag) bool {
 	if flag.Name != "project" {
 		return true
 	}
-	return command.Name() != "init" && !isConfigCommand(command) && !isProjectCommand(command)
+	return command.Name() != "init" && command.Name() != "clone" && !isConfigCommand(command) && !isProjectCommand(command)
 }
 
 func isConfigCommand(command *cobra.Command) bool {
@@ -331,13 +336,14 @@ func isProjectCommand(command *cobra.Command) bool {
 }
 
 func newInitCommand(stdout io.Writer, projectPath *string) *cobra.Command {
-	var worktreeRoot, dataDir string
-	var dryRun, jsonOutput bool
+	var worktreeRoot, dataDir, manifestSource string
+	var dryRun, jsonOutput, addIgnore bool
 	var ignores []string
+	var cloneURLs []string
 	command := &cobra.Command{
 		Use:   "init [path]",
 		Short: "initialize a project from independent nested Git repositories",
-		Long:  "Discover the root and independent nested Git repositories, write .wtree.yml, and register the project.\n\nThe original source checkout is recorded as the default workspace. Use --dry-run to preflight without writing state. If a missing local configuration is already registered by path or repository identity, init refuses the duplicate and directs you to `wtree project list` for inspection and explicit registry cleanup.",
+		Long:  "Discover the root and independent nested Git repositories, verify every attached upstream is published, write ignored .wtree.yml and tracked project.wtree.yml, and register the project. init never stages, commits, or pushes.\n\nThe original source checkout is recorded as the default workspace. Use --dry-run to preflight without writing state. If a missing local configuration is already registered by path or repository identity, init refuses the duplicate and directs you to `wtree project list` for inspection and explicit registry cleanup.",
 		Args:  maximumOneArgument,
 		RunE: func(command *cobra.Command, args []string) error {
 			if *projectPath != "" {
@@ -355,14 +361,28 @@ func newInitCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 				}
 				dataDir = paths.DataDir
 			}
-			result, err := service.NewInitializer().Init(command.Context(), service.InitRequest{Path: path, DataDir: dataDir, WorktreeRoot: worktreeRoot, DryRun: dryRun, Ignores: ignores})
+			if _, err := service.ParseCloneURLOverrides(cloneURLs); err != nil {
+				return invalidArgumentsError{cause: err}
+			}
+			result, err := service.NewInitializer().Init(command.Context(), service.InitRequest{Path: path, DataDir: dataDir, WorktreeRoot: worktreeRoot, DryRun: dryRun, Ignores: ignores, ManifestSource: manifestSource, CloneURLOverrides: cloneURLs, AddIgnore: addIgnore})
 			if err != nil {
 				return err
 			}
 			if jsonOutput {
-				_, err = fmt.Fprintf(stdout, "{\"projectId\":%q,\"dryRun\":%t}\n", result.ProjectID, result.DryRun)
+				return render.JSON(stdout, result)
+			}
+			if dryRun {
+				err = renderInitPlan(stdout, result)
 			} else {
-				_, err = fmt.Fprintf(stdout, "initialized %s\n", result.ProjectID)
+				var changed []string
+				for _, update := range result.IgnoreUpdates {
+					changed = append(changed, update.Path)
+				}
+				if len(changed) != 0 {
+					_, err = fmt.Fprintf(stdout, "Initialized %s\nPortable manifest: %s\nChanged .gitignore: %s\nReview and commit project.wtree.yml and .gitignore changes; wtree did not stage, commit, or push them.\n", result.ProjectID, result.ManifestPath, strings.Join(changed, ", "))
+				} else {
+					_, err = fmt.Fprintf(stdout, "Initialized %s\nPortable manifest: %s\nReview and commit project.wtree.yml; wtree did not stage, commit, or push it.\n", result.ProjectID, result.ManifestPath)
+				}
 			}
 			return err
 		},
@@ -372,7 +392,45 @@ func newInitCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "plan without writing")
 	command.Flags().BoolVar(&jsonOutput, "json", false, "emit JSON")
 	command.Flags().StringSliceVar(&ignores, "ignore", nil, "repository discovery ignore glob")
+	command.Flags().StringVar(&manifestSource, "manifest-source", "", "persisted local path or HTTP(S) manifest source")
+	command.Flags().StringArrayVar(&cloneURLs, "clone-url", nil, "portable clone URL override in repository-id=url form")
+	command.Flags().BoolVar(&addIgnore, "add-ignore", false, "add missing nested-mount ignore rules during initialization")
 	return command
+}
+
+func renderInitPlan(stdout io.Writer, result service.InitResult) error {
+	if _, err := fmt.Fprintf(stdout, "Operation: init\nProject: %s\nLocal config: %s\nManifest: %s\nSource: %s\nRepositories:\n", result.ProjectID, result.ConfigPath, result.ManifestPath, result.ManifestSource); err != nil {
+		return err
+	}
+	ids := make([]string, 0, len(result.PortableManifest.Repositories))
+	for id := range result.PortableManifest.Repositories {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		repository := result.PortableManifest.Repositories[id]
+		if _, err := fmt.Fprintf(stdout, "  %s\n    clone remote: %s\n    clone url: %s\n    upstream remote: %s\n    upstream branch: %s\n    upstream merge: %s\n    mount: %s\n    initial roots: %s\n", id, repository.Clone.Remote, repository.Clone.URL, repository.Upstream.Remote, repository.Upstream.Branch, repository.Upstream.Merge, repository.Mount, strings.Join(repository.Identity.InitialCommits, ", ")); err != nil {
+			return err
+		}
+	}
+	for _, update := range result.IgnoreUpdates {
+		if _, err := fmt.Fprintf(stdout, "Ignore update: %s (%s) %s\n", update.RepositoryID, update.Path, strings.Join(update.AddedRules, ", ")); err != nil {
+			return err
+		}
+	}
+	local, err := config.MarshalProject(result.LocalConfig)
+	if err != nil {
+		return err
+	}
+	portable, err := config.MarshalPortableManifest(result.PortableManifest)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(stdout, "Proposed local configuration:\n%sProposed portable manifest:\n%s", local, portable); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(stdout, "No changes made.")
+	return err
 }
 
 func maximumOneArgument(_ *cobra.Command, arguments []string) error {

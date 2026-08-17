@@ -104,6 +104,7 @@ itself labels the feature optional; no required MVP section is deferred.
 | 91 | primary product goal | create/path/remove/delete lifecycle | CLI E2E; root help/how-to |
 | 92 | essential design statement | domain `Project → Repository → Workspace → Checkout` | domain/resolver tests; root help concepts |
 | 93 | planning coverage | executed milestone plan and package boundaries | plan test suites, CI, this matrix |
+| 94 | portable manifest authoring and clone extension | [portable manifest clone specification](portable-manifest-clone.md); `service.Initializer`, portable config codec, manifest loader, clone planner/executor, clone CLI | portable-config/init/manifest-source/clone-plan/clone-execute/clone CLI tests and process E2E; update/sync/release locking remain future work |
 
 ## Required architectural invariants (§90)
 

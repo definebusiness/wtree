@@ -165,9 +165,9 @@ git -C "$WTREE_PROJECT/backend" branch --remotes
 git -C "$WTREE_PROJECT/frontend" branch --remotes
 ```
 
-## 4. Inspect, update, and synchronize configuration
+## 4. Inspect configuration and understand future directions
 
-The worktree root supplied to `init` is project-scoped:
+The worktree root stored by `clone` is project-scoped:
 
 ```sh
 wtree config get worktrees.root --project
@@ -190,35 +190,12 @@ The project value still takes precedence for this project:
 wtree config get worktrees.root --project
 ```
 
-`update` is the maintainer-facing direction: it reinspects the local Git
-repositories and proposes changes to `.wtree.yml` and `project.wtree.yml`.
-The clean fixture has no differences, but it still demonstrates the
-machine-readable preview:
-
-```sh
-wtree update --dry-run
-wtree update --json --dry-run
-```
-
-Without `--dry-run`, interactive output shows the old/new table and asks for
-confirmation. `wtree update --json` applies a validated change without an
-interactive prompt. It changes files only; publishing `project.wtree.yml`
-still requires an ordinary Git commit and push.
-
-`sync` is the consuming direction. It rereads the manifest source stored by
-`clone` and reconciles this checkout to the portable definition:
-
-```sh
-wtree sync --dry-run
-wtree sync --json --dry-run
-```
-
-To move a clone to a replacement local file or URL and remember that source
-after a successful synchronization, use:
-
-```sh
-wtree sync --from "$WTREE_MANIFEST"
-```
+Future `update` and `sync` ideas may re-author a manifest from local
+repositories or reconcile a checkout from its stored manifest source. They
+are intentionally not available commands in this release. Release-lock
+manifests are also future work; today's portable manifest follows movable
+default branches while clone executes the exact commits observed during its
+preflight.
 
 ## 5. Understand remote and local branches
 

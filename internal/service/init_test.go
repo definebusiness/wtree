@@ -1,9 +1,12 @@
 package service_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -20,7 +23,7 @@ import (
 )
 
 func TestInitFromDescendantUsesDiscoveredRootAndPersistsDiscoveryIgnores(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	descendant := filepath.Join(root.Path, "cmd", "wtree")
 	if err := os.MkdirAll(descendant, 0o755); err != nil {
@@ -73,7 +76,7 @@ func TestInitFromDescendantUsesDiscoveredRootAndPersistsDiscoveryIgnores(t *test
 }
 
 func TestInitPreflightsDiscoversWritesConfigAndRegistersProject(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
 	initializer := service.NewInitializer()
@@ -111,7 +114,7 @@ func TestInitPreflightsDiscoversWritesConfigAndRegistersProject(t *testing.T) {
 }
 
 func TestInitDryRunDoesNotWrite(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
 	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, DryRun: true})
@@ -123,8 +126,137 @@ func TestInitDryRunDoesNotWrite(t *testing.T) {
 	}
 }
 
+func TestInitPortableProjectIDIsIndependentOfCheckoutParent(t *testing.T) {
+	source := testutil.NewPushedGitRepository(t)
+	source.CommitFile("readme", "x\n", "initial")
+	base := t.TempDir()
+	checkouts := []string{filepath.Join(base, "one", "project"), filepath.Join(base, "two", "elsewhere", "project")}
+	for _, checkout := range checkouts {
+		if err := os.MkdirAll(filepath.Dir(checkout), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command("git", "clone", source.Path, checkout).CombinedOutput(); err != nil {
+			t.Fatalf("clone fixture: %v\n%s", err, output)
+		}
+	}
+	first, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: checkouts[0], DataDir: filepath.Join(base, "data-one"), DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: checkouts[1], DataDir: filepath.Join(base, "data-two"), DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ProjectID != second.ProjectID {
+		t.Fatalf("portable project IDs differ by checkout parent: %q != %q", first.ProjectID, second.ProjectID)
+	}
+}
+
+func TestInitAfterUnregisterUsesDistinctIDWithoutOverwritingRetainedState(t *testing.T) {
+	repository := testutil.NewPushedGitRepository(t)
+	repository.CommitFile("readme", "x\n", "initial")
+	data := t.TempDir()
+	first, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: repository.Path, DataDir: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(data, "state", first.ProjectID, "default.json")
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remover := service.NewProjectRegistryRemovalService()
+	plan, err := remover.PlanUnregister(context.Background(), data, first.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := remover.Unregister(context.Background(), data, plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(first.ConfigPath); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: repository.Path, DataDir: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ProjectID == first.ProjectID {
+		t.Fatalf("re-init reused retained project ID %q", second.ProjectID)
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("retained state was changed: %q, %v", after, err)
+	}
+}
+
+func TestInitDryRunIsByteStableAndConvergesToPublication(t *testing.T) {
+	root := testutil.NewPushedGitRepository(t)
+	root.CommitFile("readme", "x\n", "initial")
+	data := t.TempDir()
+	request := service.InitRequest{Path: root.Path, DataDir: data, WorktreeRoot: filepath.Join(data, "worktrees"), DryRun: true}
+
+	first, err := service.NewInitializer().Init(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.NewInitializer().Init(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstJSON, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJSON, err := json.Marshal(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstJSON, secondJSON) {
+		t.Fatalf("dry-run JSON differs:\nfirst:  %s\nsecond: %s", firstJSON, secondJSON)
+	}
+	firstConfig, err := config.MarshalProject(first.LocalConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondConfig, err := config.MarshalProject(second.LocalConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstManifest, err := config.MarshalPortableManifest(first.PortableManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondManifest, err := config.MarshalPortableManifest(second.PortableManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstConfig, secondConfig) || !bytes.Equal(firstManifest, secondManifest) {
+		t.Fatal("dry-run planned file bytes differ")
+	}
+
+	request.DryRun = false
+	published, err := service.NewInitializer().Init(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published.ProjectID != first.ProjectID {
+		t.Fatalf("published project ID = %q, dry-run project ID = %q", published.ProjectID, first.ProjectID)
+	}
+	gotConfig, err := os.ReadFile(first.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotManifest, err := os.ReadFile(first.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotConfig, firstConfig) || !bytes.Equal(gotManifest, firstManifest) {
+		t.Fatal("published files do not match the dry-run plan")
+	}
+}
+
 func TestInitDryRunPreflightsExistingRegistryWithoutWriting(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
 	if err := os.WriteFile(filepath.Join(data, "registry.json"), []byte("{"), 0o600); err != nil {
@@ -140,7 +272,7 @@ func TestInitDryRunPreflightsExistingRegistryWithoutWriting(t *testing.T) {
 }
 
 func TestInitRejectsDuplicateCommonGitDirectoriesBeforeWriting(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	duplicate := filepath.Join(root.Path, "duplicate")
 	if err := os.MkdirAll(duplicate, 0o755); err != nil {
@@ -163,7 +295,7 @@ func TestInitRejectsDuplicateCommonGitDirectoriesBeforeWriting(t *testing.T) {
 }
 
 func TestInitRegistrationFailureLeavesNoConfig(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
 	initializer := service.NewInitializerWithRegistryWriter(func(string, store.Registry) error { return errors.New("registry unavailable") })
@@ -180,7 +312,7 @@ func TestInitRegistrationFailureLeavesNoConfig(t *testing.T) {
 }
 
 func TestInitRollsBackRegistryWhenWriterPublishesThenFails(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
 	initializer := service.NewInitializerWithRegistryWriter(func(path string, registry store.Registry) error {
@@ -202,7 +334,7 @@ func TestInitRollsBackRegistryWhenWriterPublishesThenFails(t *testing.T) {
 }
 
 func TestInitStatePublicationFailureRollsBackConfigAndRegistry(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
 	initializer := service.NewInitializerWithWriters(store.WriteRegistry, func(string, store.WorkspaceState) error { return errors.New("state unavailable") })
@@ -218,7 +350,7 @@ func TestInitStatePublicationFailureRollsBackConfigAndRegistry(t *testing.T) {
 }
 
 func TestInitRollsBackPublishedDefaultStateWhenWriterFailsAfterPublish(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
 	initializer := service.NewInitializerWithWriters(store.WriteRegistry, func(path string, workspace store.WorkspaceState) error {
@@ -244,7 +376,7 @@ func TestInitRollsBackPublishedDefaultStateWhenWriterFailsAfterPublish(t *testin
 }
 
 func TestInitReportsCleanupFailureAfterPublishedWorkspaceFailure(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
 	initializer := service.NewInitializerWithPublishersAndRemover(
@@ -281,7 +413,7 @@ func TestInitReportsCleanupFailureAfterPublishedWorkspaceFailure(t *testing.T) {
 }
 
 func TestInitConfigRenameFailureRollsBackRegistry(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
 	initializer := service.NewInitializerWithPublishers(store.WriteRegistry, store.WriteWorkspace, func(string, string) error { return errors.New("rename unavailable") })
@@ -297,7 +429,7 @@ func TestInitConfigRenameFailureRollsBackRegistry(t *testing.T) {
 }
 
 func TestInitRollbackPreservesAnExistingRegistryExactly(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
 	existing := store.Registry{Version: store.Version, Projects: map[string]store.RegistryProject{
@@ -320,7 +452,7 @@ func TestInitRollbackPreservesAnExistingRegistryExactly(t *testing.T) {
 }
 
 func TestInitRespectsRegistryLockContention(t *testing.T) {
-	root := testutil.NewGitRepository(t)
+	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
 	handle, err := (lock.Manager{}).RegistryLock(context.Background(), data, time.Second)

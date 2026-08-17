@@ -15,10 +15,10 @@ import (
 )
 
 type Repository struct {
-	ID       string
-	Path     string
-	ParentID string
-	Mount    string
+	ID       string `json:"id"`
+	Path     string `json:"path"`
+	ParentID string `json:"parentId"`
+	Mount    string `json:"mount"`
 }
 
 // Discover walks root deterministically, ignoring Git metadata and requested directory names.
