@@ -40,7 +40,7 @@ func TestClonePlanUsesOnlyInjectedCompleteRegistryFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	rootURL := filepath.Join(base, "root.git")
-	manifest := config.PortableManifest{Version: 1, Project: config.PortableProject{ID: "project-1", Name: "safe"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: rootURL}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{clonePlanRootCommit}}, Mount: ".", DefaultBranch: "main"}}}
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "project-1", Name: "safe", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: rootURL}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{clonePlanRootCommit}}, Mount: ".", DefaultBranch: "main"}}}
 	data, _ := config.MarshalPortableManifest(manifest)
 	source := writeClonePlanManifest(t, base, data)
 	reader := &staticCloneRegistryFactsReader{snapshot: CloneRegistrySnapshot{Registry: store.Registry{Version: 1, Projects: map[string]store.RegistryProject{}}, RegistrySHA256: "absent", GenerationSHA256: strings.Repeat("a", 64)}}

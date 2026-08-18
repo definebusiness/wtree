@@ -200,6 +200,36 @@ func TestCloneValidationJSONHasOneEnvelopeAndNoMutation(t *testing.T) {
 	}
 }
 
+func TestCloneRejectsLogicalRootManifestFormatsWithoutPublishingState(t *testing.T) {
+	base := t.TempDir()
+	valid := "version: 2\nproject:\n  id: project-1\n  name: safe\n  base_repository: root\nrepositories:\n  root:\n    clone:\n      remote: origin\n      url: https://example.invalid/root.git\n    upstream:\n      branch: main\n      remote: origin\n      merge: refs/heads/main\n    identity:\n      initial_commits:\n        - 0123456789abcdef0123456789abcdef01234567\n    parent: \"\"\n    mount: .\n    default_branch: main\n  api:\n    clone:\n      remote: origin\n      url: https://example.invalid/api.git\n    upstream:\n      branch: main\n      remote: origin\n      merge: refs/heads/main\n    identity:\n      initial_commits:\n        - 89abcdef0123456789abcdef0123456789abcdef\n    parent: root\n    mount: api\n    default_branch: main\n"
+	fixtures := map[string]string{
+		"version one":   strings.Replace(valid, "version: 2", "version: 1", 1),
+		"missing base":  strings.Replace(valid, "base_repository: root", "base_repository: \"\"", 1),
+		"unknown base":  strings.Replace(valid, "base_repository: root", "base_repository: unknown", 1),
+		"non-root base": strings.Replace(valid, "base_repository: root", "base_repository: api", 1),
+	}
+	for name, manifest := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			source := filepath.Join(base, strings.ReplaceAll(name, " ", "-")+".yml")
+			if err := os.WriteFile(source, []byte(manifest), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			destination := filepath.Join(base, "clone-"+strings.ReplaceAll(name, " ", "-"))
+			dataDir := filepath.Join(base, "data-"+strings.ReplaceAll(name, " ", "-"))
+			result := testutil.RunCommand(t, cli.Execute, "clone", source, destination, "--data-dir", dataDir)
+			if result.Err == nil || !strings.Contains(result.Err.Error(), "logical-root manifest format") {
+				t.Fatalf("clone logical-root error = %#v", result)
+			}
+			for _, path := range []string{destination, dataDir} {
+				if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+					t.Fatalf("invalid manifest published %q: %v", path, statErr)
+				}
+			}
+		})
+	}
+}
+
 func TestCloneServedThreeLevelProjectKeepsNestedRepositoriesIgnored(t *testing.T) {
 	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")
@@ -283,6 +313,15 @@ func publishedCloneFixture(t *testing.T) (string, string) {
 	if init.Err != nil {
 		t.Fatalf("init clone fixture = %#v", init)
 	}
+	manifestPath := filepath.Join(root.Path, "project.wtree.yml")
+	manifestBytes, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := config.LoadPortableManifest(manifestBytes)
+	if err != nil || manifest.Version != 2 || manifest.Project.BaseRepository != "root" {
+		t.Fatalf("published clone fixture manifest = %#v, %v", manifest, err)
+	}
 	root.Run(t, "add", ".gitignore", "project.wtree.yml")
 	root.Run(t, "commit", "-m", "publish portable manifest")
 	root.Run(t, "push", "origin", "main")
@@ -290,7 +329,7 @@ func publishedCloneFixture(t *testing.T) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Join(root.Path, "project.wtree.yml"), project.ID
+	return manifestPath, project.ID
 }
 
 func cloneWorkingDirectory(t *testing.T) string {

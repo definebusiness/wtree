@@ -50,7 +50,7 @@ func clonePlanManifest(t *testing.T, rootURL, childURL string) []byte {
 	t.Helper()
 	manifest := config.PortableManifest{
 		Version: config.PortableManifestVersion,
-		Project: config.PortableProject{ID: "project-1", Name: "Project space 世界"},
+		Project: config.PortableProject{ID: "project-1", Name: "Project space 世界", BaseRepository: "root"},
 		Repositories: map[string]config.PortableRepository{
 			"root": {
 				Clone:    config.CloneSource{Remote: "upstream", URL: rootURL},
@@ -143,6 +143,73 @@ func TestClonePlanExplicitDestinationStableParentFirstJSONAndNoMutation(t *testi
 	}
 	if got := string(plan.ManifestBytes()); got != string(clonePlanManifest(t, rootURL, childURL)) {
 		t.Fatal("plan did not retain exact manifest bytes")
+	}
+}
+
+func TestClonePlanJSONRoundTripRejectsTamperedBaseRepository(t *testing.T) {
+	base := t.TempDir()
+	rootURL, childURL := filepath.Join(base, "root.git"), filepath.Join(base, "api.git")
+	source := writeClonePlanManifest(t, base, clonePlanManifest(t, rootURL, childURL))
+	plan, err := NewClonePlannerWith(ClonePlannerDependencies{RemoteFacts: newClonePlanRemote(rootURL, childURL)}).Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: filepath.Join(base, "clone"), CWD: base, DataDir: filepath.Join(base, "data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := plan.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded ClonePlan
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	for _, baseRepository := range []string{"api", "unknown"} {
+		t.Run(baseRepository, func(t *testing.T) {
+			mutated := decoded
+			mutated.Project.BaseRepository = baseRepository
+			if err := mutated.Validate(); err == nil {
+				t.Fatalf("tampered base repository %q bypassed validation", baseRepository)
+			}
+		})
+	}
+}
+
+func TestClonePlanRejectsLogicalRootFormatBeforeDestinationRegistryOrRemote(t *testing.T) {
+	base := t.TempDir()
+	rootURL, childURL := filepath.Join(base, "root.git"), filepath.Join(base, "api.git")
+	valid := string(clonePlanManifest(t, rootURL, childURL))
+	fixtures := map[string]string{
+		"version one":   strings.Replace(valid, "version: 2", "version: 1", 1),
+		"missing base":  strings.Replace(valid, "base_repository: root", "base_repository: \"\"", 1),
+		"unknown base":  strings.Replace(valid, "base_repository: root", "base_repository: unknown", 1),
+		"non-root base": strings.Replace(valid, "base_repository: root", "base_repository: api", 1),
+	}
+	for name, data := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			source := writeClonePlanManifest(t, base, []byte(data))
+			destination := filepath.Join(base, "clone-"+strings.ReplaceAll(name, " ", "-"))
+			before := mustDirectorySnapshot(t, base)
+			remote := newClonePlanRemote(rootURL, childURL)
+			registry := &staticCloneRegistryFactsReader{}
+			_, err := NewClonePlannerWith(ClonePlannerDependencies{RemoteFacts: remote, RegistryFacts: registry}).Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: destination, CWD: base, DataDir: filepath.Join(base, "data")})
+			if err == nil || !strings.Contains(err.Error(), "logical-root manifest format") {
+				t.Fatalf("logical-root format error = %v", err)
+			}
+			remote.mu.Lock()
+			remoteCalls := len(remote.calls)
+			remote.mu.Unlock()
+			registry.mu.Lock()
+			registryCalls := registry.calls
+			registry.mu.Unlock()
+			if remoteCalls != 0 || registryCalls != 0 {
+				t.Fatalf("invalid manifest reached remote/registry: remote=%d registry=%d", remoteCalls, registryCalls)
+			}
+			if _, statErr := os.Lstat(destination); !os.IsNotExist(statErr) {
+				t.Fatalf("invalid manifest created destination: %v", statErr)
+			}
+			if after := mustDirectorySnapshot(t, base); !reflect.DeepEqual(before, after) {
+				t.Fatalf("invalid manifest mutated filesystem\nbefore=%#v\nafter=%#v", before, after)
+			}
+		})
 	}
 }
 
@@ -260,7 +327,7 @@ func TestClonePlanRejectsNestedSymlinkAncestorBeforeAnyRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 	rootURL := filepath.Join(base, "root.git")
-	manifest := config.PortableManifest{Version: 1, Project: config.PortableProject{ID: "project-1", Name: "safe"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: rootURL}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{clonePlanRootCommit}}, Mount: ".", DefaultBranch: "main"}}}
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "project-1", Name: "safe", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: rootURL}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{clonePlanRootCommit}}, Mount: ".", DefaultBranch: "main"}}}
 	data, _ := config.MarshalPortableManifest(manifest)
 	source := writeClonePlanManifest(t, base, data)
 	remote := &clonePlanRemote{commits: map[string]string{rootURL + "\x00refs/heads/main": clonePlanRootCommit}, errors: map[string]error{}}
@@ -282,7 +349,7 @@ func TestClonePlanCapturesEverySafeAncestorForRevalidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	rootURL := filepath.Join(base, "root.git")
-	manifest := config.PortableManifest{Version: 1, Project: config.PortableProject{ID: "project-1", Name: "safe"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: rootURL}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{clonePlanRootCommit}}, Mount: ".", DefaultBranch: "main"}}}
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "project-1", Name: "safe", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: rootURL}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{clonePlanRootCommit}}, Mount: ".", DefaultBranch: "main"}}}
 	data, _ := config.MarshalPortableManifest(manifest)
 	source := writeClonePlanManifest(t, base, data)
 	remote := &clonePlanRemote{commits: map[string]string{rootURL + "\x00refs/heads/main": clonePlanRootCommit}, errors: map[string]error{}}
@@ -308,7 +375,7 @@ func TestClonePlanRegistryProjectAndPathAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 	rootURL := filepath.Join(base, "root.git")
-	manifest := config.PortableManifest{Version: 1, Project: config.PortableProject{ID: "project-1", Name: "safe"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: rootURL}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{clonePlanRootCommit}}, Mount: ".", DefaultBranch: "main"}}}
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "project-1", Name: "safe", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: rootURL}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{clonePlanRootCommit}}, Mount: ".", DefaultBranch: "main"}}}
 	data, _ := config.MarshalPortableManifest(manifest)
 	source := writeClonePlanManifest(t, base, data)
 	remote := &clonePlanRemote{commits: map[string]string{rootURL + "\x00refs/heads/main": clonePlanRootCommit}, errors: map[string]error{}}
@@ -412,7 +479,7 @@ func TestClonePlanQueriesEveryRemoteAndRedactsFailures(t *testing.T) {
 
 func TestClonePlanManyRemoteFailuresAreTotallyBoundedAndDeterministic(t *testing.T) {
 	base := t.TempDir()
-	manifest := config.PortableManifest{Version: 1, Project: config.PortableProject{ID: "many-remotes", Name: "many-remotes"}, Repositories: map[string]config.PortableRepository{}}
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "many-remotes", Name: "many-remotes", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{}}
 	remote := &clonePlanRemote{commits: map[string]string{}, errors: map[string]error{}}
 	secret := "many-remote-secret-canary"
 	for index := 0; index < 81; index++ {
@@ -516,7 +583,7 @@ func TestClonePlanThreeLevelOrderIsParentFirstAndLexicallyStable(t *testing.T) {
 func TestClonePlanCapturesFactsForLaterRevalidationDuringConcurrentChange(t *testing.T) {
 	base := t.TempDir()
 	rootURL := filepath.Join(base, "root.git")
-	manifest := config.PortableManifest{Version: 1, Project: config.PortableProject{ID: "project-1", Name: "safe"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: rootURL}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{clonePlanRootCommit}}, Mount: ".", DefaultBranch: "main"}}}
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "project-1", Name: "safe", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: rootURL}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{clonePlanRootCommit}}, Mount: ".", DefaultBranch: "main"}}}
 	data, _ := config.MarshalPortableManifest(manifest)
 	source := writeClonePlanManifest(t, base, data)
 	destination := filepath.Join(base, "racing-destination")
@@ -538,7 +605,7 @@ func TestClonePlanCapturesFactsForLaterRevalidationDuringConcurrentChange(t *tes
 func TestCloneDryRunConcurrentPlannersRemainReadOnly(t *testing.T) {
 	base := t.TempDir()
 	rootURL := filepath.Join(base, "root.git")
-	manifest := config.PortableManifest{Version: 1, Project: config.PortableProject{ID: "project-1", Name: "safe"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: rootURL}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{clonePlanRootCommit}}, Mount: ".", DefaultBranch: "main"}}}
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "project-1", Name: "safe", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: rootURL}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{clonePlanRootCommit}}, Mount: ".", DefaultBranch: "main"}}}
 	data, _ := config.MarshalPortableManifest(manifest)
 	source := writeClonePlanManifest(t, base, data)
 	remote := &clonePlanRemote{commits: map[string]string{rootURL + "\x00refs/heads/main": clonePlanRootCommit}, errors: map[string]error{}}
@@ -582,7 +649,7 @@ func TestClonePlanUsesReadOnlyGitLsRemoteForDifferentlyNamedBranch(t *testing.T)
 		t.Fatal(err)
 	}
 	commit := strings.TrimSpace(string(output))
-	manifest := config.PortableManifest{Version: 1, Project: config.PortableProject{ID: "real-remote", Name: "real-remote"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "publish", URL: remotePath}, Upstream: config.Upstream{Branch: "local-release", Remote: "publish", Merge: "refs/heads/release-published"}, Identity: config.RepositoryIdentity{InitialCommits: []string{commit}}, Mount: ".", DefaultBranch: "local-release"}}}
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "real-remote", Name: "real-remote", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "publish", URL: remotePath}, Upstream: config.Upstream{Branch: "local-release", Remote: "publish", Merge: "refs/heads/release-published"}, Identity: config.RepositoryIdentity{InitialCommits: []string{commit}}, Mount: ".", DefaultBranch: "local-release"}}}
 	data, err := config.MarshalPortableManifest(manifest)
 	if err != nil {
 		t.Fatal(err)

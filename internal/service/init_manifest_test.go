@@ -1,9 +1,11 @@
 package service_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -29,6 +31,10 @@ func TestInitPublishesPortableManifestFromVerifiedUpstreams(t *testing.T) {
 	if err := os.Rename(backend.Path, filepath.Join(root.Path, "backend")); err != nil {
 		t.Fatal(err)
 	}
+	headBefore, err := exec.Command("git", "-C", root.Path, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	data := t.TempDir()
 	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{
@@ -38,12 +44,22 @@ func TestInitPublishesPortableManifestFromVerifiedUpstreams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	headAfter, err := exec.Command("git", "-C", root.Path, "rev-parse", "HEAD").Output()
+	if err != nil || !bytes.Equal(headAfter, headBefore) {
+		t.Fatalf("init changed root commit: before=%q after=%q err=%v", headBefore, headAfter, err)
+	}
+	if output, err := exec.Command("git", "-C", root.Path, "diff", "--cached", "--quiet").CombinedOutput(); err != nil {
+		t.Fatalf("init staged root changes: %v\n%s", err, output)
+	}
 	local, err := config.ReadProjectFile(result.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if local.Manifest.Path != "project.wtree.yml" || local.Manifest.Source != "https://example.invalid/acme/project.wtree.yml" {
 		t.Fatalf("local manifest metadata = %#v", local.Manifest)
+	}
+	if local.Version != config.Version {
+		t.Fatalf("local configuration version = %d, want unchanged version %d", local.Version, config.Version)
 	}
 	portableBytes, err := os.ReadFile(result.ManifestPath)
 	if err != nil {
@@ -53,11 +69,27 @@ func TestInitPublishesPortableManifestFromVerifiedUpstreams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if portable.Version != config.PortableManifestVersion || portable.Project.BaseRepository != "root" {
+		t.Fatalf("portable manifest root facts = %#v", portable)
+	}
+	remarshaled, err := config.MarshalPortableManifest(portable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(remarshaled, portableBytes) {
+		t.Fatalf("portable manifest is not byte-stable after re-marshal:\nread: %s\nremarshal: %s", portableBytes, remarshaled)
+	}
 	if portable.Repositories["root"].Clone.Remote != "origin" || portable.Repositories["root"].Upstream.Merge != "refs/heads/main" || len(portable.Repositories["root"].Identity.InitialCommits) != 1 {
 		t.Fatalf("root portable facts = %#v", portable.Repositories["root"])
 	}
 	if got := portable.Repositories["backend"].Clone.URL; got != "file:///tmp/backend.git" {
 		t.Fatalf("backend clone URL = %q", got)
+	}
+	if backendFacts := portable.Repositories["backend"]; backendFacts.Parent != "root" || backendFacts.Mount != "backend" {
+		t.Fatalf("backend portable topology = %#v", backendFacts)
+	}
+	if sharedFacts := portable.Repositories["shared"]; sharedFacts.Parent != "backend" || sharedFacts.Mount != "shared" {
+		t.Fatalf("shared portable topology = %#v", sharedFacts)
 	}
 	if got, err := os.ReadFile(filepath.Join(root.Path, ".gitignore")); err != nil || string(got) != "/backend/\n/.wtree.yml\n" {
 		t.Fatalf("root ignore = %q, %v", got, err)
@@ -92,6 +124,9 @@ func TestInitManifestPreflightRejectsUnpublishedBranchWithoutMutation(t *testing
 	}
 	if _, statErr := os.Stat(filepath.Join(data, "registry.json")); !os.IsNotExist(statErr) {
 		t.Fatalf("registry after failed preflight: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(data, "state")); !os.IsNotExist(statErr) {
+		t.Fatalf("workspace state after failed preflight: %v", statErr)
 	}
 	if got := err.Error(); !strings.Contains(got, "published upstream") {
 		t.Fatalf("preflight error = %q, want repository upstream context", got)

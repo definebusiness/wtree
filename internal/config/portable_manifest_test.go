@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,10 +10,11 @@ import (
 	"github.com/definebusiness/wtree/internal/config"
 )
 
-const validPortableManifest = `version: 1
+const validPortableManifest = `version: 2
 project:
   id: 3f97ab90-0d41-4bd1-84a8-4df70dbcd221
   name: acme-shop
+  base_repository: root
 repositories:
   root:
     clone:
@@ -31,7 +33,7 @@ repositories:
 `
 
 func TestPortableManifestStrictDeterministicRoundTrip(t *testing.T) {
-	input := strings.Replace(validPortableManifest, "  root:\n", "  zoo:\n", 1) + `  alpha:
+	input := strings.Replace(strings.Replace(validPortableManifest, "  base_repository: root\n", "  base_repository: zoo\n", 1), "  root:\n", "  zoo:\n", 1) + `  alpha:
     clone:
       remote: upstream
       url: git@example.test:group/alpha.git
@@ -61,7 +63,7 @@ func TestPortableManifestStrictDeterministicRoundTrip(t *testing.T) {
 	if string(one) != string(two) {
 		t.Fatalf("portable manifest encoding is not deterministic:\n%s\n---\n%s", one, two)
 	}
-	if !strings.HasPrefix(string(one), "version: 1\n") {
+	if !strings.HasPrefix(string(one), "version: 2\n") {
 		t.Fatalf("manifest version is not canonical YAML:\n%s", one)
 	}
 	if strings.Index(string(one), "  alpha:\n") > strings.Index(string(one), "  zoo:\n") {
@@ -71,7 +73,7 @@ func TestPortableManifestStrictDeterministicRoundTrip(t *testing.T) {
 		t.Fatal("multiple YAML documents accepted")
 	}
 	for _, input := range []string{
-		"version: 2\n", strings.Replace(validPortableManifest, "version: 1", "version: 1\nunknown: true", 1),
+		"version: 3\n", strings.Replace(validPortableManifest, "version: 2", "version: 2\nunknown: true", 1),
 		strings.Replace(validPortableManifest, "repositories:\n", "repositories: null\n", 1),
 		strings.Replace(validPortableManifest, "  root:\n", "  root:\n  root:\n", 1),
 		strings.Replace(validPortableManifest, "  id: 3f97ab90-0d41-4bd1-84a8-4df70dbcd221", "  id: ../project", 1),
@@ -83,8 +85,8 @@ func TestPortableManifestStrictDeterministicRoundTrip(t *testing.T) {
 }
 
 func TestPortableManifestUsesItsOwnSchemaVersion(t *testing.T) {
-	if config.PortableManifestVersion != 1 {
-		t.Fatalf("PortableManifestVersion = %d, want 1", config.PortableManifestVersion)
+	if config.PortableManifestVersion != 2 {
+		t.Fatalf("PortableManifestVersion = %d, want 2", config.PortableManifestVersion)
 	}
 	manifest, err := config.LoadPortableManifest([]byte(validPortableManifest))
 	if err != nil {
@@ -92,6 +94,249 @@ func TestPortableManifestUsesItsOwnSchemaVersion(t *testing.T) {
 	}
 	if manifest.Version != config.PortableManifestVersion {
 		t.Fatalf("portable manifest version = %d, want PortableManifestVersion %d", manifest.Version, config.PortableManifestVersion)
+	}
+}
+
+func TestPortableProjectJSONUsesBaseRepositoryWireName(t *testing.T) {
+	encoded, err := json.Marshal(config.PortableProject{ID: "project", Name: "Project", BaseRepository: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"id":"project","name":"Project","base_repository":"root"}`
+	if string(encoded) != want {
+		t.Fatalf("PortableProject JSON = %s, want %s", encoded, want)
+	}
+}
+
+func TestPortableManifestV2CanonicalFixturePreservesExactBytes(t *testing.T) {
+	const fixture = `version: 2
+project:
+    id: acme-shop
+    name: Acme Shop
+    base_repository: root
+repositories:
+    api:
+        clone:
+            remote: origin
+            url: https://example.test/acme/api.git
+        upstream:
+            branch: main
+            remote: origin
+            merge: refs/heads/main
+        identity:
+            initial_commits:
+                - 0123456789abcdef0123456789abcdef01234567
+                - ffffffffffffffffffffffffffffffffffffffff
+        parent: root
+        mount: services/api
+        default_branch: main
+    root:
+        clone:
+            remote: origin
+            url: https://example.test/acme/root.git
+        upstream:
+            branch: main
+            remote: origin
+            merge: refs/heads/main
+        identity:
+            initial_commits:
+                - aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        parent: ""
+        mount: .
+        default_branch: main
+`
+	manifest, err := config.LoadPortableManifest([]byte(fixture))
+	if err != nil {
+		t.Fatalf("LoadPortableManifest() error = %v", err)
+	}
+	if manifest.Project.BaseRepository != "root" {
+		t.Fatalf("base repository = %q, want root", manifest.Project.BaseRepository)
+	}
+	first, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatalf("first MarshalPortableManifest() error = %v", err)
+	}
+	second, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatalf("second MarshalPortableManifest() error = %v", err)
+	}
+	if string(first) != fixture || string(second) != fixture {
+		t.Fatalf("canonical portable manifest bytes =\n%s\nsecond marshal =\n%s\nwant fixture =\n%s", first, second, fixture)
+	}
+}
+
+func TestPortableManifestV2CanonicalizesInitialCommitOrder(t *testing.T) {
+	manifest, err := config.LoadPortableManifest([]byte(validPortableManifest))
+	if err != nil {
+		t.Fatalf("LoadPortableManifest() error = %v", err)
+	}
+	root := manifest.Repositories["root"]
+	manifest.Repositories["root"] = config.PortableRepository{
+		Clone:         root.Clone,
+		Upstream:      root.Upstream,
+		Identity:      config.RepositoryIdentity{InitialCommits: []string{"ffffffffffffffffffffffffffffffffffffffff", "0123456789abcdef0123456789abcdef01234567"}},
+		Parent:        root.Parent,
+		Mount:         root.Mount,
+		DefaultBranch: root.DefaultBranch,
+	}
+
+	encoded, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatalf("MarshalPortableManifest() error = %v", err)
+	}
+	decoded, err := config.LoadPortableManifest(encoded)
+	if err != nil {
+		t.Fatalf("LoadPortableManifest() of canonical bytes error = %v", err)
+	}
+	if got, want := decoded.Repositories["root"].Identity.InitialCommits, []string{"0123456789abcdef0123456789abcdef01234567", "ffffffffffffffffffffffffffffffffffffffff"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("canonical initial commits = %q, want %q", got, want)
+	}
+}
+
+func TestPortableManifestV2RejectsInvalidBaseTopologyWithoutMutation(t *testing.T) {
+	const child = `  child:
+    clone:
+      remote: origin
+      url: https://example.test/acme/child.git
+    upstream:
+      branch: main
+      remote: origin
+      merge: refs/heads/main
+    identity:
+      initial_commits:
+        - aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    parent: root
+    mount: services/child
+    default_branch: main
+`
+	const otherRoot = `  other:
+    clone:
+      remote: origin
+      url: https://example.test/acme/other.git
+    upstream:
+      branch: main
+      remote: origin
+      merge: refs/heads/main
+    identity:
+      initial_commits:
+        - aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    parent: ""
+    mount: .
+    default_branch: main
+`
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "version 1",
+			input: strings.Replace(validPortableManifest, "version: 2", "version: 1", 1),
+			want:  "logical-root manifest format version 2 is required",
+		},
+		{
+			name:  "version 3",
+			input: strings.Replace(validPortableManifest, "version: 2", "version: 3", 1),
+			want:  "logical-root manifest format version 2 is required",
+		},
+		{
+			name:  "missing base",
+			input: strings.Replace(validPortableManifest, "  base_repository: root\n", "", 1),
+			want:  "project base repository",
+		},
+		{
+			name:  "invalid base ID",
+			input: strings.Replace(validPortableManifest, "base_repository: root", "base_repository: ../root", 1),
+			want:  "project base repository",
+		},
+		{
+			name:  "unknown base",
+			input: strings.Replace(validPortableManifest, "base_repository: root", "base_repository: unknown", 1),
+			want:  "is not declared",
+		},
+		{
+			name:  "non-root base",
+			input: strings.Replace(validPortableManifest, "base_repository: root", "base_repository: child", 1) + child,
+			want:  "must name the sole root repository",
+		},
+		{
+			name:  "multiple roots",
+			input: validPortableManifest + otherRoot,
+			want:  "exactly one root repository",
+		},
+		{
+			name:  "root mount other than dot",
+			input: strings.Replace(validPortableManifest, "    mount: .\n", "    mount: project\n", 1),
+			want:  "root repository mount must be \".\"",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := []byte(test.input)
+			before := append([]byte(nil), input...)
+			_, err := config.LoadPortableManifest(input)
+			if err == nil {
+				t.Fatal("LoadPortableManifest() error = nil")
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadPortableManifest() error = %q, want substring %q", err, test.want)
+			}
+			if string(input) != string(before) {
+				t.Fatal("LoadPortableManifest() mutated its input")
+			}
+		})
+	}
+}
+
+func TestPortableManifestV2NestedRepositoriesRequireImmediateParentRelativeMounts(t *testing.T) {
+	const nested = `  child:
+    clone:
+      remote: origin
+      url: https://example.test/acme/child.git
+    upstream:
+      branch: main
+      remote: origin
+      merge: refs/heads/main
+    identity:
+      initial_commits:
+        - aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    parent: root
+    mount: services
+    default_branch: main
+  api:
+    clone:
+      remote: origin
+      url: https://example.test/acme/api.git
+    upstream:
+      branch: main
+      remote: origin
+      merge: refs/heads/main
+    identity:
+      initial_commits:
+        - bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    parent: child
+    mount: api
+    default_branch: main
+`
+	valid := validPortableManifest + nested
+	if _, err := config.LoadPortableManifest([]byte(valid)); err != nil {
+		t.Fatalf("LoadPortableManifest() rejected valid immediate-parent nesting: %v", err)
+	}
+	for _, test := range []struct {
+		name  string
+		input string
+	}{
+		{"unknown immediate parent", strings.Replace(valid, "    parent: child\n", "    parent: missing\n", 1)},
+		{"parent-relative mount escapes", strings.Replace(valid, "    mount: api\n", "    mount: ../api\n", 1)},
+		{"parent-relative mount is absolute", strings.Replace(valid, "    mount: api\n", "    mount: /api\n", 1)},
+		{"parent-relative mount is dot", strings.Replace(valid, "    mount: api\n", "    mount: .\n", 1)},
+		{"cycle", strings.Replace(valid, "    parent: root\n    mount: services\n", "    parent: api\n    mount: services\n", 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := config.LoadPortableManifest([]byte(test.input)); err == nil {
+				t.Fatal("LoadPortableManifest() error = nil")
+			}
+		})
 	}
 }
 

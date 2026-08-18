@@ -14,7 +14,7 @@ import (
 
 // PortableManifestVersion is deliberately independent from the local
 // ProjectConfig version: portable manifests evolve on their own contract.
-const PortableManifestVersion = 1
+const PortableManifestVersion = 2
 
 // PortableManifest is the tracked, machine-independent project.wtree.yml
 // contract. It deliberately does not reuse ProjectConfig, which contains
@@ -26,8 +26,9 @@ type PortableManifest struct {
 }
 
 type PortableProject struct {
-	ID   string `yaml:"id" json:"id"`
-	Name string `yaml:"name" json:"name"`
+	ID             string `yaml:"id" json:"id"`
+	Name           string `yaml:"name" json:"name"`
+	BaseRepository string `yaml:"base_repository" json:"base_repository"`
 }
 
 type PortableRepository struct {
@@ -54,7 +55,7 @@ type RepositoryIdentity struct {
 	InitialCommits []string `yaml:"initial_commits" json:"initialCommits"`
 }
 
-// LoadPortableManifest strictly decodes and validates one portable v1 YAML
+// LoadPortableManifest strictly decodes and validates one portable v2 YAML
 // document. It never performs I/O or mutates its input.
 func LoadPortableManifest(data []byte) (PortableManifest, error) {
 	var manifest PortableManifest
@@ -67,7 +68,7 @@ func LoadPortableManifest(data []byte) (PortableManifest, error) {
 	return manifest, nil
 }
 
-// MarshalPortableManifest writes canonical portable v1 YAML. Repository keys
+// MarshalPortableManifest writes canonical portable v2 YAML. Repository keys
 // and identity roots are sorted so repeated output is byte-identical.
 func MarshalPortableManifest(manifest PortableManifest) ([]byte, error) {
 	canonical := manifest.canonical()
@@ -93,7 +94,7 @@ func MarshalProject(value ProjectConfig) ([]byte, error) {
 // invariants before a caller performs any mutation.
 func (manifest PortableManifest) Validate() error {
 	if manifest.Version != PortableManifestVersion {
-		return fmt.Errorf("unsupported portable manifest version %d", manifest.Version)
+		return fmt.Errorf("unsupported portable manifest version %d: logical-root manifest format version %d is required", manifest.Version, PortableManifestVersion)
 	}
 	if err := ValidatePortableID(manifest.Project.ID); err != nil {
 		return fmt.Errorf("project ID: %w", err)
@@ -101,17 +102,22 @@ func (manifest PortableManifest) Validate() error {
 	if manifest.Project.Name == "" || containsControl(manifest.Project.Name) {
 		return fmt.Errorf("project name is required and must not contain control characters")
 	}
+	if err := ValidatePortableID(manifest.Project.BaseRepository); err != nil {
+		return fmt.Errorf("project base repository: %w", err)
+	}
 	if len(manifest.Repositories) == 0 {
 		return fmt.Errorf("portable manifest must contain a root repository")
 	}
 
 	rootCount := 0
+	rootID := ""
 	for id, repository := range manifest.Repositories {
 		if err := ValidatePortableID(id); err != nil {
 			return fmt.Errorf("repository ID %q: %w", id, err)
 		}
 		if repository.Parent == "" {
 			rootCount++
+			rootID = id
 		}
 		if err := repository.validate(id); err != nil {
 			return err
@@ -119,6 +125,12 @@ func (manifest PortableManifest) Validate() error {
 	}
 	if rootCount != 1 {
 		return fmt.Errorf("portable manifest must contain exactly one root repository, got %d", rootCount)
+	}
+	if _, exists := manifest.Repositories[manifest.Project.BaseRepository]; !exists {
+		return fmt.Errorf("project base repository %q is not declared", manifest.Project.BaseRepository)
+	}
+	if manifest.Project.BaseRepository != rootID {
+		return fmt.Errorf("project base repository %q must name the sole root repository %q", manifest.Project.BaseRepository, rootID)
 	}
 	for id, repository := range manifest.Repositories {
 		if repository.Parent != "" {
@@ -504,7 +516,7 @@ func portableManifestYAML(manifest PortableManifest) yaml.Node {
 	root := yaml.Node{Kind: yaml.MappingNode}
 	root.Content = append(root.Content, scalarNode("version"), intNode(manifest.Version))
 	project := yaml.Node{Kind: yaml.MappingNode}
-	project.Content = append(project.Content, scalarNode("id"), scalarNode(manifest.Project.ID), scalarNode("name"), scalarNode(manifest.Project.Name))
+	project.Content = append(project.Content, scalarNode("id"), scalarNode(manifest.Project.ID), scalarNode("name"), scalarNode(manifest.Project.Name), scalarNode("base_repository"), scalarNode(manifest.Project.BaseRepository))
 	repositories := repositoriesYAML(manifest.Repositories)
 	root.Content = append(root.Content, scalarNode("project"), &project, scalarNode("repositories"), &repositories)
 	return root

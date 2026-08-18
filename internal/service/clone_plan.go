@@ -300,7 +300,7 @@ func (planner *ClonePlanner) planAttempt(ctx context.Context, request ClonePlanR
 	attempt.stage = CloneResultStageDecode
 	manifest, err := config.LoadPortableManifest(loaded.Bytes())
 	if err != nil {
-		return ClonePlan{}, attempt, NewError(ErrorValidation, fmt.Errorf("decode manifest %q: %s", loaded.Source, boundedRedactedDiagnostic(err.Error())))
+		return ClonePlan{}, attempt, NewError(ErrorValidation, fmt.Errorf("decode manifest %q: logical-root manifest format is required: %s", loaded.Source, boundedRedactedDiagnostic(err.Error())))
 	}
 	attempt.stage = CloneResultStageDestination
 	destination, err := inspectCloneDestination(request, manifest.Project.Name, planner.fs)

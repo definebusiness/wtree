@@ -1,6 +1,6 @@
 # Portable manifest v2 base-repository format specification
 
-Status: planned
+Status: implemented
 Source idea: [Logical project roots with a designated base repository](../ideas/logical-project-root-base-repository.md)
 Implementation plan: [Portable manifest v2 base-repository format implementation plan](../plans/portable-manifest-v2-base-repository-format.md)
 

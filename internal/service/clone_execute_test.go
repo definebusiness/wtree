@@ -32,7 +32,7 @@ func TestCloneExecuteThreeLevelExactPlanPublishesConfigStateAndRegistry(t *testi
 
 	manifest := config.PortableManifest{
 		Version: config.PortableManifestVersion,
-		Project: config.PortableProject{ID: "clone-project", Name: "clone-project"},
+		Project: config.PortableProject{ID: "clone-project", Name: "clone-project", BaseRepository: "root"},
 		Repositories: map[string]config.PortableRepository{
 			"root": {
 				Clone: config.CloneSource{Remote: "source-root", URL: rootRemote}, Upstream: config.Upstream{Branch: "root-local", Remote: "source-root", Merge: "refs/heads/root-published"},
@@ -177,7 +177,7 @@ func TestCloneExecuteRootOnlyLocalRemote(t *testing.T) {
 	writeAndCommitCloneFiles(t, repository.Path, map[string]string{".gitignore": "/.wtree.yml\n", "README.md": "root\n"}, "identity")
 	identity := cloneGitOutput(t, repository.Path, "rev-parse", "HEAD")
 	remote := testutil.NewBareGitRemote(t)
-	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "root-only", Name: "root-only"}, Repositories: map[string]config.PortableRepository{"root": {
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "root-only", Name: "root-only", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {
 		Clone: config.CloneSource{Remote: "bootstrap", URL: remote}, Upstream: config.Upstream{Branch: "local-main", Remote: "bootstrap", Merge: "refs/heads/published-main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{identity}}, Mount: ".", DefaultBranch: "local-main",
 	}}}
 	data, err := config.MarshalPortableManifest(manifest)
@@ -200,6 +200,56 @@ func TestCloneExecuteRootOnlyLocalRemote(t *testing.T) {
 	}
 	if _, err := store.ReadWorkspace(WorkspaceStatePath(dataDir, "root-only", "default")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCloneExecuteRejectsByteDifferentServedV2ManifestAndCleansUp(t *testing.T) {
+	base := t.TempDir()
+	repository := testutil.NewGitRepository(t)
+	writeAndCommitCloneFiles(t, repository.Path, map[string]string{".gitignore": "/.wtree.yml\n", "README.md": "root\n"}, "identity")
+	identity := cloneGitOutput(t, repository.Path, "rev-parse", "HEAD")
+	remote := testutil.NewBareGitRemote(t)
+	tracked := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "served-mismatch", Name: "served-mismatch", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {
+		Clone: config.CloneSource{Remote: "source", URL: remote}, Upstream: config.Upstream{Branch: "local-main", Remote: "source", Merge: "refs/heads/published-main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{identity}}, Mount: ".", DefaultBranch: "local-main",
+	}}}
+	trackedBytes, err := config.MarshalPortableManifest(tracked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAndCommitCloneFiles(t, repository.Path, map[string]string{"project.wtree.yml": string(trackedBytes)}, "tracked manifest")
+	cloneGit(t, repository.Path, "push", remote, "HEAD:refs/heads/published-main")
+
+	servedBytes := append(append([]byte(nil), trackedBytes...), []byte("# valid but byte-distinct served manifest\n")...)
+	if string(servedBytes) == string(trackedBytes) {
+		t.Fatal("served manifest is not byte-distinct")
+	}
+	if _, err := config.LoadPortableManifest(servedBytes); err != nil {
+		t.Fatalf("served v2 manifest is invalid: %v", err)
+	}
+	source := writeClonePlanManifest(t, base, servedBytes)
+	destination := filepath.Join(base, "clone")
+	dataDir := filepath.Join(base, "data")
+	plan, err := NewClonePlanner().Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: destination, CWD: base, DataDir: dataDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewCloneExecutor().Execute(context.Background(), plan, nil)
+	if err == nil || !strings.Contains(err.Error(), "root tracked manifest does not equal the fetched manifest") || !HasCleanRollback(err) {
+		t.Fatalf("served manifest mismatch error = %v", err)
+	}
+	for _, path := range []string{destination, dataDir, filepath.Join(dataDir, "registry.json"), WorkspaceStatePath(dataDir, "served-mismatch", "default")} {
+		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("mismatch clone retained published state %q: %v", path, statErr)
+		}
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".clone.wtree-clone-") {
+			t.Fatalf("mismatch clone retained staging path %q", entry.Name())
+		}
 	}
 }
 
@@ -405,7 +455,7 @@ func TestCloneExecuteDifferentProjectsDoNotSerializeRemoteEffects(t *testing.T) 
 	for _, projectID := range []string{"parallel-a", "parallel-b"} {
 		base := t.TempDir()
 		url := filepath.Join(base, projectID+".git")
-		manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: projectID, Name: projectID}, Repositories: map[string]config.PortableRepository{"root": {
+		manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: projectID, Name: projectID, BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {
 			Clone: config.CloneSource{Remote: "source", URL: url}, Upstream: config.Upstream{Branch: "main", Remote: "source", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{clonePlanRootCommit}}, Mount: ".", DefaultBranch: "main",
 		}}}
 		manifestData, err := config.MarshalPortableManifest(manifest)
@@ -445,7 +495,7 @@ func TestCloneExecuteDifferentProjectsDoNotSerializeRemoteEffects(t *testing.T) 
 func TestCloneExecuteSameProjectDifferentDestinationsHasOneWinner(t *testing.T) {
 	dataDir := t.TempDir()
 	url := filepath.Join(t.TempDir(), "same.git")
-	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "same-project", Name: "same-project"}, Repositories: map[string]config.PortableRepository{"root": {
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "same-project", Name: "same-project", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {
 		Clone: config.CloneSource{Remote: "source", URL: url}, Upstream: config.Upstream{Branch: "main", Remote: "source", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{clonePlanRootCommit}}, Mount: ".", DefaultBranch: "main",
 	}}}
 	manifestData, err := config.MarshalPortableManifest(manifest)
@@ -1009,7 +1059,7 @@ func TestCloneExecuteRealRemoteBranchDeletionNeverUsesReplacementTip(t *testing.
 	writeAndCommitCloneFiles(t, repository.Path, map[string]string{".gitignore": "/.wtree.yml\n", "README.md": "root\n"}, "identity")
 	identity := cloneGitOutput(t, repository.Path, "rev-parse", "HEAD")
 	remote := testutil.NewBareGitRemote(t)
-	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "deleted-ref", Name: "deleted-ref"}, Repositories: map[string]config.PortableRepository{"root": {
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "deleted-ref", Name: "deleted-ref", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {
 		Clone: config.CloneSource{Remote: "source", URL: remote}, Upstream: config.Upstream{Branch: "local-main", Remote: "source", Merge: "refs/heads/published-main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{identity}}, Mount: ".", DefaultBranch: "local-main",
 	}}}
 	data, err := config.MarshalPortableManifest(manifest)

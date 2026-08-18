@@ -235,8 +235,15 @@ func (i *Initializer) plan(ctx context.Context, request InitRequest) (initPlan, 
 		}
 		p.identityMap[common] = repository.ID
 	}
+	baseRepository := ""
+	for _, repository := range repositories {
+		if repository.ParentID == "" {
+			baseRepository = repository.ID
+			break
+		}
+	}
 	p.configuration = config.ProjectConfig{Version: config.Version, Project: config.Project{Name: filepath.Base(root)}, Repositories: map[string]config.Repository{}, Worktrees: config.Worktrees{Root: request.WorktreeRoot}, Discovery: config.Discovery{Ignore: request.Ignores}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: source}}
-	p.manifest = config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "identity", Name: filepath.Base(root)}, Repositories: map[string]config.PortableRepository{}}
+	p.manifest = config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "identity", Name: filepath.Base(root), BaseRepository: baseRepository}, Repositories: map[string]config.PortableRepository{}}
 	for id := range overrides {
 		if _, ok := byID[id]; !ok {
 			return initPlan{}, NewError(ErrorValidation, fmt.Errorf("clone URL override references unknown repository %q", id))
@@ -270,7 +277,7 @@ func (i *Initializer) plan(ctx context.Context, request InitRequest) (initPlan, 
 	if err != nil {
 		return initPlan{}, err
 	}
-	p.id, err = availableInitProjectID(deterministicInitProjectID(p.manifest.Repositories), request.DataDir, registry)
+	p.id, err = availableInitProjectID(deterministicInitProjectID(p.manifest.Project.BaseRepository, p.manifest.Repositories), request.DataDir, registry)
 	if err != nil {
 		return initPlan{}, err
 	}
@@ -869,13 +876,13 @@ func restoreCapturedFile(i *Initializer, capturedPath, targetPath string) error 
 	return nil
 }
 
-func deterministicInitProjectID(repositories map[string]config.PortableRepository) string {
+func deterministicInitProjectID(baseRepository string, repositories map[string]config.PortableRepository) string {
 	// The placeholder project is constant: its canonical encoding therefore
 	// binds this ID only to portable repository facts, never a checkout path,
 	// common Git directory, or display name.
 	identity, err := config.MarshalPortableManifest(config.PortableManifest{
 		Version:      config.PortableManifestVersion,
-		Project:      config.PortableProject{ID: "identity", Name: "identity"},
+		Project:      config.PortableProject{ID: "identity", Name: "identity", BaseRepository: baseRepository},
 		Repositories: repositories,
 	})
 	if err != nil {

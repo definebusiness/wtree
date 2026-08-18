@@ -82,6 +82,23 @@ git add .gitignore project.wtree.yml
 stages, commits, or pushes; review and commit the portable manifest and any
 `.gitignore` change yourself.
 
+Portable manifests use schema version 2. The `project.base_repository` field
+names the sole root checkout, which continues to contain the tracked manifest
+and local `.wtree.yml` metadata:
+
+```yaml
+version: 2
+project:
+  id: product
+  name: product
+  base_repository: root
+repositories:
+  root:
+    parent: ""
+    mount: .
+    # clone, upstream, identity, and default_branch are written by `wtree init`
+```
+
 Clone a published project from a local manifest file or an HTTP(S) URL. The
 optional destination defaults to the manifest's safe project name. A dry run
 reads the manifest, checks every remote, and renders the exact-commit plan

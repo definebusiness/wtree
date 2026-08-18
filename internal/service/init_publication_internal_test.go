@@ -1,15 +1,55 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/definebusiness/wtree/internal/config"
 	"github.com/definebusiness/wtree/internal/store"
 	"github.com/definebusiness/wtree/internal/testutil"
+	"github.com/google/uuid"
 )
+
+func TestDeterministicInitProjectIDUsesCanonicalV2BaseFact(t *testing.T) {
+	repositories := map[string]config.PortableRepository{
+		"root": {
+			Clone:    config.CloneSource{Remote: "origin", URL: "https://example.invalid/root.git"},
+			Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"},
+			Identity: config.RepositoryIdentity{InitialCommits: []string{"0123456789abcdef0123456789abcdef01234567"}},
+			Mount:    ".", DefaultBranch: "main",
+		},
+		"child": {
+			Clone:    config.CloneSource{Remote: "origin", URL: "https://example.invalid/child.git"},
+			Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"},
+			Identity: config.RepositoryIdentity{InitialCommits: []string{"89abcdef0123456789abcdef0123456789abcdef"}},
+			Parent:   "root", Mount: "child", DefaultBranch: "main",
+		},
+	}
+	identity, err := config.MarshalPortableManifest(config.PortableManifest{
+		Version:      config.PortableManifestVersion,
+		Project:      config.PortableProject{ID: "identity", Name: "identity", BaseRepository: "root"},
+		Repositories: repositories,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(identity, []byte("base_repository: root\n")) {
+		t.Fatalf("canonical identity omitted v2 base fact:\n%s", identity)
+	}
+	want := uuid.NewSHA1(uuid.NameSpaceURL, append([]byte("wtree:init:v2\n"), identity...)).String()
+	if got := deterministicInitProjectID("root", repositories); got != want {
+		t.Fatalf("deterministic project ID = %q, want canonical v2 identity %q", got, want)
+	}
+	if got := deterministicInitProjectID("root", map[string]config.PortableRepository{
+		"child": repositories["child"], "root": repositories["root"],
+	}); got != want {
+		t.Fatalf("deterministic project ID changed with map iteration order: %q != %q", got, want)
+	}
+}
 
 func TestInitRejectsPostPlanManifestChangeWithoutOtherPublication(t *testing.T) {
 	repository := testutil.NewPushedGitRepository(t)

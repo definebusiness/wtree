@@ -1,6 +1,6 @@
 # Portable manifest v2 base-repository format implementation plan
 
-Status: initial
+Status: implemented
 Source specification: [Portable manifest v2 base-repository format specification](../spec/portable-manifest-v2-base-repository-format.md)
 Related idea: [Logical project roots with a designated base repository](../ideas/logical-project-root-base-repository.md)
 Source of truth: [portable manifest v2 base-repository format specification §§1–7](../spec/portable-manifest-v2-base-repository-format.md); [portable manifest clone specification §§2–5, 9–10](../spec/portable-manifest-clone.md); [`internal/config/portable_manifest.go`](../../internal/config/portable_manifest.go); [`internal/service/init.go`](../../internal/service/init.go); [`internal/service/clone_plan.go`](../../internal/service/clone_plan.go); [`internal/service/clone_execute.go`](../../internal/service/clone_execute.go); [`internal/cli/root.go`](../../internal/cli/root.go)
@@ -147,7 +147,7 @@ v1 rejection inputs.
 
 ## Milestones
 
-### [ ] M00 — Establish the strict portable-manifest v2 contract
+### [x] M00 — Establish the strict portable-manifest v2 contract
 
 Specification coverage: [§§2–4](../spec/portable-manifest-v2-base-repository-format.md#2-compatibility-boundary), [§§2–4](../spec/portable-manifest-v2-base-repository-format.md#3-version-2-portable-manifest-schema), and [§4](../spec/portable-manifest-v2-base-repository-format.md#4-scoped-topology-invariants).
 
@@ -182,7 +182,7 @@ Verification:
 Exit criteria: config is the sole owner of a strictly decoded, canonical v2
 manifest contract; no v1 portable document can reach a consumer as valid.
 
-### [ ] M01 — Author v2 manifests from init without moving local metadata
+### [x] M01 — Author v2 manifests from init without moving local metadata
 
 Specification coverage: [§§2, 5–6](../spec/portable-manifest-v2-base-repository-format.md#2-compatibility-boundary) and [§5](../spec/portable-manifest-v2-base-repository-format.md#5-authoring-and-clone-requirements).
 
@@ -216,7 +216,7 @@ Exit criteria: every manifest authored by init is valid v2 with an explicit
 discovered base repository, while local configuration and existing init safety
 semantics remain unchanged.
 
-### [ ] M02 — Consume and verify scoped v2 manifests through clone
+### [x] M02 — Consume and verify scoped v2 manifests through clone
 
 Specification coverage: [§§2, 4–6](../spec/portable-manifest-v2-base-repository-format.md#2-compatibility-boundary), [§5](../spec/portable-manifest-v2-base-repository-format.md#5-authoring-and-clone-requirements), and [§6](../spec/portable-manifest-v2-base-repository-format.md#6-required-verification).
 
@@ -265,3 +265,6 @@ Append entries during execution; do not rewrite earlier evidence.
 
 | Date | Milestone | Verification | Review | Commit |
 |---|---|---|---|---|
+| 2026-08-18 | M00 | `make fmt-check`; focused config tests/race; `go test ./... -count=1`; `go test -race ./... -count=1`; `go vet ./...`; `make build`; `make release-test`; `git diff --check` — pass | Approved after I01 remediated R1 persisted-base validation and R2 JSON wire name | Not committed (not authorized) |
+| 2026-08-18 | M01 | Focused init service/CLI tests; `make fmt-check`; full tests/race; vet; build; release-test; diff-check — pass | Approved with no material findings | Not committed (not authorized) |
+| 2026-08-18 | M02 | Focused clone service/CLI/race; `make fmt-check`; full tests/race; vet; build; release-test; diff-check — pass | Approved after I21 added real-Git valid-byte-mismatch cleanup coverage | Not committed (not authorized) |

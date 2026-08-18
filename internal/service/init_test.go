@@ -121,8 +121,20 @@ func TestInitDryRunDoesNotWrite(t *testing.T) {
 	if err != nil || !result.DryRun {
 		t.Fatalf("result=%#v %v", result, err)
 	}
+	if result.PortableManifest.Version != config.PortableManifestVersion || result.PortableManifest.Project.BaseRepository != "root" {
+		t.Fatalf("dry-run portable manifest = %#v", result.PortableManifest)
+	}
 	if _, err := os.Stat(filepath.Join(root.Path, ".wtree.yml")); !os.IsNotExist(err) {
 		t.Fatalf("config exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root.Path, "project.wtree.yml")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run published portable manifest: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(data, "registry.json")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run published registry: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(data, "state")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run published workspace state: %v", err)
 	}
 }
 
