@@ -310,7 +310,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		return CloneExecutionResult{}, cleanup(NewError(ErrorInternal, fmt.Errorf("write local clone config: %w", err)))
 	}
 	configPublished, err = secureCloneFileSnapshot(configPath)
-	if err != nil || !configPublished.exists || !bytes.Equal(configPublished.data, expectedConfigBytes) || configPublished.mode.Perm() != 0o600 {
+	if err != nil || !configPublished.exists || !bytes.Equal(configPublished.data, expectedConfigBytes) || !requestedFilePermissionsMatch(configPublished.mode, 0o600) {
 		return CloneExecutionResult{}, cleanup(NewError(ErrorInternal, errors.New("local clone config bytes, type, identity, or mode differ from plan")))
 	}
 	ignored, err := executor.dependencies.Git.IsIgnoredAt(ctx, staging, plan.Repositories[0].AdvertisedCommit, ".wtree.yml")

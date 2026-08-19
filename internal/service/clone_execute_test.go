@@ -1015,7 +1015,7 @@ func TestCloneExecutePostIdentityMetadataAndIdentityChangesAreRetained(t *testin
 							future := time.Now().Add(time.Hour)
 							return os.Chtimes(path, future, future)
 						case "mode-only":
-							return os.Chmod(path, 0o640)
+							return os.Chmod(path, 0o400)
 						}
 					}
 					return nil

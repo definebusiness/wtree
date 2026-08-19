@@ -90,7 +90,7 @@ func TestIgnorePlannerPreservesBytesAndSuppressesQualifiedRule(t *testing.T) {
 	if got, want := string(plan.Files[0].NewBytes), "one\r\ntwo\r\n/visible/\r\n"; got != want {
 		t.Fatalf("new bytes = %q, want %q", got, want)
 	}
-	if got := plan.Files[0].Snapshot.Mode; got != 0o640 {
+	if got := plan.Files[0].Snapshot.Mode; !requestedFilePermissionsMatch(got, 0o640) {
 		t.Fatalf("mode = %o, want 0640", got)
 	}
 	if _, err := NewIgnoreApplier().Apply(context.Background(), plan); err != nil {
@@ -101,7 +101,7 @@ func TestIgnorePlannerPreservesBytesAndSuppressesQualifiedRule(t *testing.T) {
 		t.Fatalf("applied bytes = %q, %v", after, err)
 	}
 	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o640 {
+	if err != nil || !requestedFilePermissionsMatch(info.Mode(), 0o640) {
 		t.Fatalf("applied mode = %v, %v; want 0640", info.Mode(), err)
 	}
 }
@@ -174,7 +174,7 @@ func TestIgnorePlannerRejectsStaleExistenceModeAndTypeWithoutOverwriting(t *test
 		}},
 		{name: "mode", mutate: func(t *testing.T, path string) {
 			t.Helper()
-			if err := os.Chmod(path, 0o600); err != nil {
+			if err := os.Chmod(path, 0o400); err != nil {
 				t.Fatal(err)
 			}
 		}},

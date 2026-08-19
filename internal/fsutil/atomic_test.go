@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -33,7 +34,7 @@ func TestWriteFileAtomicModePreservesModeAndPreReplacementFailures(t *testing.T)
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o640 {
+	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
 		t.Fatalf("mode = %v, %v", info.Mode(), err)
 	}
 }
@@ -156,7 +157,7 @@ func TestAtomicFailureMatrixLeavesCompleteTargetAndCleansTemporary(t *testing.T)
 					if statErr != nil {
 						t.Fatal(statErr)
 					}
-					if existing && info.Mode().Perm() != 0o600 {
+					if existing && runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 						t.Fatalf("replacement mode = %o, want 0600", info.Mode().Perm())
 					}
 					if !existing && info.Mode().Perm()&0o111 != 0 {

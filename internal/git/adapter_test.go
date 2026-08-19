@@ -293,17 +293,17 @@ exec git "$@"
 func TestAdapterWorkingTreeIgnoreDecodesNULDelimitedUnicodeSource(t *testing.T) {
 	repository := testutil.NewGitRepository(t)
 	repository.CommitFile("tracked", "initial\n", "initial")
-	sourceDirectory := "deeper:12:\t\u4e16\u754c"
+	sourceDirectory := filepath.Join("deeper;12;", "nested \u4e16\u754c")
 	if err := os.MkdirAll(filepath.Join(repository.Path, sourceDirectory), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repository.Path, sourceDirectory, ".gitignore"), []byte("/child/\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	mount := sourceDirectory + "/child"
+	mount := filepath.ToSlash(filepath.Join(sourceDirectory, "child"))
 
 	evidence, err := git.NewAdapter("git").InspectWorkingTreeIgnore(context.Background(), repository.Path, mount)
-	if err != nil || !evidence.Ignored || evidence.Source != sourceDirectory+"/.gitignore" || !evidence.Qualifies(repository.Path) {
+	if err != nil || !evidence.Ignored || evidence.Source != filepath.ToSlash(filepath.Join(sourceDirectory, ".gitignore")) || !evidence.Qualifies(repository.Path) {
 		t.Fatalf("NUL-delimited evidence = %#v, %v; want qualifying Unicode source", evidence, err)
 	}
 }

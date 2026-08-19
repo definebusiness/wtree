@@ -460,6 +460,11 @@ func (c *WorkspaceCreator) removeOwnedCreatedWorktree(ctx context.Context, sourc
 	if !ownedInfo.IsDir() || ownedInfo.Mode()&os.ModeSymlink != 0 {
 		return false, fmt.Errorf("preserve created worktree because %q is no longer the planned directory", worktreePath)
 	}
+	// Windows FileInfo resolves its stable volume/file ID lazily from the
+	// original pathname. Prime it before the pathname is atomically moved.
+	if !primeFileIdentity(ownedInfo) {
+		return false, fmt.Errorf("capture created worktree directory identity: %q", worktreePath)
+	}
 	quarantineRoot, err := os.MkdirTemp(filepath.Dir(worktreePath), ".wtree-worktree-rollback-*")
 	if err != nil {
 		return false, fmt.Errorf("allocate private worktree quarantine: %w", err)

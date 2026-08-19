@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/definebusiness/wtree/internal/store"
@@ -23,7 +24,7 @@ func TestStoreRoundTripsVersionedStateAtomicallyWithPrivatePermissions(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		t.Errorf("mode = %o, want restrictive", info.Mode().Perm())
 	}
 	if _, err := store.ReadWorkspace(filepath.Join(t.TempDir(), "missing.json")); err == nil {
