@@ -45,9 +45,17 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test
+        if: runner.os != 'Windows'
         run: go test -timeout=60m ./...
+      - name: Test Windows partitions
+        if: runner.os == 'Windows'
+        run: ./scripts/ci-test.sh normal
       - name: Race test
+        if: runner.os != 'Windows'
         run: go test -race -timeout=90m ./...
+      - name: Race test Windows partitions
+        if: runner.os == 'Windows'
+        run: ./scripts/ci-test.sh race
       - name: Build
         run: go build -o "$RUNNER_TEMP/wtree" ./cmd/wtree
       - name: Cross-platform release layout
