@@ -1,6 +1,6 @@
 # Automatic nested mount ignore protection implementation plan
 
-Status: initial
+Status: implemented
 Implementation readiness: ready to execute
 Source specification: [Automatic nested mount ignore protection specification](../spec/automatic-nested-mount-ignore-protection.md)
 Related idea: [Automatically protect nested repository mounts](../ideas/automatic-nested-mount-ignore-protection.md)
@@ -548,7 +548,7 @@ Exit criteria: every direct child is added only after real Git verification in
 its newly created immediate parent, successful output identifies actual edits,
 and failure cleanup cannot discard unrelated work.
 
-### [ ] M05 — Prove end-to-end protection and documentation consistency
+### [x] M05 — Prove end-to-end protection and documentation consistency
 
 Specification coverage: [§§8–11](../spec/automatic-nested-mount-ignore-protection.md#8-error-and-compatibility-rules), all acceptance scenarios in [§11](../spec/automatic-nested-mount-ignore-protection.md#11-acceptance-scenarios)
 
@@ -611,3 +611,4 @@ Append entries during execution; do not rewrite earlier evidence.
 | 2026-08-18 | M02 | Focused init verification and full check/release gates passed | Approved after R1/R2 remediation | Not committed |
 | 2026-08-18 | M03 | Focused v1 JSON contract and plan/service checks passed | Approved after JSON contract coverage remediation | Not committed |
 | 2026-08-19 | M04 | Exact service/transaction and CLI gates, focused race, full normal/race, fmt, vet, build, release, diff, and three-platform builds passed | Approved after reset-counter R1 correction; safe cleanup and exact recovery evidence verified | Not committed |
+| 2026-08-19 | M05 | Exact CLI acceptance and focused race, full normal/race, Windows partition helper normal/race, documentation audit, fmt, vet, build, release, and exact Ubuntu/macOS/Windows run `32289428176` passed | Approved after C11; all acceptance, compatibility, and platform evidence verified | Task branch `097a235` through `ed1365c` |

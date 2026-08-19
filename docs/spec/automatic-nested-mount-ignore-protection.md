@@ -1,6 +1,6 @@
 # Automatic nested mount ignore protection specification
 
-Status: planned
+Status: implemented
 Source idea: [Automatically protect nested repository mounts](../ideas/automatic-nested-mount-ignore-protection.md)
 Previous design: [Nested mount ignore management specification](nested-mount-ignore-management.md) and [implementation plan](../plans/nested-mount-ignore-management.md), both superseded by the source idea
 Implementation plan: [Automatic nested mount ignore protection implementation plan](../plans/automatic-nested-mount-ignore-protection.md)

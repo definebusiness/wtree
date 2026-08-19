@@ -5,9 +5,9 @@
 - Plan: `docs/plans/automatic-nested-mount-ignore-protection.md`
 - State: `active`
 - Started: `2026-08-18T00:00:00+02:00`
-- Last updated: `2026-08-19T20:47:42+02:00`
-- Active milestone / phase: `M05 — Prove end-to-end protection and documentation consistency / implementing`
-- Resume from: `Commit only the two approved C11 test files plus synchronized ledger in the isolated worktree, push the existing task branch, and monitor the exact resulting three-OS CI run.`
+- Last updated: `2026-08-19T21:16:03+02:00`
+- Active milestone / phase: `M05 — Prove end-to-end protection and documentation consistency / approved`
+- Resume from: `Run the final lifecycle, status-overview, ledger, diff, and worktree audit; then commit and publish only the completion documentation and monitor its docs-only CI run.`
 - Final response permitted: `no`
 
 ## Current milestone ledger
@@ -16,8 +16,8 @@
   - [x] Add black-box CLI coverage for plain init and default/override create, dry-run, retry, failure, and no-change behavior in a three-level real-Git hierarchy. Independently approved.
   - [x] Prove `git add .` in every disposable parent never stages a managed nested repository as mode `160000`, restoring disposable indexes after assertions.
   - [x] Audit help, how-to, README, install/troubleshooting, current specs, and traceability for automatic-only workflows while preserving historical/superseded records. Independently approved.
-  - [ ] Complete compatibility evidence for unrelated commands, plan/schema v1, source bytes, staging/commit behavior, and Linux/macOS/Windows support. Native macOS runtime and Linux/Windows cross-build/test-compilation evidence are present; successful remote Linux/Windows runtime CI for the uncommitted tree is an unresolved external verification constraint.
-  - [ ] After approval, mark plan/spec implemented and update status overview plus final implementation evidence.
+  - [x] Complete compatibility evidence for unrelated commands, plan/schema v1, source bytes, staging/commit behavior, and Linux/macOS/Windows support. Exact run `32289428176` passed on Ubuntu, macOS, and Windows.
+  - [x] After approval, mark plan/spec implemented and update status overview plus final implementation evidence.
 - Implementation tier: `escalation`
 - Remediation attempts: `2`
 - Finding set:
@@ -40,8 +40,8 @@
   - `C9 (resolved): independently approved four-file test-only correction separates malicious parent replacement from DataDir locks, moves root metadata mutation to the state-write revalidation boundary, supplies clone-plan prerequisites/platform facts, and uses native config/domain absolute paths while preserving production contracts.`
   - `C10 (resolved): independently approved identity-targeted clone-plan injection with alias/sibling proof, exact-shape CLI output parsing plus filesystem-identity path comparison across all M05 flows, and host-native config filesystem expectations while retaining URL/format literals.`
   - `C11 (resolved): independently approved two-test-file correction distinguishes verbatim supplied paths from host-native derived children across exact CLI rendering and all ResolvePaths default/override cases.`
-- Current packet and evidence: `C11 changes only internal/cli/plan_internal_test.go and internal/config/paths_test.go. Focused/full/helper normal/race, Windows PE symbol evidence, fmt/vet/native+three-platform build/release/diff/scope gates all pass. Actual Windows execution remains required after approval and publication.`
-- Verification / adjudication: `C1–C11 are independently approved; attempts remain 2. Fresh exact hosted Ubuntu/macOS/Windows runtime verification is still required. M05 stays unchecked and lifecycle transitions remain deferred until it succeeds.`
+- Current packet and evidence: `All M05 scope items are complete. Exact run 32289428176 passed at implementation head ed1365cf7c138bc2d7621b6447a9a4804b5f1201: Ubuntu 96186554807, macOS 96186554625, and Windows 96186554841 all succeeded. Plan/spec/status lifecycle transitions are applied locally.`
+- Verification / adjudication: `C1–C11 and complete M05 are independently approved; attempts remain 2. Main-agent exact hosted verification succeeded on all three supported operating systems. Final lifecycle/diff/worktree audit and completion-document publication remain before the terminal ledger decision.`
 
 ## Action log
 
@@ -348,3 +348,12 @@
 | 2026-08-19T20:47:07+02:00 | main agent | C11 normal-review dispatch | Sent the exact hosted findings, two-test-file diff, verbatim-versus-derived contracts, retained renderer/path coverage and C1–C10 invariants, complete validation/platform evidence, attempts=2, and requested full stable material finding set to the read-only reviewer. | `M05 / reviewing`; receive and reconcile the C11 review decision. |
 | 2026-08-19T20:47:42+02:00 | reviewer | C11 normal-review decision | Approved with no material findings. Exact plan/render literals remain covered; only the derived ignore filename uses native joining. DataDir overrides remain verbatim while default/derived fields use native filepath construction across all OS cases. Scope is two test files plus ledger; fresh Windows runtime remains required. | `M05 / implementing`; commit and publish approved C11 with synchronized ledger. |
 | 2026-08-19T20:47:42+02:00 | main agent | Approved C11 pre-commit checkpoint | Reconciled full C11 approval, two reviewed test files, attempts=2, complete local/platform gates, clean scope/diff, and required exact remote three-OS runtime verification. | `M05 / implementing`; commit approved C11 plus ledger, push, and monitor fresh CI. |
+| 2026-08-19T20:48:41+02:00 | main agent | Approved C11 commit and publication | Staged only the two reviewed test files and synchronized ledger, verified cached whitespace/scope, committed `ed1365cf7c138bc2d7621b6447a9a4804b5f1201` (`test: preserve configured Windows paths`), and pushed the existing task branch. | `M05 / verifying`; resolve and monitor the exact resulting run. |
+| 2026-08-19T20:48:41+02:00 | main agent | C11 three-OS CI start checkpoint | Run `32289428176` targets exact head `ed1365cf7c138bc2d7621b6447a9a4804b5f1201`; macOS `96186554625`, Ubuntu `96186554807`, and Windows `96186554841` are in progress. | `M05 / verifying`; monitor all jobs to terminal results and reconcile any public failure annotation. |
+| 2026-08-19T20:51:09+02:00 | main agent | C11 three-OS CI progress | Ubuntu `96186554807` completed successfully. macOS remains in normal tests; Windows remains in partitioned normal tests with no failure annotation. | `M05 / verifying`; continue monitoring the two active jobs to terminal results. |
+| 2026-08-19T20:57:07+02:00 | main agent | C11 three-OS CI progress | macOS passed normal/race and reached cross-platform release layout; Ubuntu remains successful. Windows remains in partitioned normal tests without a public annotation or timeout. | `M05 / verifying`; continue monitoring macOS and Windows to terminal results. |
+| 2026-08-19T20:58:40+02:00 | main agent | C11 three-OS CI progress | macOS `96186554625` completed successfully, joining Ubuntu. Windows `96186554841` is the sole active job and remains in partitioned normal tests with no failure annotation. | `M05 / verifying`; monitor Windows to its terminal result. |
+| 2026-08-19T21:01:22+02:00 | main agent | C11 Windows CI progress | Windows passed all partitioned normal tests, including the two C11 regressions, and advanced to partitioned race tests without a failure annotation. Ubuntu and macOS remain successful. | `M05 / verifying`; monitor Windows race and final build/release stages to terminal success. |
+| 2026-08-19T21:13:33+02:00 | main agent | C11 Windows CI progress | Windows passed all partitioned race tests and advanced to cross-platform release layout. All three operating systems have passed normal/race; no failure annotation exists. | `M05 / verifying`; monitor final Windows build/release stages to terminal success. |
+| 2026-08-19T21:16:03+02:00 | main agent | C11 exact CI terminal reconciliation | Exact run `32289428176` completed successfully on Ubuntu `96186554807`, macOS `96186554625`, and Windows `96186554841` at implementation head `ed1365cf7c138bc2d7621b6447a9a4804b5f1201`; all normal/race, build, and release stages passed. | `M05 / approved`; apply required lifecycle and completion documentation updates. |
+| 2026-08-19T21:16:03+02:00 | main agent | M05 approval and lifecycle transition | Marked M05 checked, appended its concise execution-log evidence, changed plan/spec status to implemented, and updated status overview counts, entries, and exact three-OS evidence while preserving unrelated original-worktree documentation. | `M05 / approved`; run final lifecycle/ledger/diff/worktree audit, commit only completion documentation, push, and monitor its docs-only CI run. |
