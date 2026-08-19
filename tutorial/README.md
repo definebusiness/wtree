@@ -1,10 +1,13 @@
 # `wtree` hands-on tutorial
 
 This tutorial uses three local bare Git repositories and a portable manifest
-to explore the complete `wtree` workflow without contacting a real remote server. The
+to explore the core `wtree` workflow without contacting a real remote server. The
 fixture represents an Acme Shop project with a parent repository and two
 independent repositories nested inside it. The fixture does not create the
 project checkout: `wtree clone` reconstructs it from `project.wtree.yml`.
+
+For every command, registry cleanup, partial imports, and additional safety
+paths, continue with the [all-commands tutorial](ALL-COMMANDS.md).
 
 Run the commands in order in one terminal. Paths are stored in environment
 variables so the examples work regardless of where the `wtree-go` repository
@@ -75,7 +78,7 @@ export WTREE_PROJECT="$WTREE_TUTORIAL/acme-shop"
 ```
 
 If you already ran the fixture script successfully, skip the script command
-and set the two variables to the existing fixture instead.
+and set the variables to the existing fixture instead.
 
 Keep `wtree` registry and configuration data inside the disposable tutorial
 directory:
@@ -88,7 +91,7 @@ export XDG_CONFIG_HOME="$WTREE_TUTORIAL/xdg-config"
 The fixture initially has only this distribution layout:
 
 ```text
-project.wtree.yml            portable project manifest
+project.wtree.yml            portable v2 project manifest
 origins/
 ├── acme-shop.git/           bare parent origin
 ├── java-backend.git/        bare backend origin
@@ -104,6 +107,7 @@ The fake origins and their branches are:
 | Branch | Parent origin | Backend origin | Frontend origin |
 |---|---:|---:|---:|
 | `main` | yes | yes | yes |
+| `fixture/clone-bootstrap` | yes | yes | yes |
 | `feature/customer-search` | yes | yes | yes |
 | `release/2026-q3` | yes | yes | no |
 | `chore/structured-logging` | yes | yes | no |
@@ -112,30 +116,33 @@ The fake origins and their branches are:
 
 ## 3. Clone the complete project from its portable manifest
 
-Set the global worktree root before cloning so all generated tutorial state
-stays below the disposable fixture directory:
-
-```sh
-wtree config set worktrees.root "$WTREE_TUTORIAL/worktrees"
-```
-
 First preflight the clone. `--dry-run` reads and validates the manifest and all
 deterministic destination rules without creating a checkout, while `--json`
-produces machine-readable output:
+produces machine-readable output. `--worktree-root` keeps this operation
+independent of ambient global configuration:
 
 ```sh
-wtree clone "$WTREE_MANIFEST" "$WTREE_PROJECT" --dry-run --json
+wtree clone "$WTREE_MANIFEST" "$WTREE_PROJECT" \
+  --worktree-root "$WTREE_TUTORIAL/worktrees" \
+  --dry-run --json
 ```
 
 Now reconstruct and register the complete project:
 
 ```sh
-wtree clone "$WTREE_MANIFEST" "$WTREE_PROJECT"
+wtree clone "$WTREE_MANIFEST" "$WTREE_PROJECT" \
+  --worktree-root "$WTREE_TUTORIAL/worktrees"
 cd "$WTREE_PROJECT"
 ```
 
-The clone contains an ignored local configuration and the tracked portable
-manifest from the parent repository:
+The manifest declares version 2 and names `root` as its base repository. The
+fake origins advertise `fixture/clone-bootstrap` as their transport default,
+while the manifest selects `main`; the resulting checkout demonstrates that
+clone follows the explicit manifest contract rather than remote `HEAD`.
+
+The clone contains an ignored local configuration, its ignored persistent
+configuration lock, and the tracked portable manifest from the parent
+repository:
 
 ```sh
 sed -n '1,200p' .wtree.yml
@@ -165,7 +172,7 @@ git -C "$WTREE_PROJECT/backend" branch --remotes
 git -C "$WTREE_PROJECT/frontend" branch --remotes
 ```
 
-## 4. Inspect configuration and understand future directions
+## 4. Inspect project configuration and understand future directions
 
 The worktree root stored by `clone` is project-scoped:
 
@@ -174,17 +181,20 @@ wtree config get worktrees.root --project
 wtree config list --project
 ```
 
-Try the global configuration commands as well. They remain isolated under the
-tutorial's `XDG_CONFIG_HOME`:
+Exercise configuration mutation without changing the user's global settings:
 
 ```sh
-wtree config set worktrees.root "$WTREE_TUTORIAL/global-worktrees"
-wtree config get worktrees.root
-wtree config list
-wtree config unset worktrees.root
+wtree config set worktrees.root "$WTREE_TUTORIAL/alternate-worktrees" --project
+wtree config get worktrees.root --project
+wtree config list --project --json
+wtree config unset worktrees.root --project
+wtree config set worktrees.root "$WTREE_TUTORIAL/worktrees" --project
 ```
 
-The project value still takes precedence for this project:
+Without `--project`, `config get`, `set`, `unset`, and `list` operate on global
+configuration. Project scope takes precedence over global scope, which takes
+precedence over the platform default. The final command above restores the
+clone's original project value:
 
 ```sh
 wtree config get worktrees.root --project
@@ -201,8 +211,10 @@ preflight.
 
 `wtree checkout` uses branches that already exist locally in every configured
 repository. It does not create a local branch from an `origin/...`
-remote-tracking ref. The fresh clones initially have only `main` as a local
-branch, even though the fake origins advertise several more branches.
+remote-tracking ref. The fresh clones initially have manifest-selected `main`
+and the fixture's transport-default `fixture/clone-bootstrap` as local
+branches, while the fake origins advertise several additional branches only
+as remote-tracking refs.
 
 Compare local and remote-tracking branches:
 
@@ -339,10 +351,9 @@ wtree list --json
 Unlike `checkout`, `create` makes a new local branch in every repository. Use
 `--from main` to resolve `main` independently in all three repositories. This
 example also changes the workspace-specific mounts from `backend/` to `api/`
-and from `frontend/` to `web/`. Those custom mounts are already covered by
-committed `/api/` and `/web/` rules in the parent repository's `.gitignore`;
-`wtree` rejects an override before mutation when its selected base does not
-contain an effective `.gitignore` rule:
+and from `frontend/` to `web/`. `wtree` validates those effective mounts and
+the exact literal rules, then its create execution ensures the rules in the
+new parent worktrees without changing source checkouts:
 
 ```sh
 wtree create tutorial/new-workspace \
@@ -352,8 +363,9 @@ wtree create tutorial/new-workspace \
   --dry-run
 ```
 
-The dry run prints the branches, mounts, paths, and Git base commits and ends
-with `No changes made.` Perform the operation with progress output:
+The dry run prints the branches, mounts, paths, Git base commits, and the
+parent `.gitignore` rules that execution will ensure. It ends with an explicit
+no-mutation message. Perform the operation with progress output:
 
 ```sh
 wtree create tutorial/new-workspace \

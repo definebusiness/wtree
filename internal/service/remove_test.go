@@ -68,7 +68,7 @@ func TestWorkspaceRemoverRemovesNestedWorktreesChildFirstAndRetainsState(t *test
 func TestWorkspaceRemoverDoesNotMutateWhenProjectLockIsContended(t *testing.T) {
 	project, _, _, data := createFixture(t)
 	target := filepath.Join(t.TempDir(), "workspace")
-	if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/remove", TargetPath: target, DataDir: data}, nil); err != nil {
+	if _, err := createFixtureWorkspace(t, project, "feature/remove", target, data); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := service.RequireWorkspace(project, data, "feature/remove")
@@ -111,7 +111,7 @@ func TestWorkspaceRemoverRefusesEveryDirtyCategoryUnlessForcedAndReportsOverride
 		t.Run(scenario.name, func(t *testing.T) {
 			project, _, _, data := createFixture(t)
 			target := filepath.Join(t.TempDir(), "workspace")
-			if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/remove", TargetPath: target, DataDir: data}, nil); err != nil {
+			if _, err := createFixtureWorkspace(t, project, "feature/remove", target, data); err != nil {
 				t.Fatal(err)
 			}
 			workspace, err := service.RequireWorkspace(project, data, "feature/remove")
@@ -196,7 +196,7 @@ func TestWorkspaceRemoverRefusesPresentButUnregisteredCheckoutWithoutRepair(t *t
 func TestWorkspaceRemoverRollsBackMidRemovalAndWritesRecoveryOnlyWhenUndoFails(t *testing.T) {
 	project, _, _, data := createFixture(t)
 	target := filepath.Join(t.TempDir(), "workspace")
-	if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/remove", TargetPath: target, DataDir: data}, nil); err != nil {
+	if _, err := createFixtureWorkspace(t, project, "feature/remove", target, data); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := service.RequireWorkspace(project, data, "feature/remove")

@@ -1,11 +1,56 @@
 package git_test
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/definebusiness/wtree/internal/git"
 )
+
+func TestParseCheckIgnoreEvidenceAndQualificationRejections(t *testing.T) {
+	evidence, err := git.ParseCheckIgnoreEvidence([]byte("nested/.gitignore\x0012\x00/child/\x00nested/child/\x00"))
+	if err != nil || !evidence.Ignored || evidence.Negated || evidence.Source != "nested/.gitignore" || evidence.Line != 12 || evidence.Pattern != "/child/" || evidence.Path != "nested/child/" {
+		t.Fatalf("ParseCheckIgnoreEvidence() = %#v, %v", evidence, err)
+	}
+
+	for _, output := range [][]byte{
+		[]byte("nested/.gitignore\x0012\x00!/child/\x00nested/child/\x00"),
+		[]byte(".git/info/exclude\x001\x00/child/\x00child/\x00"),
+		[]byte("/outside/.gitignore\x001\x00/child/\x00child/\x00"),
+	} {
+		evidence, err := git.ParseCheckIgnoreEvidence(output)
+		if err != nil {
+			t.Fatalf("ParseCheckIgnoreEvidence(%q) error = %v", output, err)
+		}
+		if evidence.Qualifies(t.TempDir()) {
+			t.Fatalf("evidence %#v qualifies outside or negated rule", evidence)
+		}
+	}
+	for _, output := range [][]byte{nil, []byte("no NUL\n"), []byte(".gitignore\x00not-a-line\x00/child/\x00child/\x00"), []byte(".gitignore\x001\x00/child\x00child\x00extra")} {
+		if _, err := git.ParseCheckIgnoreEvidence(output); err == nil {
+			t.Fatalf("ParseCheckIgnoreEvidence(%q) error = nil", output)
+		}
+	}
+}
+
+func TestWorkingTreeIgnoreEvidenceRequiresSourceToGovernMount(t *testing.T) {
+	parent := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(parent, "unrelated"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "unrelated", ".gitignore"), []byte("/child/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := git.ParseCheckIgnoreEvidence([]byte("unrelated/.gitignore\x001\x00/child/\x00nested/child/\x00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Qualifies(parent) {
+		t.Fatalf("evidence %#v qualifies despite a non-governing source", evidence)
+	}
+}
 
 func TestParseWorktreeListPorcelain(t *testing.T) {
 	input := "worktree /tmp/repo with space\nHEAD 012345\nbranch refs/heads/main\n\nworktree /tmp/detached\nHEAD abcdef\ndetached\n\n"

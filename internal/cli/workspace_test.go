@@ -94,7 +94,7 @@ func TestExecuteCheckoutRestoresRetainedRenamedMountAndLookupFromNestedCheckout(
 	}
 	backend.Path = backendPath
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	root.CommitFile(".gitignore", "/api/\n", "ignore custom mount")
@@ -160,7 +160,7 @@ func TestExecuteCheckoutOverlayRetainsUnspecifiedMounts(t *testing.T) {
 	}
 	shared.Path = sharedPath
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	root.CommitFile(".gitignore", "/api/\n/services/\n", "ignore custom backend mounts")
@@ -245,7 +245,7 @@ func TestExecuteListIncludesPartialWorkspaceJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := t.TempDir()
-	initialized := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore")
+	initialized := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data)
 	if initialized.Err != nil {
 		t.Fatalf("init = %#v", initialized)
 	}

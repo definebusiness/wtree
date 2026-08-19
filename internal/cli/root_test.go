@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/definebusiness/wtree/internal/cli"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
+	"github.com/definebusiness/wtree/internal/service"
 	"github.com/definebusiness/wtree/internal/store"
 	"github.com/definebusiness/wtree/internal/testutil"
 )
@@ -33,6 +35,50 @@ func TestExecuteVersion(t *testing.T) {
 	}
 }
 
+func TestInitDoesNotExposeRemovedAddIgnoreFlag(t *testing.T) {
+	project := testutil.NewPushedGitRepository(t)
+	result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", t.TempDir(), "--add-ignore")
+	if result.Err == nil || cli.ExitCode(result.Err) != 2 {
+		t.Fatalf("init --add-ignore = %#v, want invalid arguments", result)
+	}
+	if !strings.Contains(result.Err.Error(), "unknown flag: --add-ignore") {
+		t.Fatalf("init --add-ignore error = %v", result.Err)
+	}
+	if _, err := os.Stat(filepath.Join(project.Path, ".wtree.yml")); !os.IsNotExist(err) {
+		t.Fatalf("unsupported flag created local config: %v", err)
+	}
+}
+
+func TestCreateHelpDescribesAutomaticIgnoreProtection(t *testing.T) {
+	for _, arguments := range [][]string{{"create", "--help"}, {"create", "--how-to"}} {
+		result := testutil.RunCommand(t, cli.Execute, arguments...)
+		if result.Err != nil || !containsAll(result.Stdout, "automatically ensure", "--dry-run") || strings.Contains(result.Stdout, "committed parent .gitignore") {
+			t.Fatalf("create documentation %v = %#v", arguments, result)
+		}
+	}
+}
+
+func TestExecuteCreateDryRunRootOnlyPreservesV1JSONPlan(t *testing.T) {
+	project := testutil.NewPushedGitRepository(t)
+	project.CommitFile("root.txt", "root\n", "root")
+	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
+	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
+		t.Fatalf("init = %#v", result)
+	}
+
+	result := testutil.RunCommand(t, cli.Execute,
+		"create", "--project", project.Path, "feature/root", "--dry-run", "--data-dir", data, "--path", target, "--json")
+	if result.Err != nil || result.Stderr != "" {
+		t.Fatalf("root create dry-run = %#v", result)
+	}
+	assertWorkspacePlanV1JSON(t, result.Stdout, "create", "feature/root", target,
+		[]workspacePlanRepository{{ID: "root", Mount: ".", Path: target}},
+		[]workspacePlanStep{
+			{Action: "create_branch", RepositoryID: "root", Inverse: "delete_branch"},
+			{Action: "add_worktree", RepositoryID: "root", Inverse: "remove_worktree"},
+		})
+}
+
 func TestExecuteCreateDryRunRendersDeterministicJSONPlanWithoutMutation(t *testing.T) {
 	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
@@ -43,35 +89,72 @@ func TestExecuteCreateDryRunRendersDeterministicJSONPlanWithoutMutation(t *testi
 		t.Fatal(err)
 	}
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
-	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	project.CommitFile(".gitignore", "/api/\n", "ignore custom mount")
+	ignorePath := filepath.Join(project.Path, ".gitignore")
+	beforeIgnore, err := os.ReadFile(ignorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeIgnoreInfo, err := os.Stat(ignorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryPath := filepath.Join(data, "registry.json")
+	beforeRegistry, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	human := testutil.RunCommand(t, cli.Execute,
+		"create", "--project", project.Path, "feature/login", "--dry-run", "--data-dir", data, "--path", target, "--mount", "backend=api")
+	if human.Err != nil || human.Stderr != "" || !containsAll(human.Stdout,
+		"Automatic ignore protection (execution will ensure):", filepath.Join(target, ".gitignore"), "/api/", "No changes made. Dry run performs no mutation.") {
+		t.Fatalf("human create dry-run = %#v", human)
+	}
 	result := testutil.RunCommand(t, cli.Execute,
 		"create", "--project", project.Path, "feature/login", "--dry-run", "--data-dir", data, "--path", target, "--mount", "backend=api", "--json")
 	if result.Err != nil || result.Stderr != "" {
 		t.Fatalf("create dry-run = %#v", result)
 	}
-	var value struct {
-		Operation    string `json:"operation"`
-		RootPath     string `json:"rootPath"`
-		Repositories []struct {
-			ID    string `json:"id"`
-			Mount string `json:"mount"`
-		} `json:"repositories"`
-		Steps []struct {
-			Action       string `json:"action"`
-			RepositoryID string `json:"repositoryId"`
-		} `json:"steps"`
-	}
-	if err := json.Unmarshal([]byte(result.Stdout), &value); err != nil {
-		t.Fatal(err)
-	}
-	if value.Operation != "create" || value.RootPath != target || len(value.Repositories) != 2 || value.Repositories[1].ID != "backend" || value.Repositories[1].Mount != "api" || len(value.Steps) != 4 {
-		t.Fatalf("create plan = %#v", value)
-	}
+	assertWorkspacePlanV1JSON(t, result.Stdout, "create", "feature/login", target,
+		[]workspacePlanRepository{
+			{ID: "root", Mount: ".", Path: target},
+			{ID: "backend", ParentID: "root", Mount: "api", Path: filepath.Join(target, "api")},
+		},
+		[]workspacePlanStep{
+			{Action: "create_branch", RepositoryID: "root", Inverse: "delete_branch"},
+			{Action: "add_worktree", RepositoryID: "root", Inverse: "remove_worktree"},
+			{Action: "create_branch", RepositoryID: "backend", Inverse: "delete_branch"},
+			{Action: "add_worktree", RepositoryID: "backend", Inverse: "remove_worktree"},
+		})
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Fatalf("dry-run created target: %v", err)
+	}
+	afterIgnore, err := os.ReadFile(ignorePath)
+	if err != nil || string(afterIgnore) != string(beforeIgnore) {
+		t.Fatalf("dry-run changed source ignore file: before=%q after=%q err=%v", beforeIgnore, afterIgnore, err)
+	}
+	afterIgnoreInfo, err := os.Stat(ignorePath)
+	if err != nil || !afterIgnoreInfo.ModTime().Equal(beforeIgnoreInfo.ModTime()) {
+		t.Fatalf("dry-run changed source ignore mtime: before=%v after=%v err=%v", beforeIgnoreInfo.ModTime(), afterIgnoreInfo.ModTime(), err)
+	}
+	afterRegistry, err := os.ReadFile(registryPath)
+	if err != nil || string(afterRegistry) != string(beforeRegistry) {
+		t.Fatalf("dry-run changed registry: before=%q after=%q err=%v", beforeRegistry, afterRegistry, err)
+	}
+	if exists, branchErr := gitadapter.NewAdapter("git").BranchExists(context.Background(), project.Path, "feature/login"); branchErr != nil || exists {
+		t.Fatalf("dry-run created branch: exists=%t error=%v", exists, branchErr)
+	}
+	resolution, err := service.NewResolver().ResolveReadOnly(context.Background(), service.ResolveRequest{Path: project.Path, DataDir: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(service.WorkspaceStatePath(data, resolution.Project.ID, "feature-login")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created workspace state: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(data, "projects", resolution.Project.ID, "recovery", "feature-login.json")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created recovery state: %v", err)
 	}
 }
 
@@ -84,13 +167,37 @@ func TestExecuteCreateCreatesBranchWorktreeAndState(t *testing.T) {
 	}
 
 	result := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/login", "--data-dir", data, "--path", target)
-	if result.Err != nil || result.Stderr != "" {
+	if result.Err != nil || result.Stderr != "" || !strings.Contains(result.Stdout, "Every nested mount was already protected.\n") {
 		t.Fatalf("create error = %v, result = %#v", result.Err, result)
 	}
 	if _, err := os.Stat(filepath.Join(target, ".git")); err != nil {
 		t.Fatalf("created worktree .git: %v", err)
 	}
 	project.Run(t, "show-ref", "--verify", "--quiet", "refs/heads/feature/login")
+}
+
+func TestExecuteCreateReportsActualAutomaticIgnoreUpdates(t *testing.T) {
+	root := testutil.NewPushedGitRepository(t)
+	root.CommitFile("root.txt", "root\n", "root")
+	backend := testutil.NewPushedGitRepository(t)
+	backend.CommitFile("backend.txt", "backend\n", "backend")
+	if err := os.Rename(backend.Path, filepath.Join(root.Path, "backend")); err != nil {
+		t.Fatal(err)
+	}
+	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
+		t.Fatalf("init = %#v", result)
+	}
+	root.CommitFile(".gitignore", "# preserved\n", "base without nested mount rule")
+
+	result := testutil.RunCommand(t, cli.Execute, "create", "--project", root.Path, "feature/ignore-output", "--data-dir", data, "--path", target)
+	if result.Err != nil || result.Stderr != "" || !containsAll(result.Stdout,
+		"Created workspace: feature/ignore-output", "Changed .gitignore files:", filepath.Join(target, ".gitignore"), "/backend/", "Review and commit .gitignore changes; wtree did not stage or commit them.") {
+		t.Fatalf("create output = %#v", result)
+	}
+	if got, err := os.ReadFile(filepath.Join(target, ".gitignore")); err != nil || string(got) != "# preserved\n/backend/\n" {
+		t.Fatalf("created ignore = %q, %v", got, err)
+	}
 }
 
 func TestExecuteCreateFromJSONVerboseAndForceContracts(t *testing.T) {
@@ -202,10 +309,49 @@ func TestExecuteCheckoutDryRunAndRejectsUnsupportedFrom(t *testing.T) {
 	if result.Err != nil || !strings.Contains(result.Stdout, "Operation: checkout\n") || !strings.Contains(result.Stdout, "No changes made.\n") || result.Stderr != "" {
 		t.Fatalf("checkout dry-run = %#v", result)
 	}
+	jsonResult := testutil.RunCommand(t, cli.Execute, "checkout", "--project", project.Path, "feature", "--dry-run", "--data-dir", data, "--path", target, "--json")
+	if jsonResult.Err != nil || jsonResult.Stderr != "" {
+		t.Fatalf("checkout JSON dry-run = %#v", jsonResult)
+	}
+	assertWorkspacePlanV1JSON(t, jsonResult.Stdout, "checkout", "feature", target,
+		[]workspacePlanRepository{{ID: "root", Mount: ".", Path: target}},
+		[]workspacePlanStep{{Action: "add_worktree", RepositoryID: "root", Inverse: "remove_worktree"}})
 	unsupported := testutil.RunCommand(t, cli.Execute, "checkout", "--project", project.Path, "feature", "--from", "main", "--dry-run", "--data-dir", data, "--path", target)
 	if unsupported.Err == nil || cli.ExitCode(unsupported.Err) != 2 {
 		t.Fatalf("checkout --from = %#v, want invalid arguments", unsupported)
 	}
+}
+
+func TestExecuteCreateDryRunNestedDefaultMountPreservesV1JSONPlan(t *testing.T) {
+	root := testutil.NewPushedGitRepository(t)
+	root.CommitFile("root.txt", "root\n", "root")
+	backend := testutil.NewPushedGitRepository(t)
+	backend.CommitFile("backend.txt", "backend\n", "backend")
+	backendPath := filepath.Join(root.Path, "backend")
+	if err := os.Rename(backend.Path, backendPath); err != nil {
+		t.Fatal(err)
+	}
+	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
+		t.Fatalf("init = %#v", result)
+	}
+
+	result := testutil.RunCommand(t, cli.Execute,
+		"create", "--project", root.Path, "feature/default", "--dry-run", "--data-dir", data, "--path", target, "--json")
+	if result.Err != nil || result.Stderr != "" {
+		t.Fatalf("nested default create dry-run = %#v", result)
+	}
+	assertWorkspacePlanV1JSON(t, result.Stdout, "create", "feature/default", target,
+		[]workspacePlanRepository{
+			{ID: "root", Mount: ".", Path: target},
+			{ID: "backend", ParentID: "root", Mount: "backend", Path: filepath.Join(target, "backend")},
+		},
+		[]workspacePlanStep{
+			{Action: "create_branch", RepositoryID: "root", Inverse: "delete_branch"},
+			{Action: "add_worktree", RepositoryID: "root", Inverse: "remove_worktree"},
+			{Action: "create_branch", RepositoryID: "backend", Inverse: "delete_branch"},
+			{Action: "add_worktree", RepositoryID: "backend", Inverse: "remove_worktree"},
+		})
 }
 
 func TestExecuteCreateDryRunAppliesRepeatedMountsToNestedRepositories(t *testing.T) {
@@ -223,7 +369,7 @@ func TestExecuteCreateDryRunAppliesRepeatedMountsToNestedRepositories(t *testing
 		t.Fatal(err)
 	}
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	root.CommitFile(".gitignore", "/api/\n", "ignore custom backend mount")
@@ -587,4 +733,113 @@ func TestExecuteVersionAndHelpRejectTrailingArguments(t *testing.T) {
 			}
 		})
 	}
+}
+
+type workspacePlanRepository struct {
+	ID       string
+	ParentID string
+	Mount    string
+	Path     string
+}
+
+type workspacePlanStep struct {
+	Action       string `json:"action"`
+	RepositoryID string `json:"repositoryId"`
+	Inverse      string `json:"inverse"`
+}
+
+func assertWorkspacePlanV1JSON(t *testing.T, output, operation, workspaceName, rootPath string, repositories []workspacePlanRepository, steps []workspacePlanStep) {
+	t.Helper()
+	if bytes.Contains(bytes.ToLower([]byte(output)), []byte("ignore")) {
+		t.Fatalf("workspace v1 JSON contains ignore metadata: %s", output)
+	}
+
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(output), &document); err != nil {
+		t.Fatalf("decode workspace v1 JSON: %v", err)
+	}
+	assertJSONKeys(t, document, "version", "operation", "projectId", "workspaceName", "workspaceId", "rootPath", "repositories", "steps")
+
+	var value struct {
+		Version       int               `json:"version"`
+		Operation     string            `json:"operation"`
+		ProjectID     string            `json:"projectId"`
+		WorkspaceName string            `json:"workspaceName"`
+		WorkspaceID   string            `json:"workspaceId"`
+		RootPath      string            `json:"rootPath"`
+		Repositories  []json.RawMessage `json:"repositories"`
+		Steps         []json.RawMessage `json:"steps"`
+	}
+	if err := json.Unmarshal([]byte(output), &value); err != nil {
+		t.Fatalf("decode workspace v1 JSON fields: %v", err)
+	}
+	if value.Version != 1 || value.Operation != operation || value.ProjectID == "" || value.WorkspaceName != workspaceName || value.WorkspaceID == "" || value.RootPath != rootPath {
+		t.Fatalf("workspace v1 JSON fields = %#v, want version/operation/project/workspace/root %d/%q/non-empty/%q/%q", value, 1, operation, workspaceName, rootPath)
+	}
+	if len(value.Repositories) != len(repositories) {
+		t.Fatalf("workspace v1 JSON repositories = %d, want %d", len(value.Repositories), len(repositories))
+	}
+	for index, want := range repositories {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(value.Repositories[index], &object); err != nil {
+			t.Fatalf("decode repository %d: %v", index, err)
+		}
+		keys := []string{"id", "base", "branch", "mount", "path"}
+		if want.ParentID != "" {
+			keys = append(keys, "parentId")
+		}
+		assertJSONKeys(t, object, keys...)
+		var repository struct {
+			ID       string `json:"id"`
+			ParentID string `json:"parentId"`
+			Base     string `json:"base"`
+			Branch   string `json:"branch"`
+			Mount    string `json:"mount"`
+			Path     string `json:"path"`
+		}
+		if err := json.Unmarshal(value.Repositories[index], &repository); err != nil {
+			t.Fatalf("decode repository %d fields: %v", index, err)
+		}
+		if repository.ID != want.ID || repository.ParentID != want.ParentID || repository.Base == "" || repository.Branch != workspaceName || repository.Mount != want.Mount || repository.Path != want.Path {
+			t.Fatalf("workspace v1 JSON repository %d = %#v, want id/parent/non-empty-base/branch/mount/path %#v", index, repository, want)
+		}
+	}
+
+	if len(value.Steps) != len(steps) {
+		t.Fatalf("workspace v1 JSON steps = %d, want %d", len(value.Steps), len(steps))
+	}
+	for index, want := range steps {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(value.Steps[index], &object); err != nil {
+			t.Fatalf("decode step %d: %v", index, err)
+		}
+		assertJSONKeys(t, object, "action", "repositoryId", "inverse")
+		var step workspacePlanStep
+		if err := json.Unmarshal(value.Steps[index], &step); err != nil {
+			t.Fatalf("decode step %d fields: %v", index, err)
+		}
+		if step != want {
+			t.Fatalf("workspace v1 JSON step %d = %#v, want %#v", index, step, want)
+		}
+	}
+}
+
+func assertJSONKeys(t *testing.T, object map[string]json.RawMessage, keys ...string) {
+	t.Helper()
+	if len(object) != len(keys) {
+		t.Fatalf("JSON keys = %v, want %v", jsonObjectKeys(object), keys)
+	}
+	for _, key := range keys {
+		if _, found := object[key]; !found {
+			t.Fatalf("JSON keys = %v, want key %q", jsonObjectKeys(object), key)
+		}
+	}
+}
+
+func jsonObjectKeys(object map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(object))
+	for key := range object {
+		keys = append(keys, key)
+	}
+	return keys
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/definebusiness/wtree/internal/domain"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
@@ -46,10 +47,19 @@ func (p *WorkspacePlanner) Plan(ctx context.Context, project domain.Project, req
 	if err := project.Validate(); err != nil {
 		return plan.WorkspacePlan{}, NewError(ErrorValidation, fmt.Errorf("validate project: %w", err))
 	}
+	var err error
+	project, err = normalizeProjectMounts(project)
+	if err != nil {
+		return plan.WorkspacePlan{}, NewError(ErrorValidation, err)
+	}
 	if request.Operation != plan.Create && request.Operation != plan.Checkout {
 		return plan.WorkspacePlan{}, NewError(ErrorValidation, fmt.Errorf("unsupported workspace operation %q", request.Operation))
 	}
 	mounts, err := mountMap(request.Mounts)
+	if err != nil {
+		return plan.WorkspacePlan{}, NewError(ErrorValidation, err)
+	}
+	mounts, err = normalizeMountOverrides(project, mounts)
 	if err != nil {
 		return plan.WorkspacePlan{}, NewError(ErrorValidation, err)
 	}
@@ -72,7 +82,7 @@ func (p *WorkspacePlanner) Plan(ctx context.Context, project domain.Project, req
 	if err != nil {
 		return plan.WorkspacePlan{}, NewError(ErrorValidation, fmt.Errorf("resolve workspace mounts: %w", err))
 	}
-	if err := p.preflightRepositories(ctx, project, request, paths); err != nil {
+	if err := p.preflightRepositories(ctx, project, request, mounts, paths); err != nil {
 		return plan.WorkspacePlan{}, err
 	}
 
@@ -90,13 +100,11 @@ func (p *WorkspacePlanner) Plan(ctx context.Context, project domain.Project, req
 		if err != nil {
 			return plan.WorkspacePlan{}, err
 		}
+		mount := effectiveMount(repository, mounts)
 		repositories = append(repositories, plan.RepositoryPlan{
 			ID: repository.ID, ParentID: repository.ParentID, Base: resolvedBase,
-			Branch: request.WorkspaceName, Mount: effectiveMount(repository, mounts), Path: paths[repository.ID],
+			Branch: request.WorkspaceName, Mount: mount, Path: paths[repository.ID],
 		})
-	}
-	if err := p.preflightMountIgnores(ctx, project, mounts, repositories); err != nil {
-		return plan.WorkspacePlan{}, err
 	}
 	value := plan.WorkspacePlan{
 		Version:       plan.Version,
@@ -111,42 +119,13 @@ func (p *WorkspacePlanner) Plan(ctx context.Context, project domain.Project, req
 	if err := value.Validate(); err != nil {
 		return plan.WorkspacePlan{}, NewError(ErrorValidation, fmt.Errorf("validate workspace plan: %w", err))
 	}
+	if _, err := WorkspacePlanIgnoreEnsures(value); err != nil {
+		return plan.WorkspacePlan{}, NewError(ErrorValidation, fmt.Errorf("derive workspace ignore ensures: %w", err))
+	}
 	return value, nil
 }
 
-func (p *WorkspacePlanner) preflightMountIgnores(ctx context.Context, project domain.Project, mounts map[string]string, repositories []plan.RepositoryPlan) error {
-	configured := make(map[string]domain.Repository, len(project.Repositories))
-	bases := make(map[string]string, len(repositories))
-	for _, repository := range project.Repositories {
-		configured[repository.ID] = repository
-	}
-	for _, repository := range repositories {
-		bases[repository.ID] = repository.Base
-	}
-	for _, repository := range project.ParentFirst() {
-		mount, overridden := mounts[repository.ID]
-		if !overridden {
-			continue
-		}
-		if mount == repository.DefaultMount {
-			continue
-		}
-		if repository.ParentID == "" {
-			continue
-		}
-		parent := configured[repository.ParentID]
-		ignored, err := p.git.IsIgnoredAt(ctx, parent.SourcePath, bases[parent.ID], mount)
-		if err != nil {
-			return NewError(ErrorGit, fmt.Errorf("verify mount %q for repository %q is ignored by parent repository %q: %w", mount, repository.ID, parent.ID, err))
-		}
-		if !ignored {
-			return NewError(ErrorValidation, fmt.Errorf("mount %q for repository %q is not ignored by parent repository %q at base %s; add and commit an appropriate rule to the parent .gitignore", mount, repository.ID, parent.ID, bases[parent.ID]))
-		}
-	}
-	return nil
-}
-
-func (p *WorkspacePlanner) preflightRepositories(ctx context.Context, project domain.Project, request WorkspacePlanRequest, paths map[string]string) error {
+func (p *WorkspacePlanner) preflightRepositories(ctx context.Context, project domain.Project, request WorkspacePlanRequest, mounts map[string]string, paths map[string]string) error {
 	for _, repository := range project.ParentFirst() {
 		validBranch, err := p.git.ValidBranchName(ctx, repository.SourcePath, request.WorkspaceName)
 		if err != nil {
@@ -187,7 +166,7 @@ func (p *WorkspacePlanner) preflightRepositories(ctx context.Context, project do
 				return NewError(ErrorConflict, fmt.Errorf("branch %q is already checked out for repository %q", request.WorkspaceName, repository.ID))
 			}
 		}
-		if err := checkSourceMountConflict(project, repository, request.Mounts); err != nil {
+		if err := checkSourceMountConflict(project, repository, mounts); err != nil {
 			return NewError(ErrorConflict, err)
 		}
 	}
@@ -221,6 +200,40 @@ func mountMap(overrides []MountOverride) (map[string]string, error) {
 		mounts[override.RepositoryID] = override.Mount
 	}
 	return mounts, nil
+}
+
+func normalizeMountOverrides(project domain.Project, mounts map[string]string) (map[string]string, error) {
+	repositories := make(map[string]domain.Repository, len(project.Repositories))
+	for _, repository := range project.Repositories {
+		repositories[repository.ID] = repository
+	}
+	normalized := make(map[string]string, len(mounts))
+	for id, mount := range mounts {
+		repository, exists := repositories[id]
+		if !exists {
+			return nil, fmt.Errorf("mount override has unknown repository %q", id)
+		}
+		value, err := pathutil.NormalizeMount(mount, repository.ParentID == "")
+		if err != nil {
+			return nil, fmt.Errorf("repository %q mount: %w", id, err)
+		}
+		normalized[id] = value
+	}
+	return normalized, nil
+}
+
+func normalizeProjectMounts(project domain.Project) (domain.Project, error) {
+	normalized := project
+	normalized.Repositories = append([]domain.Repository(nil), project.Repositories...)
+	for index := range normalized.Repositories {
+		repository := &normalized.Repositories[index]
+		mount, err := pathutil.NormalizeMount(repository.DefaultMount, repository.ParentID == "")
+		if err != nil {
+			return domain.Project{}, fmt.Errorf("normalize repository %q default mount: %w", repository.ID, err)
+		}
+		repository.DefaultMount = mount
+	}
+	return normalized, nil
 }
 
 func plannedRoot(projectID string, request WorkspacePlanRequest) (string, error) {
@@ -301,7 +314,7 @@ func checkWorkspaceCollision(projectID, dataDir string, operation plan.Operation
 	return nil
 }
 
-func checkSourceMountConflict(project domain.Project, repository domain.Repository, overrides []MountOverride) error {
+func checkSourceMountConflict(project domain.Project, repository domain.Repository, overrides map[string]string) error {
 	if repository.ParentID == "" {
 		return nil
 	}
@@ -314,11 +327,8 @@ func checkSourceMountConflict(project domain.Project, repository domain.Reposito
 	// content. Its configured nested source is permitted; other existing
 	// content at a planned mount would be obscured by an added worktree.
 	mount := repository.DefaultMount
-	for _, override := range overrides {
-		if override.RepositoryID == repository.ID {
-			mount = override.Mount
-			break
-		}
+	if override, exists := overrides[repository.ID]; exists {
+		mount = override
 	}
 	candidate := filepath.Join(parent.SourcePath, filepath.FromSlash(mount))
 	info, err := os.Lstat(candidate)
@@ -343,6 +353,119 @@ func effectiveMount(repository domain.Repository, mounts map[string]string) stri
 		return mount
 	}
 	return repository.DefaultMount
+}
+
+// IgnoreEnsure names the root .gitignore in one planned parent worktree and
+// the literal direct-child rules that create execution must ensure there. It
+// is derived from the public version-one repository entries; it is deliberately
+// not a workspace-plan field or action.
+type IgnoreEnsure struct {
+	ParentRepositoryID string
+	Path               string
+	Rules              []string
+}
+
+// WorkspacePlanIgnoreEnsures projects normalized non-root repository entries
+// into parent-file requirements. It performs no filesystem or Git inspection.
+func WorkspacePlanIgnoreEnsures(value plan.WorkspacePlan) ([]IgnoreEnsure, error) {
+	repositories := make(map[string]plan.RepositoryPlan, len(value.Repositories))
+	for _, repository := range value.Repositories {
+		if repository.ID == "" || repository.Path == "" {
+			return nil, fmt.Errorf("workspace plan repository ID and path are required")
+		}
+		if _, exists := repositories[repository.ID]; exists {
+			return nil, fmt.Errorf("workspace plan has duplicate repository %q", repository.ID)
+		}
+		repositories[repository.ID] = repository
+	}
+
+	type requirement struct {
+		childID string
+		rule    string
+	}
+	type group struct {
+		parentID string
+		path     string
+		depth    int
+		requires []requirement
+	}
+	groups := make(map[string]*group)
+	for _, repository := range value.Repositories {
+		if repository.ParentID == "" {
+			continue
+		}
+		parent, found := repositories[repository.ParentID]
+		if !found || parent.ID == repository.ID {
+			return nil, fmt.Errorf("repository %q has unknown or invalid parent %q", repository.ID, repository.ParentID)
+		}
+		mount, err := pathutil.NormalizeMount(repository.Mount, false)
+		if err != nil {
+			return nil, fmt.Errorf("repository %q mount: %w", repository.ID, err)
+		}
+		if mount != repository.Mount {
+			return nil, fmt.Errorf("repository %q mount %q is not normalized", repository.ID, repository.Mount)
+		}
+		rule, err := NestedDirectoryRule(mount)
+		if err != nil {
+			return nil, fmt.Errorf("repository %q mount: %w", repository.ID, err)
+		}
+		item := groups[parent.ID]
+		if item == nil {
+			item = &group{parentID: parent.ID, path: filepath.Join(parent.Path, ".gitignore")}
+			groups[parent.ID] = item
+		}
+		item.requires = append(item.requires, requirement{childID: repository.ID, rule: rule})
+	}
+
+	for _, item := range groups {
+		depth, err := workspaceRepositoryDepth(item.parentID, repositories)
+		if err != nil {
+			return nil, err
+		}
+		item.depth = depth
+		sort.Slice(item.requires, func(left, right int) bool {
+			return item.requires[left].childID < item.requires[right].childID
+		})
+	}
+	ordered := make([]*group, 0, len(groups))
+	for _, item := range groups {
+		ordered = append(ordered, item)
+	}
+	sort.Slice(ordered, func(left, right int) bool {
+		if ordered[left].depth != ordered[right].depth {
+			return ordered[left].depth < ordered[right].depth
+		}
+		return ordered[left].parentID < ordered[right].parentID
+	})
+	ensures := make([]IgnoreEnsure, 0, len(ordered))
+	for _, item := range ordered {
+		ensure := IgnoreEnsure{ParentRepositoryID: item.parentID, Path: item.path, Rules: make([]string, 0, len(item.requires))}
+		for _, requirement := range item.requires {
+			ensure.Rules = append(ensure.Rules, requirement.rule)
+		}
+		ensures = append(ensures, ensure)
+	}
+	return ensures, nil
+}
+
+func workspaceRepositoryDepth(id string, repositories map[string]plan.RepositoryPlan) (int, error) {
+	depth, seen := 0, map[string]bool{}
+	for id != "" {
+		if seen[id] {
+			return 0, fmt.Errorf("workspace plan repositories contain a cycle at %q", id)
+		}
+		seen[id] = true
+		repository, found := repositories[id]
+		if !found {
+			return 0, fmt.Errorf("workspace plan has unknown repository %q", id)
+		}
+		if repository.ParentID == "" {
+			return depth, nil
+		}
+		depth++
+		id = repository.ParentID
+	}
+	return depth, nil
 }
 
 func planSteps(operation plan.Operation, repositories []plan.RepositoryPlan) []plan.Step {

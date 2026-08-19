@@ -66,6 +66,9 @@ authorize it.
 
 Continue unattended until every milestone is approved or a valid terminal
 blocker is recorded.
+
+Do not send a final response while the run ledger is active. Use commentary only.
+Continue from the ledger’s Resume from action after every milestone and agent.
 ```
 
 If a run is interrupted, resume it with:
@@ -76,6 +79,9 @@ Resume docs/plans/<plan-name>.md.
 Reconcile the plan, durable ledger, current worktree, and recorded evidence.
 Append the reconciliation checkpoint, then perform the ledger's exact
 "Resume from" action. Continue unattended until complete or validly blocked.
+
+Do not send a final response while the run ledger is active. Use commentary only.
+Continue from the ledger’s Resume from action after every milestone and agent.
 ```
 
 ## Required stabilization: a state-machine tool

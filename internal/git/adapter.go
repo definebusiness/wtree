@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -22,7 +23,9 @@ type Git interface {
 	ResolveRef(context.Context, string, string) (string, error)
 	ListWorktrees(context.Context, string) ([]Worktree, error)
 	Status(context.Context, string) (Status, error)
+	StatusIncludingIgnored(context.Context, string) (Status, error)
 	IsClean(context.Context, string) (bool, error)
+	InspectWorkingTreeIgnore(context.Context, string, string) (WorkingTreeIgnoreEvidence, error)
 	IsIgnoredAt(context.Context, string, string, string) (bool, error)
 	IsIgnoredWorkingTree(context.Context, string, string) (bool, error)
 	BranchExists(context.Context, string, string) (bool, error)
@@ -148,6 +151,17 @@ func (a *Adapter) ListWorktrees(ctx context.Context, repository string) ([]Workt
 }
 func (a *Adapter) Status(ctx context.Context, repository string) (Status, error) {
 	output, err := a.runFact(ctx, repository, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return Status{}, err
+	}
+	return ParseStatus(output)
+}
+
+// StatusIncludingIgnored reports all checkout dirt, including ignored
+// untracked files. Transaction cleanup uses it before force-removing a
+// worktree so an unrelated ignored file is never discarded as clean state.
+func (a *Adapter) StatusIncludingIgnored(ctx context.Context, repository string) (Status, error) {
+	output, err := a.runFact(ctx, repository, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching")
 	if err != nil {
 		return Status{}, err
 	}
@@ -420,17 +434,28 @@ func (a *Adapter) runFact(ctx context.Context, repository string, args ...string
 	return a.runWithEnvironment(ctx, repository, a.factEnvironment(), args...)
 }
 
+func (a *Adapter) runFactInput(ctx context.Context, repository string, input []byte, args ...string) ([]byte, error) {
+	return a.runWithEnvironmentInput(ctx, repository, a.factEnvironment(), input, args...)
+}
+
 func (a *Adapter) factEnvironment() []string {
 	return append(append([]string(nil), a.env...), "GIT_OPTIONAL_LOCKS=0")
 }
 
 func (a *Adapter) runWithEnvironment(ctx context.Context, repository string, environment []string, args ...string) ([]byte, error) {
+	return a.runWithEnvironmentInput(ctx, repository, environment, nil, args...)
+}
+
+func (a *Adapter) runWithEnvironmentInput(ctx context.Context, repository string, environment []string, input []byte, args ...string) ([]byte, error) {
 	commandArgs := append([]string(nil), args...)
 	if repository != "" {
 		commandArgs = append([]string{"-C", repository}, commandArgs...)
 	}
 	command := exec.CommandContext(ctx, a.binary, commandArgs...)
 	command.Env = environment
+	if input != nil {
+		command.Stdin = bytes.NewReader(input)
+	}
 	output, err := command.Output()
 	if err == nil {
 		return output, nil
@@ -439,7 +464,7 @@ func (a *Adapter) runWithEnvironment(ctx context.Context, repository string, env
 		return nil, ctxErr
 	}
 	stderr := ""
-	exitCode := 1
+	exitCode := -1
 	var exitError *exec.ExitError
 	if errors.As(err, &exitError) {
 		exitCode = exitError.ExitCode()

@@ -27,7 +27,7 @@ func TestResolverFindsProjectAndDefaultWorkspaceFromNestedRepository(t *testing.
 		t.Fatal(err)
 	}
 	data := t.TempDir()
-	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true}); err != nil {
+	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,7 +54,7 @@ func TestResolverExplicitProjectTakesPrecedenceOutsideGitContext(t *testing.T) {
 	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
-	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true}); err != nil {
+	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -74,7 +74,7 @@ func TestResolverExplicitProjectIgnoresUnrelatedGitCheckout(t *testing.T) {
 	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
-	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: project.Path, DataDir: data, AddIgnore: true}); err != nil {
+	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: project.Path, DataDir: data}); err != nil {
 		t.Fatal(err)
 	}
 	unrelated := testutil.NewPushedGitRepository(t)
@@ -97,7 +97,7 @@ func TestResolverFindsLocalConfigFromRootAndOrdinaryNestedDirectory(t *testing.T
 		t.Fatal(err)
 	}
 	data := t.TempDir()
-	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true}); err != nil {
+	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -120,10 +120,10 @@ func TestResolverPrefersLocalConfigOverPersistedWorkspaceRegistry(t *testing.T) 
 	localProject := testutil.NewPushedGitRepository(t)
 	localProject.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
-	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: registered.Path, DataDir: data, AddIgnore: true}); err != nil {
+	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: registered.Path, DataDir: data}); err != nil {
 		t.Fatal(err)
 	}
-	localResult, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: localProject.Path, DataDir: data, AddIgnore: true})
+	localResult, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: localProject.Path, DataDir: data})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestResolverFindsGeneratedCheckoutFromRegistryState(t *testing.T) {
 	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
-	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true})
+	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestResolverRejectsNoContextAmbiguousAndStaleRegistry(t *testing.T) {
 		root := testutil.NewPushedGitRepository(t)
 		root.CommitFile("readme", "x\n", "initial")
 		data := t.TempDir()
-		result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true})
+		result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -229,7 +229,7 @@ func TestResolverRejectsNoContextAmbiguousAndStaleRegistry(t *testing.T) {
 		root := testutil.NewPushedGitRepository(t)
 		root.CommitFile("readme", "x\n", "initial")
 		data := t.TempDir()
-		result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true})
+		result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -257,7 +257,7 @@ func TestResolverRelocatesProjectByIDAndGitIdentity(t *testing.T) {
 	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
-	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true})
+	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +293,7 @@ func TestResolverDoesNotRewriteLiveRegistryForCloneWithSameProjectID(t *testing.
 	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
-	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true})
+	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +322,7 @@ func TestResolverRejectsMalformedDefaultWorkspaceState(t *testing.T) {
 	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
 	data := t.TempDir()
-	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true})
+	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func TestResolverUsesRegistryProjectForTrackedConfigInGeneratedWorkspace(t *test
 		t.Fatal(err)
 	}
 	data := t.TempDir()
-	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true})
+	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +427,7 @@ func TestResolverUsesPersistedRenamedMount(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := t.TempDir()
-	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true})
+	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data})
 	if err != nil {
 		t.Fatal(err)
 	}

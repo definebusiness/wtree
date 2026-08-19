@@ -248,7 +248,7 @@ func TestCloneServedThreeLevelProjectKeepsNestedRepositoriesIgnored(t *testing.T
 	}
 	shared.Path = sharedPath
 	authorData := t.TempDir()
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", authorData, "--add-ignore"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", authorData); result.Err != nil {
 		t.Fatalf("three-level init = %#v", result)
 	}
 	backend.Run(t, "add", ".gitignore")
@@ -309,7 +309,7 @@ func publishedCloneFixture(t *testing.T) (string, string) {
 	}
 	backend.Path = backendPath
 	authorData := t.TempDir()
-	init := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", authorData, "--add-ignore")
+	init := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", authorData)
 	if init.Err != nil {
 		t.Fatalf("init clone fixture = %#v", init)
 	}

@@ -1,17 +1,137 @@
 # Nested mount ignore management implementation plan
 
-Status: initial
+Status: superseded
+Superseded by: [Automatic nested mount ignore protection story](../ideas/automatic-nested-mount-ignore-protection.md)
+Implementation readiness: blocked
 Source specification: [Nested mount ignore management specification](../spec/nested-mount-ignore-management.md)
 Source of truth: [`docs/spec/nested-mount-ignore-management.md`](../spec/nested-mount-ignore-management.md); [`docs/spec/wtree.spec.md` §18](../spec/wtree.spec.md#18-mount-overrides); [`internal/discovery/discovery.go`](../../internal/discovery/discovery.go); [`internal/git/adapter.go`](../../internal/git/adapter.go); [`internal/service/init.go`](../../internal/service/init.go); [`internal/service/plan.go`](../../internal/service/plan.go); [`internal/service/create.go`](../../internal/service/create.go); [`internal/transaction/transaction.go`](../../internal/transaction/transaction.go); [`internal/cli/root.go`](../../internal/cli/root.go); [`internal/cli/plan.go`](../../internal/cli/plan.go)
 Delivery style: test-first, one reviewed milestone at a time; no staging,
 committing, publishing, dependency additions, or persistent config/state schema
 migration
 
+## Implementation gate — blocked
+
+Do not implement this plan while `Implementation readiness` is `blocked`. In
+particular, do not create its durable run ledger, dispatch an implementer, or
+start any milestone. A request to run or implement this plan does not clear the
+gate by itself.
+
+The gate may change to `ready` only after every finding below is resolved in
+the authoritative specification and this plan, its required contract tests are
+planned, and the user explicitly authorizes clearing the gate. Record each
+resolution in this section rather than deleting its finding history.
+
+### Unresolved findings
+
+#### F01 — Workspace-plan v2 and checkout compatibility
+
+- State: unresolved
+- Severity: high
+
+The exact public JSON shape of `ignoreUpdates`, `update_gitignore`, and its
+cleanup ownership metadata is not defined. The current `WorkspacePlan` type and
+version constant are shared by create and checkout, so a global version bump
+may change checkout output as well as plain and root-only create output. That
+conflicts with the stated compatibility goal and leaves implementers to invent
+a public contract.
+
+Resolution requires:
+
+- define the exact v2 JSON fields, action names, cleanup metadata, required
+  arrays, omission rules, and deterministic ordering;
+- decide whether v2 applies to every workspace plan, every create plan, or only
+  plans containing ignore updates;
+- define checkout validation and output behavior explicitly;
+- define whether any v1 plan is accepted as input and, if so, its compatibility
+  path; and
+- require decoded-JSON regression tests for root-only create, nested plain
+  create, create with ignore updates, and checkout.
+
+#### F02 — Canonical and representable mount rules
+
+- State: unresolved
+- Severity: high
+
+Runtime mount validation accepts legacy forms that the path resolver
+normalizes, including backslashes as separators, while the rule contract says
+to escape accepted characters without changing separators. Runtime validation
+also does not reject every line-breaking value that cannot be represented as a
+single safe `.gitignore` pattern. Generating directly from the supplied string
+can therefore produce a rule for a different path or inject extra patterns.
+
+Resolution requires:
+
+- define one canonical parent-relative mount representation shared by path
+  resolution, ignore inspection, rule generation, JSON, and diagnostics;
+- decide which legacy forms normalize and which unrepresentable values,
+  including CR, LF, and NUL, are rejected;
+- update the central validation contract rather than adding a CLI-only rule;
+  and
+- require real-Git round-trip tests proving each accepted generated rule
+  matches exactly its resolved mount and no sibling path.
+
+#### F03 — Atomic replacement on Windows
+
+- State: unresolved
+- Severity: medium
+
+The plan requires atomic replacement on Linux, macOS, and Windows, but the
+existing filesystem helper delegates replacement to `os.Rename`. Go documents
+rename as non-atomic on non-Unix platforms. Cross-compilation does not prove the
+required replacement or directory-sync behavior.
+
+Resolution requires:
+
+- define the platform-specific replacement abstraction and Windows durability
+  guarantees without violating the no-new-dependency boundary;
+- distinguish unsupported directory sync from a real durability failure; and
+- require runtime Windows tests for replacement of an existing file, creation
+  of a missing file, failure cleanup, and preservation of complete old-or-new
+  contents.
+
+#### F04 — Selected-base file-type and mount-conflict preflight
+
+- State: unresolved
+- Severity: medium
+
+For `create --from`, the selected parent commit may contain a symlink or
+non-regular root `.gitignore`, or tracked content at a planned mount, even when
+the current source checkout does not. Those facts are deterministically
+available before mutation, but the plan does not require inspection of tree
+mode, ignore bytes, and mount conflicts at each resolved parent base.
+
+Resolution requires:
+
+- define Git-adapter facts for selected-commit tree modes and relevant blobs;
+- preflight every planned ignore target and mount conflict against the resolved
+  parent base rather than only the source working tree; and
+- require old-ref tests covering symlink/non-regular `.gitignore`, tracked
+  mount conflicts, and a current checkout that differs from the selected base.
+
+#### F05 — Mount argument error taxonomy
+
+- State: unresolved
+- Severity: medium
+
+The source specification classifies malformed overrides as
+`invalid_arguments`, while the existing create CLI wraps mount-parser failures
+as `validation`. Reusing that path for `add-ignore` would preserve the
+contradiction and produce inconsistent exit codes.
+
+Resolution requires:
+
+- distinguish syntactic CLI errors from semantic graph, identity, containment,
+  and collision validation in one shared parsing boundary; and
+- require human and JSON exit/output tests for malformed, duplicate, unknown,
+  unsafe, and colliding mounts on both create and add-ignore.
+
 ## Execution contract for Codex
 
-When asked to run this plan, continue unattended until every milestone is
-checked or a genuine external blocker is reached. Do not ask for routine
-design decisions; this plan fixes those decisions below.
+This execution contract is inactive while the implementation gate is blocked.
+After the gate is explicitly cleared and the plan is authorized, continue
+unattended until every milestone is checked or a genuine external blocker is
+reached. Do not ask for routine design decisions; the ready plan must fix those
+decisions before execution begins.
 
 For each unchecked milestone, in order:
 
@@ -128,14 +248,18 @@ destructive cleanup commands; commit only when separately authorized.
 - Standalone initialized mutation holds the existing project lock and
   revalidates under it. Uninitialized mode creates no persistent lock; it uses
   optimistic unchanged-file/type checks before replacement.
-- Multi-file standalone and init writes snapshot exact prior existence, bytes,
-  mode, and relevant metadata. Failure restores changed files in reverse order
-  or reports every incomplete restoration through the existing rollback error
-  taxonomy.
-- Create expresses ignore updates as reversible transaction effects after the
-  owning parent worktree exists and before its first child worktree is added.
-  Rollback may force-remove only worktrees created by that transaction and may
-  discard only its known ignore changes.
+- Multi-file standalone and init writes are per-file atomic, monotonic, and
+  idempotently retryable. A later failure retains every successful
+  `.gitignore` update and reports both retained updates and targets not updated;
+  it never restores a source checkout to a state with a missing rule.
+- Init rollback restores or removes only wtree-owned configuration, manifest,
+  registry, and state artifacts. Successful source `.gitignore` updates remain
+  for review, commit, and retry.
+- Create expresses ignore updates as transaction-owned effects after the owning
+  parent worktree exists and before its first child worktree is added. Rollback
+  may force-remove a worktree created by that transaction only when its dirty
+  state is exactly the planned `.gitignore` update. Any unexpected edit
+  preserves the worktree and produces exact recovery evidence.
 - Dry-run performs all deterministic reads and safety checks but creates no
   target, temporary file, directory, lock, branch, worktree, state, recovery
   record, or metadata/timestamp change.
@@ -198,9 +322,11 @@ destructive cleanup commands; commit only when separately authorized.
 - Consumers: standalone add-ignore execution, initializer, workspace planner,
   creator, and renderers.
 - Invariant: the complete plan is immutable after locked revalidation; every
-  planned write has an exact inverse; no mutation occurs during planning.
+  source write is per-file atomic and safe to retry; successful source ignore
+  updates are retained; no mutation occurs during planning.
 - Evidence: table-driven service tests and injected read/write/rename/sync
-  failures, including byte-for-byte no-mutation assertions.
+  failures, including byte-for-byte no-mutation assertions before the first
+  write and deterministic retained/remaining results after partial progress.
 - Migration: no durable schema; JSON plan/result fields are public contracts.
 
 ### Workspace plan v2
@@ -211,8 +337,9 @@ destructive cleanup commands; commit only when separately authorized.
 - Consumers: create dry-run, JSON clients, human rendering, creator,
   transaction/recovery reporting, and tests.
 - Invariant: every `update_gitignore` step follows its owning parent's
-  `add_worktree` and precedes every direct child's `add_worktree`; inverse
-  metadata restores/removes only the transaction-owned file state.
+  `add_worktree` and precedes every direct child's `add_worktree`; cleanup
+  metadata ties the update to that transaction-created worktree, and force
+  removal is forbidden if any unexpected edit is present.
 - Evidence: plan validation/order tests, three-level create integration,
   failure injection at every effect, and JSON decoding contracts.
 - Migration: emitted workspace plans advance to version 2; persisted workspace
@@ -292,7 +419,7 @@ Every milestone must satisfy all applicable items below before approval:
 
 ### [ ] M00 — Establish authoritative ignore planning and file contracts
 
-Specification coverage: [§§2–4](../spec/nested-mount-ignore-management.md#2-terms-and-ownership), [§8](../spec/nested-mount-ignore-management.md#8-standalone-write-transaction), [§10](../spec/nested-mount-ignore-management.md#10-safety-and-portability)
+Specification coverage: [§§2–4](../spec/nested-mount-ignore-management.md#2-terms-and-ownership), [§8](../spec/nested-mount-ignore-management.md#8-standalone-write-and-retry-semantics), [§10](../spec/nested-mount-ignore-management.md#10-safety-and-portability)
 
 Scope:
 
@@ -304,9 +431,10 @@ Scope:
 - Introduce the immutable service ignore plan/result and file snapshot model,
   including initialized/discovered graphs, overrides, deterministic grouping,
   symlink/type/containment/permission checks, and changed/already-safe status.
-- Implement the reusable atomic replace/restore transaction with injected
-  filesystem seams, exact byte/mode preservation, optimistic concurrency, and
-  complete rollback reporting. Do not expose a CLI command in this milestone.
+- Implement the reusable per-file atomic writer with injected filesystem seams,
+  exact byte/mode preservation, optimistic concurrency, deterministic partial
+  progress reporting, and idempotent retry. Do not expose a CLI command in this
+  milestone.
 - Establish the internal ignore-update ordering model needed by create without
   changing the public workspace plan version or output before M03 wires the
   complete consumer behavior.
@@ -324,9 +452,9 @@ Test-first slices:
    missing-rule reporting.
 4. Reject escaping mounts, symlink/non-regular `.gitignore`, unreadable paths,
    and concurrent snapshot changes before overwrite.
-5. Inject create/write/sync/rename failures across multiple files; prove exact
-   reverse restoration, no truncation, mode preservation, and explicit
-   incomplete rollback evidence.
+5. Inject create/write/sync/rename failures across multiple files; prove no
+   truncation, mode preservation, retention of every completed update,
+   deterministic retained/remaining evidence, and idempotent retry.
 6. Validate legal/illegal ignore-update ordering in the internal service model
    and prove all existing public plan/config/store versions remain unchanged.
 
@@ -337,21 +465,22 @@ Verification:
 - Apply every command in the global definition of done.
 
 Exit criteria: one reviewed service/Git/filesystem contract can completely and
-read-only plan ignore requirements and safely apply/revert planned file
+read-only plan ignore requirements and safely apply per-file atomic, retryable
 changes; all public behavior remains compatible and no consumer has a private
 ignore parser or writer.
 
 ### [ ] M01 — Deliver `wtree add-ignore`
 
-Specification coverage: [§5](../spec/nested-mount-ignore-management.md#5-wtree-add-ignore), [§8](../spec/nested-mount-ignore-management.md#8-standalone-write-transaction), [§9](../spec/nested-mount-ignore-management.md#9-error-and-compatibility-rules)
+Specification coverage: [§5](../spec/nested-mount-ignore-management.md#5-wtree-add-ignore), [§8](../spec/nested-mount-ignore-management.md#8-standalone-write-and-retry-semantics), [§9](../spec/nested-mount-ignore-management.md#9-error-and-compatibility-rules)
 
 Scope:
 
 - Add the root command, exact flags/argument rejection, normal initialized
   resolution, uninitialized outer-root discovery, and repeated mount overlay.
 - Wire dry-run, real initialized locking/revalidation, uninitialized optimistic
-  concurrency, multi-file atomic mutation, and rollback through the shared M00
-  service rather than CLI filesystem access.
+  concurrency, per-file atomic mutation, retained partial progress, and
+  idempotent retry through the shared M00 service rather than CLI filesystem
+  access.
 - Implement stable human and JSON plans/results, including changed files,
   added rules, already-safe repositories, no-change output, `No changes made.`,
   and commit guidance.
@@ -376,9 +505,9 @@ Test-first slices:
    human stderr.
 5. Dry-run creates no temp files or locks and preserves bytes, modes, mtimes,
    index, refs, registry, and state.
-6. Inject concurrent modification and each multi-file write/rollback failure;
-   prove conflict classification, old-or-new complete files, exact restoration
-   when possible, and complete unrestored-path evidence otherwise.
+6. Inject concurrent modification and each multi-file write failure; prove
+   conflict classification, old-or-new complete files, retained successful
+   updates, complete remaining-target evidence, and duplicate-free retry.
 
 Verification:
 
@@ -388,12 +517,12 @@ Verification:
 
 Exit criteria: `wtree add-ignore` is independently usable before or after
 initialization, fully documented in installed help/how-to, dry-run safe,
-transactional across parent repositories, and contract-tested in human and
-JSON modes.
+per-file atomic and idempotently retryable across parent repositories, and
+contract-tested in human and JSON modes.
 
 ### [ ] M02 — Enforce safe init and integrate `init --add-ignore`
 
-Specification coverage: [§6](../spec/nested-mount-ignore-management.md#6-wtree-init), [§8](../spec/nested-mount-ignore-management.md#8-standalone-write-transaction)
+Specification coverage: [§6](../spec/nested-mount-ignore-management.md#6-wtree-init), [§8](../spec/nested-mount-ignore-management.md#8-standalone-write-and-retry-semantics)
 
 Scope:
 
@@ -404,9 +533,9 @@ Scope:
   exact `wtree add-ignore`, commit, retry, and `init --add-ignore` guidance.
 - Add `--add-ignore` parsing, dry-run/JSON fields, and service request/result
   contracts; keep unsupported options and root `--project` behavior stable.
-- Integrate missing mount rules and the existing `/.wtree.yml` rule with init's
-  publication transaction, exact snapshots, rollback, and duplicate
-  registration revalidation.
+- Apply missing mount rules and the existing `/.wtree.yml` rule as retained,
+  per-file atomic updates before init's reversible wtree-owned publication;
+  preserve duplicate-registration revalidation.
 - Update init help/how-to and focused README snippets in the same milestone so
   no unsafe init workflow is advertised.
 
@@ -422,8 +551,9 @@ Test-first slices:
 4. `init --add-ignore --dry-run` returns the same proposed ignore changes in
    human/JSON form with zero filesystem or registry mutation.
 5. Inject failure after each ignore/config/manifest/registry/state publication
-   boundary and cancellation between steps; prove exact reverse rollback or a
-   complete rollback-incomplete diagnostic.
+   boundary and cancellation between steps; prove completed ignore updates are
+   retained and reported, wtree-owned artifacts roll back exactly, and retry
+   completes without duplicate rules.
 6. Preserve existing unrelated `.gitignore` bytes, modes, newline style,
    portable manifest visibility, duplicate-registration protections, and
    discovery ignore/submodule semantics.
@@ -454,7 +584,7 @@ Scope:
   dry-run/human/JSON rendering, and success commit guidance.
 - Execute parent-worktree creation, atomic ignore update, working-tree ignore
   verification, and child-worktree creation in the specified parent-first
-  order through reversible transaction steps.
+  order through transaction-owned steps.
 - Preserve concurrency, cancellation, state commit, result validation,
   recovery records, clean/incomplete rollback classification, and verbose
   progress semantics for the expanded action set.
@@ -477,8 +607,9 @@ Test-first slices:
    existing/missing rules add only the missing subset deterministically.
 6. Inject failure/cancellation before and after every branch, worktree, ignore
    update, ignore verification, result validation, and state commit; prove
-   complete rollback or exact recovery evidence, including safe force removal
-   of only transaction-created dirty worktrees.
+   complete cleanup or exact recovery evidence. Force removal is allowed only
+   for a transaction-created worktree whose dirty state exactly matches the
+   planned ignore update; any additional edit preserves the worktree.
 7. Concurrent same/different workspace creation retains existing winner and
    consistency guarantees; verbose events, human success, and JSON remain
    deterministic and correctly separated by stream.

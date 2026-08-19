@@ -139,3 +139,8 @@ restore the repositories and workspace state to a consistent condition, and
 remove the record only after verifying that recovery is complete. Registry
 pruning and unregistering are intentionally blocked while unresolved recovery
 metadata exists.
+
+During `create`, an automatic `.gitignore` update in a newly created worktree
+is safe for rollback. Any other tracked, staged, or untracked change is
+preserved instead, so the recovery record can be used to inspect and recover
+that worktree without discarding user data.

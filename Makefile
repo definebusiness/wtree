@@ -1,4 +1,4 @@
-.PHONY: test test-race vet build release release-test check fmt-check
+.PHONY: test test-race vet build release release-test tutorial-test check fmt-check
 
 test:
 	go test ./...
@@ -22,8 +22,11 @@ release:
 release-test:
 	./scripts/release-build_test.sh
 
+tutorial-test:
+	./tutorial/run-all-commands.sh
+
 fmt-check:
 	@unformatted="$$(go list -f '{{.Dir}}' ./... | while IFS= read -r dir; do gofmt -l "$$dir"/*.go; done)"; \
 	test -z "$$unformatted" || (printf '%s\n' "$$unformatted" && exit 1)
 
-check: fmt-check vet test test-race build
+check: fmt-check vet test test-race build tutorial-test

@@ -42,7 +42,7 @@ func TestExecuteImportFromCurrentExternalWorkspacePersistsObservedPath(t *testin
 	project := testutil.NewPushedGitRepository(t)
 	project.CommitFile("root.txt", "root\n", "root")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "external")
-	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	project.Run(t, "branch", "feature/import")
@@ -83,7 +83,7 @@ func TestExecuteImportRequiresNameForDivergentCheckouts(t *testing.T) {
 	}
 	backend.Path = backendPath
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "external")
-	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	project.Run(t, "branch", "feature/root")

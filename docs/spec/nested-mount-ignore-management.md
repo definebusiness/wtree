@@ -1,6 +1,7 @@
 # Nested mount ignore management specification
 
-Status: planned
+Status: superseded
+Superseded by: [Automatic nested mount ignore protection story](../ideas/automatic-nested-mount-ignore-protection.md)
 Source idea: none (created directly)
 Implementation plan: [Nested mount ignore management implementation plan](../plans/nested-mount-ignore-management.md)
 Applies to: `wtree add-ignore`, `wtree init`, `wtree create`, workspace
@@ -241,11 +242,17 @@ It does not require the newly added rules to have existed in `HEAD`, and it
 does not commit them.
 
 All deterministic discovery, mount, identity, registry, path, file-type, and
-permission checks occur before the first write. The operation snapshots every
-affected `.gitignore`; if a later init publication step fails, rollback
-restores the exact previous bytes and permissions or removes a file created by
-this invocation. A rollback failure uses the existing incomplete-cleanup
-diagnostic conventions and identifies every file whose restoration failed.
+permission checks occur before the first write. Each `.gitignore` replacement
+is atomic, but successful ignore updates are monotonic and are not rolled back
+if a later ignore write or initialization publication step fails. The failure
+diagnostic identifies every retained `.gitignore` update, every target that was
+not updated, and tells the user to review and commit the retained rules before
+retrying. A retry plans only rules that are still missing.
+
+Local configuration, the portable manifest, registry data, and workspace state
+remain one reversible initialization publication. Failure restores or removes
+those wtree-owned artifacts through the existing incomplete-cleanup
+conventions without reverting successful `.gitignore` updates.
 
 `init --add-ignore --dry-run` reports both the normal init plan and proposed
 ignore additions but performs zero mutation. JSON adds an `ignoreUpdates`
@@ -298,22 +305,26 @@ on the new workspace branches. Human success output and JSON must list them
 and instruct the user to review and commit each affected parent repository.
 
 The immutable create plan exposes deterministic `ignoreUpdates` and explicit
-`update_gitignore` steps with inverse restoration metadata. Because this adds
-a new public plan action and validation rules, the workspace plan schema
-version advances from 1 to 2. Persisted project, registry, workspace, and
-recovery schema versions do not change.
+`update_gitignore` steps with cleanup ownership metadata tying each update to
+the transaction-created parent worktree. Because this adds a new public plan
+action and validation rules, the workspace plan schema version advances from
+1 to 2. Persisted project, registry, workspace, and recovery schema versions do
+not change.
 
 `create --add-ignore --dry-run` shows the exact files and generated rules in
 the planned workspace paths and performs zero mutation.
 
 If ignore writing, verification, child worktree creation, result validation,
-or state publication fails, rollback removes created child worktrees, restores
-or removes `.gitignore` files, removes parent worktrees and branches, and
-preserves the existing recovery semantics. A known-created worktree may be
-force-removed during rollback solely to discard ignore edits made by this
-transaction; unrelated pre-existing paths are never force-removed.
+or state publication fails, rollback removes created child worktrees, parent
+worktrees, and branches and preserves the existing recovery semantics. The
+`.gitignore` edits disappear with their transaction-created parent worktrees;
+source checkouts remain untouched. A created worktree may be force-removed
+only when its dirty state is exactly the planned `.gitignore` update. If it
+contains any unexpected edit, rollback preserves it and records exact recovery
+evidence instead of discarding user work. Unrelated pre-existing paths are
+never force-removed.
 
-## 8. Standalone write transaction
+## 8. Standalone write and retry semantics
 
 `wtree add-ignore` preflights every target before writing any file. For an
 initialized project it uses the existing project lock. In uninitialized mode
@@ -322,10 +333,12 @@ and performs an optimistic unchanged-content/type check immediately before
 each atomic replacement.
 
 Writes use same-directory temporary files, file sync/close, atomic rename, and
-directory sync where supported. On any failure, previously changed files are
-restored in reverse order from exact snapshots. Concurrent modification is a
-conflict, not an overwrite. A failed rollback reports all unrestored paths and
-must never leave a truncated `.gitignore`.
+directory sync where supported. Each successful replacement is retained even
+if a later target fails. The error reports deterministic lists of retained
+updates and targets not updated; rerunning the command safely completes the
+remaining rules without duplicates. Concurrent modification before a target's
+replacement is a conflict, not an overwrite. No failure may leave a truncated
+`.gitignore`.
 
 ## 9. Error and compatibility rules
 
@@ -335,8 +348,10 @@ must never leave a truncated `.gitignore`.
   types, and uninitialized nested-context ambiguity use `validation`.
 - Concurrent file changes and project-lock contention use `conflict`.
 - Git inspection failures use `git`.
-- Atomic write or rollback failures use the existing internal and
-  rollback-incomplete classifications as applicable.
+- Atomic write failures use the existing internal classification. Retained
+  source `.gitignore` updates are reported as partial progress, not as rollback
+  failures. Rollback-incomplete remains applicable when cleanup of wtree-owned
+  initialization artifacts or transaction-created worktrees fails.
 - Human diagnostics go to stderr through the existing CLI boundary. JSON mode
   emits exactly one error envelope on stdout and no human stderr.
 - Existing command output remains compatible except for documented additive
@@ -386,12 +401,14 @@ The implementation must prove at least these behaviors:
 5. Plain init reports every missing mount and the `wtree add-ignore` hint with
    zero mutation.
 6. `init --add-ignore` writes all rules plus `/.wtree.yml`, initializes the
-   project, and restores every prior file if a later publication fails.
+   project, and retains successful ignore updates while restoring wtree-owned
+   initialization artifacts if a later publication fails.
 7. `create --add-ignore` edits each newly created parent worktree before its
    children are mounted, persists the workspace, and leaves only the reported
    `.gitignore` changes dirty.
-8. Failure at every new create effect rolls back branches, worktrees, ignore
-   files, and state or records exact incomplete recovery evidence.
+8. Failure at every new create effect rolls back branches, worktrees, and state
+   or records exact incomplete recovery evidence; a created worktree with edits
+   beyond the planned `.gitignore` update is preserved for recovery.
 9. All dry-run modes are byte-for-byte and metadata read-only, including no
    lock creation.
 10. Human help, `--how-to`, README, tutorial fixtures, specification, and JSON

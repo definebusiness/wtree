@@ -79,9 +79,11 @@ publish_seed() {
 mkdir -p "$seed_dir/acme-shop/docs"
 cat > "$seed_dir/acme-shop/.gitignore" <<'EOF'
 /.wtree.yml
+/.wtree.yml.lock
 /backend/
 /frontend/
 /api/
+/server/
 /web/
 EOF
 init_seed acme-shop
@@ -359,52 +361,71 @@ publish_seed web-frontend web-frontend
 # also copy it beside the origins so the tutorial can exercise a local manifest
 # source without creating a checkout in this fixture script.
 git -C "$seed_dir/acme-shop" checkout -q main
+root_initial_commit=$(git -C "$seed_dir/acme-shop" rev-list --max-parents=0 main)
+backend_initial_commit=$(git -C "$seed_dir/java-backend" rev-list --max-parents=0 main)
+frontend_initial_commit=$(git -C "$seed_dir/web-frontend" rev-list --max-parents=0 main)
 cat > "$seed_dir/acme-shop/project.wtree.yml" <<EOF
-version: 1
-
+version: 2
 project:
-  id: 8af7d31c-2cf3-4fc8-9e1d-f62d5d0a83c0
-  name: acme-shop
-
+    id: 8af7d31c-2cf3-4fc8-9e1d-f62d5d0a83c0
+    name: acme-shop
+    base_repository: root
 repositories:
-  root:
-    clone:
-      remote: origin
-      url: "$origins_dir/acme-shop.git"
-    upstream:
-      branch: main
-      remote: origin
-      merge: refs/heads/main
-    parent: null
-    mount: .
-    default_branch: main
-  backend:
-    clone:
-      remote: origin
-      url: "$origins_dir/java-backend.git"
-    upstream:
-      branch: main
-      remote: origin
-      merge: refs/heads/main
-    parent: root
-    mount: backend
-    default_branch: main
-  frontend:
-    clone:
-      remote: origin
-      url: "$origins_dir/web-frontend.git"
-    upstream:
-      branch: main
-      remote: origin
-      merge: refs/heads/main
-    parent: root
-    mount: frontend
-    default_branch: main
+    backend:
+        clone:
+            remote: origin
+            url: $origins_dir/java-backend.git
+        upstream:
+            branch: main
+            remote: origin
+            merge: refs/heads/main
+        identity:
+            initial_commits:
+                - $backend_initial_commit
+        parent: root
+        mount: backend
+        default_branch: main
+    frontend:
+        clone:
+            remote: origin
+            url: $origins_dir/web-frontend.git
+        upstream:
+            branch: main
+            remote: origin
+            merge: refs/heads/main
+        identity:
+            initial_commits:
+                - $frontend_initial_commit
+        parent: root
+        mount: frontend
+        default_branch: main
+    root:
+        clone:
+            remote: origin
+            url: $origins_dir/acme-shop.git
+        upstream:
+            branch: main
+            remote: origin
+            merge: refs/heads/main
+        identity:
+            initial_commits:
+                - $root_initial_commit
+        parent: ""
+        mount: .
+        default_branch: main
 EOF
 git -C "$seed_dir/acme-shop" add .gitignore project.wtree.yml
 git -C "$seed_dir/acme-shop" commit -q -m "Publish portable wtree manifest"
 git -C "$seed_dir/acme-shop" push -q origin main
 cp "$seed_dir/acme-shop/project.wtree.yml" "$manifest_path"
+
+# Keep the transport's symbolic default distinct from the manifest-selected
+# main branch. This proves that portable clone follows the explicit upstream
+# contract rather than guessing from remote HEAD.
+for origin in acme-shop java-backend web-frontend; do
+	git -C "$origins_dir/$origin.git" branch fixture/clone-bootstrap main
+	git -C "$origins_dir/$origin.git" symbolic-ref HEAD refs/heads/fixture/clone-bootstrap
+done
 
 complete=true
 printf '%s\n' \

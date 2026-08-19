@@ -32,7 +32,7 @@ func TestEndToEndNestedWorkspaceLifecycle(t *testing.T) {
 	}
 	backend.Path = backendPath
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init error = %v", result.Err)
 	}
 	root.CommitFile(".gitignore", "/api/\n", "ignore custom mount")
@@ -86,7 +86,7 @@ func TestEndToEndImportWorkflow(t *testing.T) {
 	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("root.txt", "root\n", "root")
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "imported")
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	root.Run(t, "branch", "feature/import")
@@ -112,7 +112,7 @@ func TestEndToEndImportMapsRenamedNestedCheckoutByIdentity(t *testing.T) {
 	}
 	backend.Path = backendPath
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "external")
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	root.Run(t, "branch", "feature/import")
@@ -143,7 +143,7 @@ func TestEndToEndCreateRollbackIncompleteWritesRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "rollback")
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	realGit, err := exec.LookPath("git")

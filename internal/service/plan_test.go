@@ -28,7 +28,7 @@ func TestWorkspacePlannerBuildsParentFirstCreatePlanWithIndependentHEADBases(t *
 		t.Fatal(err)
 	}
 	data := t.TempDir()
-	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true}); err != nil {
+	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data}); err != nil {
 		t.Fatal(err)
 	}
 	root.CommitFile(".gitignore", "/api/\n", "ignore custom mount")
@@ -42,7 +42,7 @@ func TestWorkspacePlannerBuildsParentFirstCreatePlanWithIndependentHEADBases(t *
 		From:          "HEAD",
 		WorktreeRoot:  filepath.Join(data, "worktrees"),
 		DataDir:       data,
-		Mounts:        []service.MountOverride{{RepositoryID: "backend", Mount: "api"}},
+		Mounts:        []service.MountOverride{{RepositoryID: "backend", Mount: `services\..\api`}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +64,7 @@ func TestWorkspacePlannerBuildsParentFirstCreatePlanWithIndependentHEADBases(t *
 	}
 }
 
-func TestWorkspacePlannerRejectsCustomMountWithoutCommittedParentGitignoreRule(t *testing.T) {
+func TestWorkspacePlannerAllowsMountWithoutCommittedParentGitignoreRule(t *testing.T) {
 	project, root, backend, data := plannerFixture(t)
 	root.Run(t, "branch", "base-without-ignore")
 	backend.Run(t, "branch", "base-without-ignore")
@@ -73,23 +73,80 @@ func TestWorkspacePlannerRejectsCustomMountWithoutCommittedParentGitignoreRule(t
 		Mounts: []service.MountOverride{{RepositoryID: "backend", Mount: "api"}},
 	}
 
-	_, err := service.NewWorkspacePlanner().Plan(context.Background(), project, request)
-	if err == nil || !contains(err.Error(), "mount \"api\"") || !contains(err.Error(), "not ignored") || !contains(err.Error(), ".gitignore") {
-		t.Fatalf("Plan() error = %v, want committed parent .gitignore diagnostic", err)
+	value, err := service.NewWorkspacePlanner().Plan(context.Background(), project, request)
+	if err != nil {
+		t.Fatalf("Plan() = %v, want committed-base ignore content to be irrelevant", err)
 	}
 	if exists, branchErr := gitBranchExists(root, "feature"); branchErr != nil || exists {
 		t.Fatalf("root feature branch exists=%t error=%v, want false nil", exists, branchErr)
 	}
-
-	root.CommitFile(".gitignore", "/api/\n", "ignore custom mount")
-	if _, err := service.NewWorkspacePlanner().Plan(context.Background(), project, request); err != nil {
-		t.Fatalf("Plan() after committed ignore rule: %v", err)
+	if got, want := value.Repositories[1].Mount, "api"; got != want {
+		t.Fatalf("planned mount = %q, want %q", got, want)
 	}
 	request.WorkspaceName = "from-old-base"
 	request.From = "base-without-ignore"
-	_, err = service.NewWorkspacePlanner().Plan(context.Background(), project, request)
-	if err == nil || !contains(err.Error(), "not ignored") {
-		t.Fatalf("Plan() from base without ignore rule = %v, want rejection", err)
+	if _, err := service.NewWorkspacePlanner().Plan(context.Background(), project, request); err != nil {
+		t.Fatalf("Plan() from base without ignore rule = %v, want success", err)
+	}
+}
+
+func TestWorkspacePlanIgnoreEnsuresProjectNormalizedEntriesParentFirst(t *testing.T) {
+	value := plan.WorkspacePlan{Repositories: []plan.RepositoryPlan{
+		{ID: "root", Mount: ".", Path: filepath.Join("/worktrees", "feature")},
+		{ID: "backend", ParentID: "root", Mount: "api", Path: filepath.Join("/worktrees", "feature", "api")},
+		{ID: "docs", ParentID: "root", Mount: "docs/site", Path: filepath.Join("/worktrees", "feature", "docs", "site")},
+		{ID: "shared", ParentID: "backend", Mount: "common", Path: filepath.Join("/worktrees", "feature", "api", "common")},
+	}}
+
+	ensures, err := service.WorkspacePlanIgnoreEnsures(value)
+	if err != nil {
+		t.Fatalf("WorkspacePlanIgnoreEnsures() = %v", err)
+	}
+	want := []service.IgnoreEnsure{
+		{ParentRepositoryID: "root", Path: filepath.Join("/worktrees", "feature", ".gitignore"), Rules: []string{"/api/", "/docs/site/"}},
+		{ParentRepositoryID: "backend", Path: filepath.Join("/worktrees", "feature", "api", ".gitignore"), Rules: []string{"/common/"}},
+	}
+	if !reflect.DeepEqual(ensures, want) {
+		t.Fatalf("ignore ensures = %#v, want %#v", ensures, want)
+	}
+}
+
+func TestWorkspacePlannerTreatsNormalizedOverrideAsConfiguredDefault(t *testing.T) {
+	project, _, _, data := plannerFixture(t)
+	for index := range project.Repositories {
+		if project.Repositories[index].ID == "backend" {
+			project.Repositories[index].DefaultMount = `services\..\api`
+		}
+	}
+
+	result, err := service.NewWorkspacePlanner().Plan(context.Background(), project, service.WorkspacePlanRequest{
+		Operation: plan.Create, WorkspaceName: "feature", WorktreeRoot: filepath.Join(data, "worktrees"), DataDir: data,
+		Mounts: []service.MountOverride{{RepositoryID: "backend", Mount: "api"}},
+	})
+	if err != nil {
+		t.Fatalf("Plan() = %v, want semantically identical legacy default to skip committed-ignore preflight", err)
+	}
+	if got := result.Repositories[1].Mount; got != "api" {
+		t.Fatalf("planned mount = %q, want normalized api", got)
+	}
+}
+
+func TestWorkspacePlannerNormalizesDefaultMountBeforeSourceConflictPreflight(t *testing.T) {
+	project, root, _, data := plannerFixture(t)
+	for index := range project.Repositories {
+		if project.Repositories[index].ID == "backend" {
+			project.Repositories[index].DefaultMount = `services\..\api`
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root.Path, "api"), []byte("tracked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := service.NewWorkspacePlanner().Plan(context.Background(), project, service.WorkspacePlanRequest{
+		Operation: plan.Create, WorkspaceName: "feature", WorktreeRoot: filepath.Join(data, "worktrees"), DataDir: data,
+	})
+	if err == nil || !contains(err.Error(), "contains content") || !contains(err.Error(), "api") {
+		t.Fatalf("Plan() error = %v, want normalized default mount source-content conflict", err)
 	}
 }
 
@@ -311,7 +368,7 @@ func plannerFixture(t *testing.T) (domain.Project, testutil.GitRepository, testu
 	}
 	backend.Path = filepath.Join(root.Path, "backend")
 	data := t.TempDir()
-	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, AddIgnore: true}); err != nil {
+	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data}); err != nil {
 		t.Fatal(err)
 	}
 	resolution, err := service.NewResolver().Resolve(context.Background(), service.ResolveRequest{Path: root.Path, DataDir: data})

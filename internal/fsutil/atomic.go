@@ -1,9 +1,24 @@
 package fsutil
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 )
+
+// postReplacementError reports a failure after a target has been atomically
+// replaced. Callers must retain the new complete generation in that case.
+type postReplacementError struct{ Err error }
+
+func (e *postReplacementError) Error() string { return e.Err.Error() }
+
+func (e *postReplacementError) Unwrap() error { return e.Err }
+
+// ReplacementCompleted reports whether err occurred after atomic replacement.
+func ReplacementCompleted(err error) bool {
+	var post *postReplacementError
+	return errors.As(err, &post)
+}
 
 // AtomicStepHook is deliberately small so owning packages can retain their
 // existing failure-injection seams without each reimplementing the durability
@@ -59,6 +74,9 @@ func writeFileAtomicMode(path string, data []byte, mode os.FileMode, hook Atomic
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
+	if err := atomicStep(hook, "create-temp"); err != nil {
+		return err
+	}
 	temporary, err := os.CreateTemp(directory, "."+filepath.Base(path)+"-*")
 	if err != nil {
 		return err
@@ -69,15 +87,11 @@ func writeFileAtomicMode(path string, data []byte, mode os.FileMode, hook Atomic
 		temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(data); err != nil {
-		temporary.Close()
-		return err
-	}
 	if err := atomicStep(hook, "write"); err != nil {
 		temporary.Close()
 		return err
 	}
-	if err := Sync(temporary); err != nil {
+	if _, err := temporary.Write(data); err != nil {
 		temporary.Close()
 		return err
 	}
@@ -85,10 +99,15 @@ func writeFileAtomicMode(path string, data []byte, mode os.FileMode, hook Atomic
 		temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := Sync(temporary); err != nil {
+		temporary.Close()
 		return err
 	}
 	if err := atomicStep(hook, "close"); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
 		return err
 	}
 	if err := atomicStep(hook, "before-rename"); err != nil {
@@ -98,19 +117,25 @@ func writeFileAtomicMode(path string, data []byte, mode os.FileMode, hook Atomic
 		return err
 	}
 	if err := atomicStep(hook, "dir-sync"); err != nil {
-		return err
+		return &postReplacementError{Err: err}
 	}
 	directoryFile, err := os.Open(directory)
 	if err != nil {
-		return err
+		return &postReplacementError{Err: err}
 	}
 	defer directoryFile.Close()
-	return Sync(directoryFile)
+	if err := Sync(directoryFile); err != nil {
+		return &postReplacementError{Err: err}
+	}
+	return nil
 }
 
 func writeFileAtomicModeCreate(path string, data []byte, mode os.FileMode, hook AtomicStepHook, replace func(string, string) error) error {
 	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return err
+	}
+	if err := atomicStep(hook, "create-temp"); err != nil {
 		return err
 	}
 	temporary, err := createTempWithUmask(directory, filepath.Base(path), mode)
@@ -119,15 +144,11 @@ func writeFileAtomicModeCreate(path string, data []byte, mode os.FileMode, hook 
 	}
 	name := temporary.Name()
 	defer os.Remove(name)
-	if _, err := temporary.Write(data); err != nil {
-		temporary.Close()
-		return err
-	}
 	if err := atomicStep(hook, "write"); err != nil {
 		temporary.Close()
 		return err
 	}
-	if err := Sync(temporary); err != nil {
+	if _, err := temporary.Write(data); err != nil {
 		temporary.Close()
 		return err
 	}
@@ -135,10 +156,15 @@ func writeFileAtomicModeCreate(path string, data []byte, mode os.FileMode, hook 
 		temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := Sync(temporary); err != nil {
+		temporary.Close()
 		return err
 	}
 	if err := atomicStep(hook, "close"); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
 		return err
 	}
 	if err := atomicStep(hook, "before-rename"); err != nil {
@@ -148,14 +174,17 @@ func writeFileAtomicModeCreate(path string, data []byte, mode os.FileMode, hook 
 		return err
 	}
 	if err := atomicStep(hook, "dir-sync"); err != nil {
-		return err
+		return &postReplacementError{Err: err}
 	}
 	directoryFile, err := os.Open(directory)
 	if err != nil {
-		return err
+		return &postReplacementError{Err: err}
 	}
 	defer directoryFile.Close()
-	return Sync(directoryFile)
+	if err := Sync(directoryFile); err != nil {
+		return &postReplacementError{Err: err}
+	}
+	return nil
 }
 
 func createTempWithUmask(directory, base string, mode os.FileMode) (*os.File, error) {

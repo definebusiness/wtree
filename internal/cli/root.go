@@ -337,7 +337,7 @@ func isProjectCommand(command *cobra.Command) bool {
 
 func newInitCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 	var worktreeRoot, dataDir, manifestSource string
-	var dryRun, jsonOutput, addIgnore bool
+	var dryRun, jsonOutput bool
 	var ignores []string
 	var cloneURLs []string
 	command := &cobra.Command{
@@ -364,7 +364,7 @@ func newInitCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 			if _, err := service.ParseCloneURLOverrides(cloneURLs); err != nil {
 				return invalidArgumentsError{cause: err}
 			}
-			result, err := service.NewInitializer().Init(command.Context(), service.InitRequest{Path: path, DataDir: dataDir, WorktreeRoot: worktreeRoot, DryRun: dryRun, Ignores: ignores, ManifestSource: manifestSource, CloneURLOverrides: cloneURLs, AddIgnore: addIgnore})
+			result, err := service.NewInitializer().Init(command.Context(), service.InitRequest{Path: path, DataDir: dataDir, WorktreeRoot: worktreeRoot, DryRun: dryRun, Ignores: ignores, ManifestSource: manifestSource, CloneURLOverrides: cloneURLs})
 			if err != nil {
 				return err
 			}
@@ -381,7 +381,7 @@ func newInitCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 				if len(changed) != 0 {
 					_, err = fmt.Fprintf(stdout, "Initialized %s\nPortable manifest: %s\nChanged .gitignore: %s\nReview and commit project.wtree.yml and .gitignore changes; wtree did not stage, commit, or push them.\n", result.ProjectID, result.ManifestPath, strings.Join(changed, ", "))
 				} else {
-					_, err = fmt.Fprintf(stdout, "Initialized %s\nPortable manifest: %s\nReview and commit project.wtree.yml; wtree did not stage, commit, or push it.\n", result.ProjectID, result.ManifestPath)
+					_, err = fmt.Fprintf(stdout, "Initialized %s\nPortable manifest: %s\nEvery nested mount was already protected.\nReview and commit project.wtree.yml; wtree did not stage, commit, or push it.\n", result.ProjectID, result.ManifestPath)
 				}
 			}
 			return err
@@ -394,7 +394,6 @@ func newInitCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 	command.Flags().StringSliceVar(&ignores, "ignore", nil, "repository discovery ignore glob")
 	command.Flags().StringVar(&manifestSource, "manifest-source", "", "persisted local path or HTTP(S) manifest source")
 	command.Flags().StringArrayVar(&cloneURLs, "clone-url", nil, "portable clone URL override in repository-id=url form")
-	command.Flags().BoolVar(&addIgnore, "add-ignore", false, "add missing nested-mount ignore rules during initialization")
 	return command
 }
 
@@ -415,6 +414,11 @@ func renderInitPlan(stdout io.Writer, result service.InitResult) error {
 	}
 	for _, update := range result.IgnoreUpdates {
 		if _, err := fmt.Fprintf(stdout, "Ignore update: %s (%s) %s\n", update.RepositoryID, update.Path, strings.Join(update.AddedRules, ", ")); err != nil {
+			return err
+		}
+	}
+	if len(result.IgnoreUpdates) == 0 {
+		if _, err := fmt.Fprintln(stdout, "Ignore protection: every nested mount is already protected."); err != nil {
 			return err
 		}
 	}

@@ -1,6 +1,7 @@
 package pathutil_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/definebusiness/wtree/internal/pathutil"
@@ -12,6 +13,25 @@ func FuzzResolveMount(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, mount string) {
 		_, _ = pathutil.ResolveMount("/workspace", "/workspace", mount, mount == ".")
+	})
+}
+
+func FuzzNormalizeMount(f *testing.F) {
+	for _, seed := range []string{"api", `services\api`, "services/../api", "./api", "../escape", "line\nbreak", "世界"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, mount string) {
+		normalized, err := pathutil.NormalizeMount(mount, false)
+		if err != nil {
+			return
+		}
+		if normalized == "" || strings.ContainsAny(normalized, "\\\r\n\x00") {
+			t.Fatalf("NormalizeMount(%q) returned unsafe %q", mount, normalized)
+		}
+		again, err := pathutil.NormalizeMount(normalized, false)
+		if err != nil || again != normalized {
+			t.Fatalf("NormalizeMount(%q) is not idempotent: %q, %v", normalized, again, err)
+		}
 	})
 }
 
