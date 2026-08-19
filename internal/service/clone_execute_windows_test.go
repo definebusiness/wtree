@@ -96,6 +96,40 @@ func TestWindowsCloneExecuteRejectsExactReadOnlyConfig(t *testing.T) {
 	}
 }
 
+func TestWindowsClonePlanReadOnlyDirectoryFactsMatchesAliasByIdentity(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	sibling := filepath.Join(root, "sibling")
+	for _, path := range []string{target, sibling} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	targetInfo, err := os.Lstat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := clonePlanReadOnlyDirectoryFacts{CloneFileSystemFacts: osCloneFileSystemFacts{}, target: targetInfo}
+	alias := swapWindowsDriveCase(target)
+	if alias == target {
+		t.Fatalf("could not construct alternate Windows drive spelling for %q", target)
+	}
+	aliasInfo, err := facts.Lstat(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aliasInfo.Mode().Perm()&0o222 != 0 {
+		t.Fatalf("aliased target mode = %v; want injected read-only identity", aliasInfo.Mode())
+	}
+	siblingInfo, err := facts.Lstat(sibling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if siblingInfo.Mode().Perm()&0o222 == 0 {
+		t.Fatalf("sibling mode = %v; injection escaped exact target identity", siblingInfo.Mode())
+	}
+}
+
 func swapWindowsDriveCase(path string) string {
 	volume := filepath.VolumeName(path)
 	if len(volume) < 2 || volume[1] != ':' {

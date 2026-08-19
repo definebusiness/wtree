@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,7 +23,7 @@ func TestLoadProjectConfigStrictlyDecodesVersionOne(t *testing.T) {
 
 func TestWorktreeRootPrecedenceAndExpansion(t *testing.T) {
 	got, err := config.EffectiveWorktreeRoot("~/cli", "~/project", "~/global", "/default", "/home/test")
-	if err != nil || got != "/home/test/cli" {
+	if want := filepath.Join("/home/test", "cli"); err != nil || got != want {
 		t.Fatalf("EffectiveWorktreeRoot() = %q, %v", got, err)
 	}
 	if _, err := config.EffectiveWorktreeRoot("", "", "", "", "/home/test"); err == nil || !strings.Contains(err.Error(), "root") {
@@ -34,12 +35,12 @@ func TestWorktreeRootUsesProjectGlobalAndDefaultPrecedence(t *testing.T) {
 	project := config.ProjectConfig{Worktrees: config.Worktrees{Root: "~/project"}}
 	global := config.GlobalConfig{Version: 1, Worktrees: config.Worktrees{Root: "~/global"}}
 	got, err := config.ResolveWorktreeRoot("", project, global, "/os-default", "/home/test")
-	if err != nil || got != "/home/test/project" {
+	if want := filepath.Join("/home/test", "project"); err != nil || got != want {
 		t.Fatalf("project precedence = %q, %v", got, err)
 	}
 	project.Worktrees.Root = ""
 	got, err = config.ResolveWorktreeRoot("", project, global, "/os-default", "/home/test")
-	if err != nil || got != "/home/test/global" {
+	if want := filepath.Join("/home/test", "global"); err != nil || got != want {
 		t.Fatalf("global precedence = %q, %v", got, err)
 	}
 }

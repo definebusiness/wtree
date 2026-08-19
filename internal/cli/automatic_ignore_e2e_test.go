@@ -24,11 +24,13 @@ func TestAutomaticNestedIgnoreProtectionThroughPublicCLI(t *testing.T) {
 	data := t.TempDir()
 
 	init := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data)
-	if init.Err != nil || init.Stderr != "" || !containsAll(init.Stdout,
-		"Changed .gitignore:", filepath.Join(root.Path, ".gitignore"), filepath.Join(backend.Path, ".gitignore"),
-		"wtree did not stage, commit, or push them.") {
+	if init.Err != nil || init.Stderr != "" {
 		t.Fatalf("init = %#v", init)
 	}
+	assertInitChangedIgnoreOutput(t, init.Stdout, filepath.Join(root.Path, "project.wtree.yml"), []string{
+		filepath.Join(root.Path, ".gitignore"),
+		filepath.Join(backend.Path, ".gitignore"),
+	})
 	assertFileBytes(t, filepath.Join(root.Path, ".gitignore"), "/.wtree.yml\n/backend/\n")
 	assertFileBytes(t, filepath.Join(backend.Path, ".gitignore"), "/shared/\n")
 	assertIgnoredAndNoGitlink(t, root.Path, "backend")
@@ -44,11 +46,13 @@ func TestAutomaticNestedIgnoreProtectionThroughPublicCLI(t *testing.T) {
 	defaultTarget := filepath.Join(t.TempDir(), "default")
 	createdDefault := testutil.RunCommand(t, cli.Execute,
 		"create", "--project", root.Path, "feature/default", "--data-dir", data, "--path", defaultTarget)
-	if createdDefault.Err != nil || createdDefault.Stderr != "" || !containsAll(createdDefault.Stdout,
-		"Changed .gitignore files:", filepath.Join(defaultTarget, ".gitignore"), filepath.Join(defaultTarget, "backend", ".gitignore"),
-		"/backend/", "/shared/", "wtree did not stage or commit them.") {
+	if createdDefault.Err != nil || createdDefault.Stderr != "" {
 		t.Fatalf("default create = %#v", createdDefault)
 	}
+	assertCreateChangedIgnoreOutput(t, createdDefault.Stdout, "feature/default", defaultTarget, []ignoreOutputChange{
+		{path: filepath.Join(defaultTarget, ".gitignore"), rules: []string{"/backend/"}},
+		{path: filepath.Join(defaultTarget, "backend", ".gitignore"), rules: []string{"/shared/"}},
+	})
 	assertFileBytes(t, filepath.Join(defaultTarget, ".gitignore"), "/backend/\n")
 	assertFileBytes(t, filepath.Join(defaultTarget, "backend", ".gitignore"), "/shared/\n")
 	assertIgnoredAndNoGitlink(t, defaultTarget, "backend")
@@ -69,11 +73,13 @@ func TestAutomaticNestedIgnoreProtectionThroughPublicCLI(t *testing.T) {
 	createdOverride := testutil.RunCommand(t, cli.Execute,
 		"create", "--project", root.Path, "feature/override", "--data-dir", data, "--path", overrideTarget,
 		"--mount", "backend=api", "--mount", "shared=common")
-	if createdOverride.Err != nil || createdOverride.Stderr != "" || !containsAll(createdOverride.Stdout,
-		"Changed .gitignore files:", filepath.Join(overrideTarget, ".gitignore"), filepath.Join(overrideTarget, "api", ".gitignore"),
-		"/api/", "/common/") {
+	if createdOverride.Err != nil || createdOverride.Stderr != "" {
 		t.Fatalf("override create = %#v", createdOverride)
 	}
+	assertCreateChangedIgnoreOutput(t, createdOverride.Stdout, "feature/override", overrideTarget, []ignoreOutputChange{
+		{path: filepath.Join(overrideTarget, ".gitignore"), rules: []string{"/api/"}},
+		{path: filepath.Join(overrideTarget, "api", ".gitignore"), rules: []string{"/common/"}},
+	})
 	assertFileBytes(t, filepath.Join(overrideTarget, ".gitignore"), "/.wtree.yml\n/backend/\n/api/\n")
 	assertFileBytes(t, filepath.Join(overrideTarget, "api", ".gitignore"), "/shared/\n/common/\n")
 	assertIgnoredAndNoGitlink(t, overrideTarget, "api")
@@ -83,9 +89,10 @@ func TestAutomaticNestedIgnoreProtectionThroughPublicCLI(t *testing.T) {
 	noChangeTarget := filepath.Join(t.TempDir(), "no-change")
 	noChange := testutil.RunCommand(t, cli.Execute,
 		"create", "--project", root.Path, "feature/no-change", "--data-dir", data, "--path", noChangeTarget)
-	if noChange.Err != nil || noChange.Stderr != "" || !strings.Contains(noChange.Stdout, "Every nested mount was already protected.") {
+	if noChange.Err != nil || noChange.Stderr != "" {
 		t.Fatalf("already-protected create = %#v", noChange)
 	}
+	assertCreateNoIgnoreChangesOutput(t, noChange.Stdout, "feature/no-change", noChangeTarget)
 	assertFileBytes(t, filepath.Join(noChangeTarget, ".gitignore"), "/.wtree.yml\n/backend/\n")
 	assertFileBytes(t, filepath.Join(noChangeTarget, "backend", ".gitignore"), "/shared/\n")
 	assertIgnoredAndNoGitlink(t, noChangeTarget, "backend")
@@ -303,6 +310,19 @@ func TestAutomaticIgnoreIneffectiveRuleRetryThroughPublicCLI(t *testing.T) {
 			if success.Err != nil || success.Stderr != "" {
 				t.Fatalf("create after correcting facts = %#v", success)
 			}
+			if jsonOutput {
+				var result struct {
+					RootPath string `json:"rootPath"`
+				}
+				if json.Unmarshal([]byte(success.Stdout), &result) != nil {
+					t.Fatalf("decode corrected retry JSON = %#v", success)
+				}
+				assertSameExistingPath(t, result.RootPath, target)
+			} else {
+				assertCreateChangedIgnoreOutput(t, success.Stdout, "feature/ineffective", target, []ignoreOutputChange{{
+					path: filepath.Join(target, "backend", ".gitignore"), rules: []string{"/shared/"},
+				}})
+			}
 			assertFileBytes(t, filepath.Join(target, ".gitignore"), generated)
 			if count := exactLineCount(string(mustReadFile(t, filepath.Join(target, ".gitignore"))), "/backend/"); count != 1 {
 				t.Fatalf("retry rule count = %d, want one", count)
@@ -312,6 +332,62 @@ func TestAutomaticIgnoreIneffectiveRuleRetryThroughPublicCLI(t *testing.T) {
 			}
 			assertIgnoredAndNoGitlink(t, target, "backend")
 		})
+	}
+}
+
+type ignoreOutputChange struct {
+	path  string
+	rules []string
+}
+
+func assertInitChangedIgnoreOutput(t *testing.T, output, manifestPath string, changedPaths []string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
+	if len(lines) != 4 || !strings.HasPrefix(lines[0], "Initialized ") || lines[0] == "Initialized " || !strings.HasPrefix(lines[1], "Portable manifest: ") || !strings.HasPrefix(lines[2], "Changed .gitignore: ") || lines[3] != "Review and commit project.wtree.yml and .gitignore changes; wtree did not stage, commit, or push them." {
+		t.Fatalf("init output shape = %q", output)
+	}
+	assertSameExistingPath(t, strings.TrimPrefix(lines[1], "Portable manifest: "), manifestPath)
+	actual := strings.Split(strings.TrimPrefix(lines[2], "Changed .gitignore: "), ", ")
+	if len(actual) != len(changedPaths) {
+		t.Fatalf("changed init paths = %q, want %q", actual, changedPaths)
+	}
+	for index := range changedPaths {
+		assertSameExistingPath(t, actual[index], changedPaths[index])
+	}
+}
+
+func assertCreateChangedIgnoreOutput(t *testing.T, output, workspace, target string, changes []ignoreOutputChange) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
+	if len(lines) != len(changes)+4 || lines[0] != "Created workspace: "+workspace || !strings.HasPrefix(lines[1], "Target: ") || lines[2] != "Changed .gitignore files:" || lines[len(lines)-1] != "Review and commit .gitignore changes; wtree did not stage or commit them." {
+		t.Fatalf("create output shape = %q", output)
+	}
+	assertSameExistingPath(t, strings.TrimPrefix(lines[1], "Target: "), target)
+	for index, change := range changes {
+		line := lines[index+3]
+		suffix := " (" + strings.Join(change.rules, ", ") + ")"
+		if !strings.HasPrefix(line, "  ") || !strings.HasSuffix(line, suffix) {
+			t.Fatalf("changed ignore line %d = %q, want path plus %q", index, line, suffix)
+		}
+		assertSameExistingPath(t, strings.TrimSuffix(strings.TrimPrefix(line, "  "), suffix), change.path)
+	}
+}
+
+func assertCreateNoIgnoreChangesOutput(t *testing.T, output, workspace, target string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
+	if len(lines) != 3 || lines[0] != "Created workspace: "+workspace || !strings.HasPrefix(lines[1], "Target: ") || lines[2] != "Every nested mount was already protected." {
+		t.Fatalf("no-change create output shape = %q", output)
+	}
+	assertSameExistingPath(t, strings.TrimPrefix(lines[1], "Target: "), target)
+}
+
+func assertSameExistingPath(t *testing.T, actual, expected string) {
+	t.Helper()
+	actualInfo, actualErr := os.Stat(actual)
+	expectedInfo, expectedErr := os.Stat(expected)
+	if actualErr != nil || expectedErr != nil || !os.SameFile(actualInfo, expectedInfo) {
+		t.Fatalf("emitted path %q is not the same filesystem object as %q: actual=%v expected=%v", actual, expected, actualErr, expectedErr)
 	}
 }
 

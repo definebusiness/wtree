@@ -35,12 +35,12 @@ type clonePlanRemote struct {
 
 type clonePlanReadOnlyDirectoryFacts struct {
 	CloneFileSystemFacts
-	path string
+	target os.FileInfo
 }
 
 func (facts clonePlanReadOnlyDirectoryFacts) Lstat(path string) (os.FileInfo, error) {
 	info, err := facts.CloneFileSystemFacts.Lstat(path)
-	if err != nil || filepath.Clean(path) != filepath.Clean(facts.path) {
+	if err != nil || facts.target == nil || !os.SameFile(facts.target, info) {
 		return info, err
 	}
 	return clonePlanModeFileInfo{FileInfo: info, mode: info.Mode() &^ 0o222}, nil
@@ -321,11 +321,15 @@ func TestClonePlanDefaultDestinationAndDestinationSafety(t *testing.T) {
 	}
 	unwritablePlanner := planner
 	if runtime.GOOS == "windows" {
+		unwritableInfo, err := os.Lstat(unwritable)
+		if err != nil {
+			t.Fatal(err)
+		}
 		unwritablePlanner = NewClonePlannerWith(ClonePlannerDependencies{
 			RemoteFacts: remote,
 			FileSystem: clonePlanReadOnlyDirectoryFacts{
 				CloneFileSystemFacts: osCloneFileSystemFacts{},
-				path:                 unwritable,
+				target:               unwritableInfo,
 			},
 		})
 	}
