@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -31,6 +32,26 @@ type clonePlanRemote struct {
 	errors  map[string]error
 	calls   []string
 }
+
+type clonePlanReadOnlyDirectoryFacts struct {
+	CloneFileSystemFacts
+	path string
+}
+
+func (facts clonePlanReadOnlyDirectoryFacts) Lstat(path string) (os.FileInfo, error) {
+	info, err := facts.CloneFileSystemFacts.Lstat(path)
+	if err != nil || filepath.Clean(path) != filepath.Clean(facts.path) {
+		return info, err
+	}
+	return clonePlanModeFileInfo{FileInfo: info, mode: info.Mode() &^ 0o222}, nil
+}
+
+type clonePlanModeFileInfo struct {
+	os.FileInfo
+	mode os.FileMode
+}
+
+func (info clonePlanModeFileInfo) Mode() os.FileMode { return info.mode }
 
 func (remote *clonePlanRemote) AdvertisedCommit(_ context.Context, url, ref string) (string, error) {
 	remote.mu.Lock()
@@ -258,7 +279,8 @@ func TestClonePlanDefaultDestinationAndDestinationSafety(t *testing.T) {
 	source := writeClonePlanManifest(t, base, data)
 	remote := &clonePlanRemote{commits: map[string]string{rootURL + "\x00refs/heads/published-main": clonePlanRootCommit}, errors: map[string]error{}}
 	planner := NewClonePlannerWith(ClonePlannerDependencies{RemoteFacts: remote})
-	plan, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: source, CWD: base, DataDir: filepath.Join(base, "data")})
+	dataDir := filepath.Join(base, "data")
+	plan, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: source, CWD: base, DataDir: dataDir})
 	canonicalBase, _ := filepath.EvalSymlinks(base)
 	if err != nil || plan.Destination.Path != filepath.Join(canonicalBase, "safe-project") {
 		t.Fatalf("default destination = %q, %v", plan.Destination.Path, err)
@@ -275,7 +297,7 @@ func TestClonePlanDefaultDestinationAndDestinationSafety(t *testing.T) {
 	if err := os.WriteFile(unsafeSource, unsafeData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: unsafeSource, CWD: base}); err == nil || !strings.Contains(err.Error(), "explicit destination") {
+	if _, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: unsafeSource, CWD: base, DataDir: dataDir}); err == nil || !strings.Contains(err.Error(), "explicit destination") {
 		t.Fatalf("unsafe default error = %v", err)
 	}
 
@@ -283,21 +305,31 @@ func TestClonePlanDefaultDestinationAndDestinationSafety(t *testing.T) {
 	if err := os.Mkdir(existing, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: existing, CWD: base}); err == nil || !strings.Contains(err.Error(), "already exists") {
+	if _, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: existing, CWD: base, DataDir: dataDir}); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("existing destination error = %v", err)
 	}
 	nonDirectory := filepath.Join(base, "file-parent")
 	if err := os.WriteFile(nonDirectory, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: filepath.Join(nonDirectory, "child"), CWD: base}); err == nil {
+	if _, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: filepath.Join(nonDirectory, "child"), CWD: base, DataDir: dataDir}); err == nil {
 		t.Fatal("non-directory parent accepted")
 	}
 	unwritable := filepath.Join(base, "unwritable")
 	if err := os.Mkdir(unwritable, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: filepath.Join(unwritable, "child"), CWD: base}); err == nil || !strings.Contains(err.Error(), "not writable") {
+	unwritablePlanner := planner
+	if runtime.GOOS == "windows" {
+		unwritablePlanner = NewClonePlannerWith(ClonePlannerDependencies{
+			RemoteFacts: remote,
+			FileSystem: clonePlanReadOnlyDirectoryFacts{
+				CloneFileSystemFacts: osCloneFileSystemFacts{},
+				path:                 unwritable,
+			},
+		})
+	}
+	if _, err := unwritablePlanner.Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: filepath.Join(unwritable, "child"), CWD: base, DataDir: dataDir}); err == nil || !strings.Contains(err.Error(), "not writable") {
 		t.Fatalf("unwritable parent error = %v", err)
 	}
 	realParent := filepath.Join(base, "real-parent")
@@ -308,10 +340,11 @@ func TestClonePlanDefaultDestinationAndDestinationSafety(t *testing.T) {
 	if err := os.Symlink(realParent, symlinkParent); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: filepath.Join(symlinkParent, "child"), CWD: base}); err == nil || !strings.Contains(err.Error(), "real directory") {
+	if _, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: filepath.Join(symlinkParent, "child"), CWD: base, DataDir: dataDir}); err == nil || !strings.Contains(err.Error(), "real directory") {
 		t.Fatalf("symlink parent error = %v", err)
 	}
-	if _, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: string(filepath.Separator), CWD: base}); err == nil || !strings.Contains(err.Error(), "too broad") {
+	volumeRoot := filepath.VolumeName(base) + string(filepath.Separator)
+	if _, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: volumeRoot, CWD: base, DataDir: dataDir}); err == nil || !strings.Contains(err.Error(), "too broad") {
 		t.Fatalf("broad destination error = %v", err)
 	}
 }

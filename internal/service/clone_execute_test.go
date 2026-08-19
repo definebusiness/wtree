@@ -146,19 +146,16 @@ func TestCloneExecuteRejectsConcurrentRootMetadataMutationAfterAtomicRename(t *t
 	}
 }
 
-func TestCloneExecuteRenameSeamRootChtimesBeforeReturnRetainsDestination(t *testing.T) {
+func TestCloneExecuteStateWriteSeamRootChtimesRetainsDestination(t *testing.T) {
 	plan := syntheticExecutableClonePlan(t)
 	executor := NewCloneExecutorWith(CloneExecutorDependencies{
 		Git: &cloneExecutionGit{plan: plan},
-		Rename: func(staging, destination string) error {
-			if err := os.Rename(staging, destination); err != nil {
-				return err
+		BeforeEffect: func(step string) error {
+			if step != "state-write" {
+				return nil
 			}
 			changed := time.Now().Add(time.Hour).Round(0)
-			return os.Chtimes(destination, changed, changed)
-		},
-		WriteWorkspaceCAS: func(string, store.WorkspaceState, func() error) (ClonePublicationReceipt, error) {
-			return ClonePublicationReceipt{}, os.ErrPermission
+			return os.Chtimes(plan.Destination.Path, changed, changed)
 		},
 	})
 
@@ -935,7 +932,14 @@ func TestCloneExecuteRejectsReplacedStagingIdentityBeforeRename(t *testing.T) {
 }
 
 func TestCloneExecuteRejectsReplacedParentIdentityBeforeRename(t *testing.T) {
-	plan := syntheticExecutableClonePlan(t)
+	initial := syntheticExecutableClonePlan(t)
+	destinationParent := t.TempDir()
+	plan := mustClonePlan(t, NewClonePlannerWith(ClonePlannerDependencies{RemoteFacts: newClonePlanRemote(initial.Repositories[0].CloneURL, initial.Repositories[1].CloneURL)}), ClonePlanRequest{
+		ManifestSource: initial.Source.Value,
+		Destination:    filepath.Join(destinationParent, "clone"),
+		CWD:            destinationParent,
+		DataDir:        initial.DataDir,
+	})
 	moved := plan.Destination.Parent + "-moved"
 	t.Cleanup(func() { _ = os.RemoveAll(moved) })
 	executor := NewCloneExecutorWith(CloneExecutorDependencies{Git: &cloneExecutionGit{plan: plan}, BeforeEffect: func(step string) error {

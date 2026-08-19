@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -395,9 +396,12 @@ func TestPortableManifestRejectsInvalidGraphAndFields(t *testing.T) {
 }
 
 func TestValidateCloneURLClasses(t *testing.T) {
+	localRoot := t.TempDir()
+	localRepository := filepath.Join(localRoot, "srv", "git", "repo.git")
+	localRepositoryWithSpace := filepath.Join(localRoot, "srv", "git", "my repo.git")
 	for _, input := range []string{
 		"https://example.test/org/repo.git", "http://example.test/org/repo.git", "HTTPS://example.test/org/repo.git", "hTtP://example.test/org/repo.git", "ssh://git@example.test/org/repo.git",
-		"git@example.test:org/repo.git", "example.test:org/repo.git", "/srv/git/repo.git", "/srv/git/my repo.git", `C:\\git\\repo.git`, "file:///srv/git/repo.git",
+		"git@example.test:org/repo.git", "example.test:org/repo.git", localRepository, localRepositoryWithSpace, `C:\\git\\repo.git`, "file:///srv/git/repo.git",
 	} {
 		if err := config.ValidateCloneURL(input); err != nil {
 			t.Errorf("ValidateCloneURL(%q) error = %v", input, err)
@@ -547,7 +551,8 @@ func TestLocalProjectManifestCompatibility(t *testing.T) {
 	if err != nil || string(readBack) != string(old) {
 		t.Fatalf("ReadProjectFile changed old v1 data: %q, %v", readBack, err)
 	}
-	loaded.Manifest = config.ManifestMetadata{Path: "project.wtree.yml", Source: "/projects/product/project.wtree.yml"}
+	manifestSource := filepath.Join(t.TempDir(), "projects", "product", "project.wtree.yml")
+	loaded.Manifest = config.ManifestMetadata{Path: "project.wtree.yml", Source: manifestSource}
 	encoded, err := config.MarshalProject(loaded)
 	if err != nil {
 		t.Fatalf("MarshalProject() error = %v", err)
@@ -562,7 +567,8 @@ func TestLocalProjectManifestCompatibility(t *testing.T) {
 	if _, err := config.LoadProject([]byte("version: 2\n")); err == nil {
 		t.Fatal("LoadProject() accepted newer local version")
 	}
-	if _, err := config.LoadProject([]byte("version: 1\nmanifest:\n  path: alternate.yml\n  source: /projects/product/project.wtree.yml\n")); err == nil {
+	alternate := []byte(fmt.Sprintf("version: 1\nmanifest:\n  path: alternate.yml\n  source: %s\n", manifestSource))
+	if _, err := config.LoadProject(alternate); err == nil {
 		t.Fatal("LoadProject() accepted an alternate manifest path")
 	}
 	plain, err := config.MarshalProject(config.ProjectConfig{Version: config.Version, Project: config.Project{ID: "p1", Name: "product"}, Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: "."}}})
@@ -572,7 +578,8 @@ func TestLocalProjectManifestCompatibility(t *testing.T) {
 }
 
 func TestValidateManifestSource(t *testing.T) {
-	for _, source := range []string{"/projects/acme/project.wtree.yml", "https://example.test/acme/project.wtree.yml", "HTTPS://example.test/acme/project.wtree.yml", "hTtP://example.test/acme/project.wtree.yml"} {
+	localSource := filepath.Join(t.TempDir(), "projects", "acme", "project.wtree.yml")
+	for _, source := range []string{localSource, "https://example.test/acme/project.wtree.yml", "HTTPS://example.test/acme/project.wtree.yml", "hTtP://example.test/acme/project.wtree.yml"} {
 		if err := config.ValidateManifestSource(source); err != nil {
 			t.Errorf("ValidateManifestSource(%q) error = %v", source, err)
 		}
