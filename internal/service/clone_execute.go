@@ -182,7 +182,8 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 	}
 	staging = filepath.Clean(staging)
 	owned, err := executor.dependencies.Lstat(staging)
-	if err != nil || !owned.IsDir() || owned.Mode().Perm()&0o077 != 0 || filepath.Dir(staging) != plan.Destination.CanonicalParent || !strings.HasPrefix(filepath.Base(staging), prefix) {
+	parentIdentity := ancestorIdentities[len(ancestorIdentities)-1]
+	if err != nil || !cloneStagingPathIsSafe(staging, prefix, owned, parentIdentity.info, executor.dependencies.Lstat) {
 		return CloneExecutionResult{}, cleanCloneError(errors.New("staging creator returned an unsafe path"))
 	}
 	published := false
@@ -197,7 +198,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		if ownershipCompromised {
 			return errors.Join(cause, NewError(ErrorRollbackIncomplete, errors.New("clone staging or parent identity changed; preserving all paths")))
 		}
-		if cleanupErr := executor.removeOwnedTree(context.WithoutCancel(ctx), plan, staging, owned, published, inventoryReady, treeInventory, configPublished, expectedFinalIdentities); cleanupErr != nil {
+		if cleanupErr := executor.removeOwnedTree(context.WithoutCancel(ctx), plan, staging, owned, parentIdentity.info, published, inventoryReady, treeInventory, configPublished, expectedFinalIdentities); cleanupErr != nil {
 			recoveryErr := error(nil)
 			if published && recordRecovery != nil {
 				recoveryErr = recordRecovery("cleanup", "destination", cleanupErr)
@@ -728,12 +729,12 @@ func (executor *CloneExecutor) finalIdentities(ctx context.Context, plan ClonePl
 	return identities, nil
 }
 
-func (executor *CloneExecutor) removeOwnedTree(ctx context.Context, plan ClonePlan, staging string, created os.FileInfo, published, inventoryReady bool, inventory cloneTreeInventory, configSnapshot cloneFileSnapshot, expectedIdentities map[string]string) error {
+func (executor *CloneExecutor) removeOwnedTree(ctx context.Context, plan ClonePlan, staging string, created, parent os.FileInfo, published, inventoryReady bool, inventory cloneTreeInventory, configSnapshot cloneFileSnapshot, expectedIdentities map[string]string) error {
 	target := staging
 	if published {
 		target = plan.Destination.Path
 	}
-	if filepath.Clean(filepath.Dir(target)) != filepath.Clean(plan.Destination.CanonicalParent) {
+	if !clonePathHasParentIdentity(target, parent, executor.dependencies.Lstat) {
 		return errors.New("refuse clone cleanup outside destination parent")
 	}
 	info, err := executor.dependencies.Lstat(target)
@@ -771,6 +772,23 @@ func (executor *CloneExecutor) removeOwnedTree(ctx context.Context, plan ClonePl
 		}
 	}
 	return executor.dependencies.RemoveAll(target)
+}
+
+func cloneStagingPathIsSafe(staging, prefix string, stagingInfo, parentInfo os.FileInfo, lstat func(string) (os.FileInfo, error)) bool {
+	if !filepath.IsAbs(staging) || filepath.Clean(staging) != staging || stagingInfo == nil || !stagingInfo.IsDir() ||
+		stagingInfo.Mode()&os.ModeSymlink != 0 || !cloneStagingModeIsPrivate(stagingInfo.Mode()) ||
+		!strings.HasPrefix(filepath.Base(staging), prefix) {
+		return false
+	}
+	return clonePathHasParentIdentity(staging, parentInfo, lstat)
+}
+
+func clonePathHasParentIdentity(path string, expected os.FileInfo, lstat func(string) (os.FileInfo, error)) bool {
+	if expected == nil || !expected.IsDir() || expected.Mode()&os.ModeSymlink != 0 || lstat == nil {
+		return false
+	}
+	actual, err := lstat(filepath.Dir(path))
+	return err == nil && actual.IsDir() && actual.Mode()&os.ModeSymlink == 0 && os.SameFile(expected, actual)
 }
 
 func (executor *CloneExecutor) writeCloneRecoveryCAS(plan ClonePlan, original cloneFileSnapshot, owned *cloneFileSnapshot, failedStep, retainedStep string, failure error) error {

@@ -449,6 +449,57 @@ func TestCloneExecuteSameDestinationRaceHasExactlyOneWinner(t *testing.T) {
 	}
 }
 
+func TestCloneStagingPathSafetyUsesParentIdentity(t *testing.T) {
+	parent := t.TempDir()
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := ".clone.wtree-clone-"
+	staging, err := os.MkdirTemp(parent, prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stagingInfo, err := os.Lstat(staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cloneStagingPathIsSafe(staging, prefix, stagingInfo, parentInfo, os.Lstat) {
+		t.Fatal("owned staging directory was rejected")
+	}
+
+	externalParent := t.TempDir()
+	external, err := os.MkdirTemp(externalParent, prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalInfo, err := os.Lstat(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cloneStagingPathIsSafe(external, prefix, externalInfo, parentInfo, os.Lstat) {
+		t.Fatal("staging directory under an external sibling was accepted")
+	}
+	if cloneStagingPathIsSafe(filepath.Base(staging), prefix, stagingInfo, parentInfo, os.Lstat) {
+		t.Fatal("relative staging path was accepted")
+	}
+	traversal := filepath.Join(parent, "child") + string(filepath.Separator) + ".." + string(filepath.Separator) + filepath.Base(staging)
+	if cloneStagingPathIsSafe(traversal, prefix, stagingInfo, parentInfo, os.Lstat) {
+		t.Fatal("unclean staging path was accepted")
+	}
+
+	link := filepath.Join(parent, prefix+"link")
+	if err := os.Symlink(staging, link); err == nil {
+		linkInfo, statErr := os.Lstat(link)
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		if cloneStagingPathIsSafe(link, prefix, linkInfo, parentInfo, os.Lstat) {
+			t.Fatal("staging symlink was accepted")
+		}
+	}
+}
+
 func TestCloneExecuteDifferentProjectsDoNotSerializeRemoteEffects(t *testing.T) {
 	dataDir := t.TempDir()
 	var plans []ClonePlan
@@ -477,12 +528,10 @@ func TestCloneExecuteDifferentProjectsDoNotSerializeRemoteEffects(t *testing.T) 
 			errors <- err
 		}()
 	}
-	for range 2 {
-		<-entered
-	}
+	waitForCloneEntries(t, entered, 2)
 	close(release)
 	for range 2 {
-		if err := <-errors; err != nil {
+		if err := waitForCloneResult(t, errors); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -520,18 +569,40 @@ func TestCloneExecuteSameProjectDifferentDestinationsHasOneWinner(t *testing.T) 
 			errors <- err
 		}()
 	}
-	for range 2 {
-		<-entered
-	}
+	waitForCloneEntries(t, entered, 2)
 	close(release)
 	wins := 0
 	for range 2 {
-		if err := <-errors; err == nil {
+		if err := waitForCloneResult(t, errors); err == nil {
 			wins++
 		}
 	}
 	if wins != 1 {
 		t.Fatalf("successful same-project clones = %d, want one", wins)
+	}
+}
+
+func waitForCloneEntries(t *testing.T, entered <-chan struct{}, count int) {
+	t.Helper()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for range count {
+		select {
+		case <-entered:
+		case <-timer.C:
+			t.Fatal("clone remote effects did not become live within 5 seconds")
+		}
+	}
+}
+
+func waitForCloneResult(t *testing.T, results <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-results:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("clone execution did not complete within 5 seconds after release")
+		return nil
 	}
 }
 

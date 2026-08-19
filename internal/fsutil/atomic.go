@@ -119,12 +119,7 @@ func writeFileAtomicMode(path string, data []byte, mode os.FileMode, hook Atomic
 	if err := atomicStep(hook, "dir-sync"); err != nil {
 		return &postReplacementError{Err: err}
 	}
-	directoryFile, err := os.Open(directory)
-	if err != nil {
-		return &postReplacementError{Err: err}
-	}
-	defer directoryFile.Close()
-	if err := Sync(directoryFile); err != nil {
+	if err := syncDirectory(directory); err != nil {
 		return &postReplacementError{Err: err}
 	}
 	return nil
@@ -176,12 +171,7 @@ func writeFileAtomicModeCreate(path string, data []byte, mode os.FileMode, hook 
 	if err := atomicStep(hook, "dir-sync"); err != nil {
 		return &postReplacementError{Err: err}
 	}
-	directoryFile, err := os.Open(directory)
-	if err != nil {
-		return &postReplacementError{Err: err}
-	}
-	defer directoryFile.Close()
-	if err := Sync(directoryFile); err != nil {
+	if err := syncDirectory(directory); err != nil {
 		return &postReplacementError{Err: err}
 	}
 	return nil
