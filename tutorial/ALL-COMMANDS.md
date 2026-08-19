@@ -17,14 +17,14 @@ isolated temporary directory and compares the normalized end result with
 |---|---|
 | `wtree init` | dry-run, JSON, nested discovery, generated ignore protection, publication output |
 | `wtree clone` | dry-run, JSON, execution, explicit destination/root, destination conflict |
-| `wtree project list` | healthy, empty, and stale registries; text and JSON |
+| `wtree project list` | healthy and stale registries; text and JSON |
 | `wtree project prune` | refusal for a healthy registration, dry-run, stale removal |
 | `wtree project unregister` | dry-run and intentional registry-only removal |
-| `wtree config get/set/unset/list` | project scope, precedence, text and JSON |
+| `wtree config get/set/unset/list` | project-scoped reads and mutations; text and JSON |
 | `wtree create` | explicit base, custom mounts, dry-run, JSON, progress, name conflict |
 | `wtree checkout` | missing local branch, existing branch, retained-state restoration |
 | `wtree import` | custom mounts by Git identity, complete import, rejected and allowed partial import |
-| `wtree list/status/path` | current and named workspace lookup, text and JSON, explicit project context |
+| `wtree list/status/path` | current and named workspace lookup, text and JSON, explicit project selection |
 | `wtree repo path/get` | root and nested context, text and JSON |
 | `wtree remove` | dry-run, retained state, dirty refusal, narrow `--force` override |
 | `wtree delete` | dry-run, complete deletion, partial-workspace refusal |
@@ -32,9 +32,30 @@ isolated temporary directory and compares the normalized end result with
 | root/help commands | `--version`, `--help`, `--how-to`, and command-specific help |
 
 `--data-dir` is shown where a command must be independent of ambient user
-state. `--project` is shown when the current directory is outside the selected
-project. Unsupported flag combinations are intentional errors and are best
-checked with the relevant command's `--help` output.
+state. `--project` is shown to demonstrate explicit selection. Unsupported
+flag combinations are intentional errors and are best checked with the
+relevant command's `--help` output.
+
+### Missing coverage
+
+This tutorial exercises every current command, but it is not exhaustive
+coverage of every input, flag combination, failure injection, platform, or
+concurrent operation. Relative to the situations claimed in the table above,
+full coverage is missing exactly these cases:
+
+- listing a genuinely empty registry in text and JSON immediately after the
+  last registration is removed;
+- configuring an isolated global `worktrees.root` and proving project scope
+  overrides global scope, which in turn overrides the platform default;
+- resolving `--project` while the current directory is unrelated to every
+  registered project and workspace; and
+- executing the Markdown literally as the test input. The runner follows the
+  same ordered lifecycle, but it replaces display-only commands with
+  assertions, suppresses incidental output, and performs additional checks.
+
+Those four additions would complete the coverage stated by this tutorial;
+they would not turn it into an exhaustive test of every possible command
+input or operating-system failure.
 
 ## 1. Build an isolated tutorial command
 
@@ -241,7 +262,7 @@ wtree status
 cd "$WTREE_PROJECT"
 ```
 
-Outside the project, select it explicitly:
+Select the project explicitly while still inside it:
 
 ```sh
 wtree list --project "$WTREE_PROJECT"

@@ -80,13 +80,20 @@ export WTREE_PROJECT="$WTREE_TUTORIAL/acme-shop"
 If you already ran the fixture script successfully, skip the script command
 and set the variables to the existing fixture instead.
 
-Keep `wtree` registry and configuration data inside the disposable tutorial
-directory:
+Keep `wtree` registry and worktree data inside the disposable tutorial
+directory, and redirect Linux global-configuration lookup there as well:
 
 ```sh
 export WTREE_DATA_HOME="$WTREE_TUTORIAL/wtree-data"
 export XDG_CONFIG_HOME="$WTREE_TUTORIAL/xdg-config"
 ```
+
+On macOS, `wtree` intentionally ignores `XDG_CONFIG_HOME` and continues to
+look for global configuration at
+`~/Library/Application Support/wtree/config.yml`. The tutorial only mutates
+project-scoped configuration, so it does not write that global file;
+`WTREE_DATA_HOME` still isolates its registry, state, and default worktree
+storage.
 
 The fixture initially has only this distribution layout:
 

@@ -3,6 +3,7 @@
 Status: implemented
 Source idea: [Clone and synchronize a multi-repository project](../ideas/cloning-a-multi-repository-project.md)
 Implementation plan: [Portable manifest clone implementation plan](../plans/portable-manifest-clone.md)
+Current portable format: [Portable manifest v2 base-repository format](portable-manifest-v2-base-repository-format.md)
 
 ## 1. Purpose and scope
 
@@ -15,15 +16,16 @@ It covers local and HTTP(S) manifest sources. It does not specify `update`,
 adoption of existing destination directories.
 
 The general safety, identity, path, transaction, output, and registry rules in
-[`wtree.spec.md`](wtree.spec.md) continue to apply. The immediate-parent ignore
-rules in
-[`nested-mount-ignore-management.md`](nested-mount-ignore-management.md) apply
-to every nested repository cloned from a portable manifest.
+[`wtree.spec.md`](wtree.spec.md) continue to apply. The current automatic
+ignore behavior for `init` and `create` is defined by the
+[automatic nested mount ignore protection specification](automatic-nested-mount-ignore-protection.md).
+The clone-specific committed-ignore requirement remains defined in section 8
+below.
 
 ## 2. Local and portable configuration
 
 `.wtree.yml` remains ignored, machine-local configuration. Its version-one
-schema gains this optional block:
+schema includes this optional block:
 
 ```yaml
 manifest:
@@ -45,13 +47,17 @@ a repository clone transport.
 
 ## 3. Portable manifest schema
 
-The strict version-one schema is:
+The current strict portable schema is version 2. The
+[portable manifest v2 specification](portable-manifest-v2-base-repository-format.md)
+defines the format transition and its deliberately limited topology. Its
+schema is:
 
 ```yaml
-version: 1
+version: 2
 project:
   id: 3f97ab90-0d41-4bd1-84a8-4df70dbcd221
   name: acme-shop
+  base_repository: root
 repositories:
   root:
     clone:
@@ -75,8 +81,10 @@ Serialization must be deterministic: repository keys are written in lexical
 order and initial commit arrays are sorted.
 
 The repository graph must have exactly one root, contain no missing parents or
-cycles, and use safe unique repository IDs and parent-relative mounts. The root
-mount is `.` and every child mount is relative to its immediate parent.
+cycles, and use safe unique repository IDs and parent-relative mounts.
+`project.base_repository` is required and names that sole root. The root mount
+is `.` and every child mount is relative to its immediate parent. Sibling
+repositories and a non-Git logical project root are not part of this format.
 
 Each repository records exactly one clone remote and URL. The upstream remote
 must equal the clone remote. `upstream.branch` is the local default branch;
@@ -280,13 +288,17 @@ at safe boundaries and cleanup runs without the cancelled context.
 
 ## 10. Compatibility and non-goals
 
-Local configuration version 1 gains only optional manifest metadata. The
-portable manifest has its own schema version 1. Registry, workspace state,
-workspace plan, and recovery schema versions do not change.
+Local configuration remains at version 1 with optional manifest metadata. The
+portable manifest uses schema version 2 and requires
+`project.base_repository`, as defined by the
+[portable manifest v2 specification](portable-manifest-v2-base-repository-format.md).
+Registry, workspace state, workspace plan, and recovery schema versions do not
+change.
 
-Existing initialized projects without manifest metadata and all existing
-workspace commands remain compatible. A successful clone becomes the default
-workspace only after every checkout and final path has been verified.
+Existing initialized projects whose local version-one configuration lacks
+manifest metadata and all existing workspace commands remain compatible. A
+successful clone becomes the default workspace only after every checkout and
+final path has been verified.
 
 This specification does not authorize third-party dependencies, repository
 staging or commits, tags, pushes, publication, `update`, `sync`, release locks,
