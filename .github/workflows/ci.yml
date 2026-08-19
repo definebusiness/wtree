@@ -23,8 +23,22 @@ jobs:
           check-latest: true
       - name: Check formatting
         run: |
-          unformatted="$(go list -f '{{.Dir}}' ./... | while IFS= read -r dir; do gofmt -l "$dir"/*.go; done)"
-          test -z "$unformatted" || (printf '%s\n' "$unformatted" && exit 1)
+          set -o pipefail
+          git ls-files -z -- '*.go' |
+            (
+              unformatted=()
+              while IFS= read -r -d '' file; do
+                if formatted="$(gofmt -l "$file")"; then
+                  test -z "$formatted" || unformatted+=("$file")
+                else
+                  exit $?
+                fi
+              done
+              if ((${#unformatted[@]})); then
+                printf '%s\n' "${unformatted[@]}"
+                exit 1
+              fi
+            )
       - name: Vet
         run: go vet ./...
       - name: Test
