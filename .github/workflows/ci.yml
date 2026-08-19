@@ -16,6 +16,9 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Disable Windows checkout line-ending conversion
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
