@@ -227,8 +227,9 @@ remote's default branch.
 Before creating a child checkout, clone inspects the already-cloned immediate
 parent at its selected commit and requires that parent's committed
 `.gitignore` content to ignore the effective child mount. Local and global
-excludes do not qualify. A missing rule fails before the child path exists and
-includes an actionable `wtree add-ignore` hint.
+excludes do not qualify. A missing or ineffective rule fails before the child
+path exists. Before retrying clone, users must add and commit the required
+`.gitignore` rule using the ordinary repository workflow.
 
 After each repository clone, verify:
 

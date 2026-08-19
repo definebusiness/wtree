@@ -7,12 +7,14 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 // ResolveMount derives one repository path from its parent-relative mount and
 // rejects lexical escapes from workspaceRoot.
 func ResolveMount(workspaceRoot, parentPath, mount string, root bool) (string, error) {
-	if err := ValidateMount(mount, root); err != nil {
+	normalized, err := NormalizeMount(mount, root)
+	if err != nil {
 		return "", err
 	}
 	rootPath, err := filepath.Abs(workspaceRoot)
@@ -29,7 +31,7 @@ func ResolveMount(workspaceRoot, parentPath, mount string, root bool) (string, e
 	if !within(rootPath, parentPath) {
 		return "", fmt.Errorf("parent path %q is outside workspace root", parentPath)
 	}
-	candidate := filepath.Join(parentPath, filepath.FromSlash(normalizeMount(mount)))
+	candidate := filepath.Join(parentPath, filepath.FromSlash(normalized))
 	if !within(rootPath, candidate) {
 		return "", fmt.Errorf("mount %q escapes workspace root", mount)
 	}
@@ -59,24 +61,38 @@ func CheckPotentialWithin(root, target string) error {
 
 // ValidateMount verifies that only the root may use the workspace-root mount.
 func ValidateMount(mount string, root bool) error {
+	_, err := NormalizeMount(mount, root)
+	return err
+}
+
+// NormalizeMount returns the one portable, slash-separated representation of
+// a repository mount. Callers must retain this value for both path placement
+// and any Git-ignore rule derived from the mount.
+func NormalizeMount(mount string, root bool) (string, error) {
+	if !utf8.ValidString(mount) {
+		return "", fmt.Errorf("repository mount contains invalid UTF-8")
+	}
+	if strings.ContainsAny(mount, "\r\n\x00") {
+		return "", fmt.Errorf("repository mount contains a line break or NUL")
+	}
+	normalized := strings.ReplaceAll(mount, `\`, "/")
 	if root {
 		if mount != "." {
-			return fmt.Errorf("root repository mount must be %q", ".")
+			return "", fmt.Errorf("root repository mount must be %q", ".")
 		}
-		return nil
+		return ".", nil
 	}
 	if mount == "" {
-		return fmt.Errorf("repository mount is required")
+		return "", fmt.Errorf("repository mount is required")
 	}
-	normalized := normalizeMount(mount)
 	if strings.HasPrefix(normalized, "/") || hasWindowsVolume(normalized) {
-		return fmt.Errorf("repository mount %q must be relative", mount)
+		return "", fmt.Errorf("repository mount %q must be relative", mount)
 	}
 	cleaned := path.Clean(normalized)
 	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
-		return fmt.Errorf("repository mount %q escapes its parent", mount)
+		return "", fmt.Errorf("repository mount %q escapes its parent", mount)
 	}
-	return nil
+	return cleaned, nil
 }
 
 // CheckResolvedWithin rejects a target that leaves root after symlinks resolve.
@@ -120,10 +136,6 @@ func canonicalPotential(value string) (string, error) {
 		trailing = append([]string{filepath.Base(current)}, trailing...)
 		current = parent
 	}
-}
-
-func normalizeMount(mount string) string {
-	return strings.ReplaceAll(mount, `\`, "/")
 }
 
 func hasWindowsVolume(value string) bool {

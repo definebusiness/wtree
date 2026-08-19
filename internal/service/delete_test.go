@@ -56,7 +56,7 @@ func TestWorkspaceDeleterRemovesChildFirstThenBranchesAndState(t *testing.T) {
 func TestWorkspaceDeleterRefusesUnmergedBranchUnlessForcedAndReportsOverride(t *testing.T) {
 	project, _, _, data := createFixture(t)
 	target := filepath.Join(t.TempDir(), "workspace")
-	if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/delete", TargetPath: target, DataDir: data}, nil); err != nil {
+	if _, err := createFixtureWorkspace(t, project, "feature/delete", target, data); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := service.RequireWorkspace(project, data, "feature/delete")
@@ -82,7 +82,7 @@ func TestWorkspaceDeleterRefusesUnmergedBranchUnlessForcedAndReportsOverride(t *
 func TestWorkspaceDeleterFailureAfterBranchDeletionWritesRecoveryAndPreservesState(t *testing.T) {
 	project, _, _, data := createFixture(t)
 	target := filepath.Join(t.TempDir(), "workspace")
-	if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/delete", TargetPath: target, DataDir: data}, nil); err != nil {
+	if _, err := createFixtureWorkspace(t, project, "feature/delete", target, data); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := service.RequireWorkspace(project, data, "feature/delete")
@@ -113,7 +113,7 @@ func TestWorkspaceDeleterFailureAfterBranchDeletionWritesRecoveryAndPreservesSta
 func TestWorkspaceDeleterStateDeleteFailureWritesRecovery(t *testing.T) {
 	project, _, _, data := createFixture(t)
 	target := filepath.Join(t.TempDir(), "workspace")
-	if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/delete", TargetPath: target, DataDir: data}, nil); err != nil {
+	if _, err := createFixtureWorkspace(t, project, "feature/delete", target, data); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := service.RequireWorkspace(project, data, "feature/delete")
@@ -135,7 +135,7 @@ func TestWorkspaceDeleterStateDeleteFailureWritesRecovery(t *testing.T) {
 func TestWorkspaceDeleterRemovalFailureRollsBackBeforeBranchDeletion(t *testing.T) {
 	project, _, _, data := createFixture(t)
 	target := filepath.Join(t.TempDir(), "workspace")
-	if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/delete", TargetPath: target, DataDir: data}, nil); err != nil {
+	if _, err := createFixtureWorkspace(t, project, "feature/delete", target, data); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := service.RequireWorkspace(project, data, "feature/delete")
@@ -172,7 +172,7 @@ func TestWorkspaceDeleterScopesForceFlagsPerDirtyAndUnmergedAllowance(t *testing
 		t.Run(scenario.name, func(t *testing.T) {
 			project, _, _, data := createFixture(t)
 			target := filepath.Join(t.TempDir(), "workspace")
-			if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/delete", TargetPath: target, DataDir: data}, nil); err != nil {
+			if _, err := createFixtureWorkspace(t, project, "feature/delete", target, data); err != nil {
 				t.Fatal(err)
 			}
 			workspace, err := service.RequireWorkspace(project, data, "feature/delete")
@@ -215,7 +215,7 @@ func TestWorkspaceDeleterScopesForceFlagsPerDirtyAndUnmergedAllowance(t *testing
 func TestWorkspaceDeleterCleanUnmergedDescendantRollsBackAfterLaterRemovalFailure(t *testing.T) {
 	project, _, _, data := createFixture(t)
 	target := filepath.Join(t.TempDir(), "workspace")
-	if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/delete", TargetPath: target, DataDir: data}, nil); err != nil {
+	if _, err := createFixtureWorkspace(t, project, "feature/delete", target, data); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := service.RequireWorkspace(project, data, "feature/delete")

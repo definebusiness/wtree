@@ -24,7 +24,7 @@ func newWorkspacePlanCommand(stdout, stderr io.Writer, projectPath *string, oper
 	long := "Build and validate a complete workspace plan without changing Git or workspace state. Use --dry-run to render this plan."
 	if operation == plan.Create {
 		short = "create a synchronized workspace"
-		long = "Create branches and parent-first worktrees for every project repository, validate the resulting checkouts, then atomically persist workspace state. Use --dry-run to inspect the complete plan without mutation."
+		long = "Create branches and parent-first worktrees for every project repository, automatically ensure each nested mount is ignored in its new parent worktree, validate the resulting checkouts, then atomically persist workspace state. Use --dry-run to inspect the complete plan and automatic protection requirements without mutation."
 	}
 	command := &cobra.Command{
 		Use:   name + " <branch>",
@@ -89,11 +89,14 @@ func newWorkspacePlanCommand(stdout, stderr io.Writer, projectPath *string, oper
 					progressErr = render.Line(stderr, fmt.Sprintf("%s %s", event.Kind, event.Step))
 				}
 			}
-			value, err = service.NewWorkspaceCreator().Create(ctx, resolution.Project, service.WorkspacePlanRequest{
+			created, err := service.NewWorkspaceCreator().CreateWithResult(ctx, resolution.Project, service.WorkspacePlanRequest{
 				Operation: operation, WorkspaceName: arguments[0], From: from, Mounts: overrides,
 				TargetPath: targetPath, WorktreeRoot: worktreeRoot, DataDir: dataDir,
 			}, progress)
 			if err != nil {
+				if progressErr == nil {
+					progressErr = renderCreateFailureDiagnostic(stderr, jsonOutput, created)
+				}
 				if progressErr == nil {
 					progressErr = renderCleanRollbackDiagnostic(stderr, jsonOutput, err)
 				}
@@ -105,10 +108,11 @@ func newWorkspacePlanCommand(stdout, stderr io.Writer, projectPath *string, oper
 			if progressErr != nil {
 				return progressErr
 			}
+			value = created.Plan
 			if jsonOutput {
 				return render.JSON(stdout, value)
 			}
-			return renderCreateSuccess(stdout, value)
+			return renderCreateSuccess(stdout, value, created.IgnoreUpdates)
 		},
 	}
 	command.Flags().StringVar(&from, "from", "HEAD", "base ref (create only)")
@@ -130,13 +134,61 @@ func renderCleanRollbackDiagnostic(stderr io.Writer, jsonOutput bool, err error)
 	return render.Line(stderr, "Rollback complete.")
 }
 
-func renderCreateSuccess(stdout io.Writer, value plan.WorkspacePlan) error {
+func renderCreateFailureDiagnostic(stderr io.Writer, jsonOutput bool, result service.CreateResult) error {
+	if jsonOutput {
+		return nil
+	}
+	if len(result.RetainedIgnoreFiles) != 0 {
+		if err := render.Line(stderr, "Retained changed .gitignore files:"); err != nil {
+			return err
+		}
+		for _, update := range result.RetainedIgnoreFiles {
+			if err := render.Line(stderr, "  "+update.Path); err != nil {
+				return err
+			}
+		}
+	}
+	if len(result.RemovedIgnoreFiles) != 0 {
+		if err := render.Line(stderr, "Removed .gitignore files with clean rollback:"); err != nil {
+			return err
+		}
+		for _, update := range result.RemovedIgnoreFiles {
+			if err := render.Line(stderr, "  "+update.Path); err != nil {
+				return err
+			}
+		}
+	}
+	if len(result.UnverifiedMounts) != 0 {
+		if err := render.Line(stderr, "Unverified mounts; child worktrees were not added:"); err != nil {
+			return err
+		}
+		for _, mount := range result.UnverifiedMounts {
+			if err := render.Line(stderr, fmt.Sprintf("  %s -> %s (%s)", mount.ParentPath, mount.ChildPath, mount.Mount)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func renderCreateSuccess(stdout io.Writer, value plan.WorkspacePlan, updates []service.IgnoreFileUpdate) error {
 	for _, line := range []string{"Created workspace: " + value.WorkspaceName, "Target: " + value.RootPath} {
 		if err := render.Line(stdout, line); err != nil {
 			return err
 		}
 	}
-	return nil
+	if len(updates) == 0 {
+		return render.Line(stdout, "Every nested mount was already protected.")
+	}
+	if err := render.Line(stdout, "Changed .gitignore files:"); err != nil {
+		return err
+	}
+	for _, update := range updates {
+		if err := render.Line(stdout, "  "+update.Path+" ("+strings.Join(update.AddedRules, ", ")+")"); err != nil {
+			return err
+		}
+	}
+	return render.Line(stdout, "Review and commit .gitignore changes; wtree did not stage or commit them.")
 }
 
 func effectivePlannerWorktreeRoot(cliRoot, projectPath, globalPath, fallback, home string) (string, error) {
@@ -188,6 +240,29 @@ func renderWorkspacePlan(stdout io.Writer, value plan.WorkspacePlan) error {
 	}
 	if err := render.Line(stdout, ""); err != nil {
 		return err
+	}
+	if value.Operation == plan.Create {
+		ensures, err := service.WorkspacePlanIgnoreEnsures(value)
+		if err != nil {
+			return err
+		}
+		if err := render.Line(stdout, "Automatic ignore protection (execution will ensure):"); err != nil {
+			return err
+		}
+		for _, ensure := range ensures {
+			if err := render.Line(stdout, "  "+ensure.Path); err != nil {
+				return err
+			}
+			for _, rule := range ensure.Rules {
+				if err := render.Line(stdout, "    "+rule); err != nil {
+					return err
+				}
+			}
+		}
+		if err := render.Line(stdout, ""); err != nil {
+			return err
+		}
+		return render.Line(stdout, "No changes made. Dry run performs no mutation.")
 	}
 	return render.Line(stdout, "No changes made.")
 }

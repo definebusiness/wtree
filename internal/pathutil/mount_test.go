@@ -8,6 +8,50 @@ import (
 	"github.com/definebusiness/wtree/internal/pathutil"
 )
 
+func TestNormalizeMountCanonicalizesLegacyForms(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		root  bool
+		want  string
+	}{
+		{input: `services\api`, want: "services/api"},
+		{input: "services/../api", want: "api"},
+		{input: "./services//api", want: "services/api"},
+	} {
+		t.Run(test.input, func(t *testing.T) {
+			got, err := pathutil.NormalizeMount(test.input, test.root)
+			if err != nil || got != test.want {
+				t.Fatalf("NormalizeMount(%q, %t) = %q, %v; want %q, nil", test.input, test.root, got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeMountRejectsUnrepresentableOrAmbiguousValues(t *testing.T) {
+	for _, mount := range []string{"", ".", "/absolute", `C:\\absolute`, "../escape", "a/../../escape", "line\nbreak", "line\rbreak", "nul\x00byte", string([]byte{0xff})} {
+		t.Run("mount", func(t *testing.T) {
+			if _, err := pathutil.NormalizeMount(mount, false); err == nil {
+				t.Fatalf("NormalizeMount(%q, false) error = nil", mount)
+			}
+		})
+	}
+}
+
+func TestNormalizeMountRequiresLiteralRootMarker(t *testing.T) {
+	for _, mount := range []string{"", "./", "segment/..", "segment/../", `segment\\..`} {
+		t.Run(mount, func(t *testing.T) {
+			if _, err := pathutil.NormalizeMount(mount, true); err == nil {
+				t.Fatalf("NormalizeMount(%q, true) error = nil", mount)
+			}
+		})
+	}
+
+	got, err := pathutil.NormalizeMount(".", true)
+	if err != nil || got != "." {
+		t.Fatalf("NormalizeMount(., true) = %q, %v; want ., nil", got, err)
+	}
+}
+
 func TestResolveMountKeepsNestedRepositoriesInsideWorkspace(t *testing.T) {
 	workspaceRoot := filepath.Join(t.TempDir(), "workspace")
 

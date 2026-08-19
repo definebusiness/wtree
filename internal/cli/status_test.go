@@ -74,7 +74,7 @@ func TestExecuteStatusInfersCurrentWorkspaceAndRendersHumanTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
-	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data, "--add-ignore"); result.Err != nil {
+	if result := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
 	root.CommitFile(".gitignore", "/api/\n", "ignore custom mount")

@@ -1,6 +1,7 @@
 # Nested mount ignore management implementation plan
 
-Status: initial
+Status: superseded
+Superseded by: [Automatic nested mount ignore protection story](../ideas/automatic-nested-mount-ignore-protection.md)
 Source specification: [Nested mount ignore management specification](../spec/nested-mount-ignore-management.md)
 Source of truth: [`docs/spec/nested-mount-ignore-management.md`](../spec/nested-mount-ignore-management.md); [`docs/spec/wtree.spec.md` §18](../spec/wtree.spec.md#18-mount-overrides); [`internal/discovery/discovery.go`](../../internal/discovery/discovery.go); [`internal/git/adapter.go`](../../internal/git/adapter.go); [`internal/service/init.go`](../../internal/service/init.go); [`internal/service/plan.go`](../../internal/service/plan.go); [`internal/service/create.go`](../../internal/service/create.go); [`internal/transaction/transaction.go`](../../internal/transaction/transaction.go); [`internal/cli/root.go`](../../internal/cli/root.go); [`internal/cli/plan.go`](../../internal/cli/plan.go)
 Delivery style: test-first, one reviewed milestone at a time; no staging,

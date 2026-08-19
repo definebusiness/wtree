@@ -25,6 +25,19 @@ func TestEffectivePathsRelocatesDescendantsWhenParentMountChanges(t *testing.T) 
 	}
 }
 
+func TestEffectivePathsUsesNormalizedMountForPlacement(t *testing.T) {
+	project := testProject()
+	workspaceRoot := filepath.Join(t.TempDir(), "feature-login")
+
+	paths, err := project.EffectivePaths(workspaceRoot, map[string]string{"backend": `services\..\api`})
+	if err != nil {
+		t.Fatalf("EffectivePaths() error = %v", err)
+	}
+	if got, want := paths["backend"], filepath.Join(workspaceRoot, "api"); got != want {
+		t.Fatalf("backend path = %q, want %q", got, want)
+	}
+}
+
 func TestEffectivePathsRejectsExistingIntermediateSymlinkEscapeForPlannedLeaf(t *testing.T) {
 	project := testProject()
 	workspaceRoot := t.TempDir()

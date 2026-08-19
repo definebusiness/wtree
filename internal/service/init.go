@@ -33,7 +33,6 @@ type InitRequest struct {
 	Ignores                     []string
 	ManifestSource              string
 	CloneURLOverrides           []string
-	AddIgnore                   bool
 }
 
 type InitResult struct {
@@ -66,6 +65,7 @@ type Initializer struct {
 	beforePublish                 func()
 	beforeOwnedRemove             func(string)
 	captureOwnedFile              func(string, string) error
+	applyIgnores                  func(context.Context, IgnorePlan) (IgnoreApplyResult, error)
 	useStoreCAS                   bool
 	useFileCAS                    bool
 }
@@ -73,7 +73,7 @@ type Initializer struct {
 func NewInitializer() *Initializer { return newInitializer() }
 
 func newInitializer() *Initializer {
-	return &Initializer{git: gitadapter.NewAdapter("git"), writeRegistry: store.WriteRegistry, writeWorkspace: store.WriteWorkspace, rename: os.Rename, remove: os.Remove, captureOwnedFile: os.Rename, useStoreCAS: true, useFileCAS: true}
+	return &Initializer{git: gitadapter.NewAdapter("git"), writeRegistry: store.WriteRegistry, writeWorkspace: store.WriteWorkspace, rename: os.Rename, remove: os.Remove, captureOwnedFile: os.Rename, applyIgnores: NewIgnoreApplier().Apply, useStoreCAS: true, useFileCAS: true}
 }
 
 // Compatibility constructors remain narrow test seams for the pre-existing
@@ -96,6 +96,14 @@ func NewInitializerWithWriters(registryWriter func(string, store.Registry) error
 func NewInitializerWithFileWriter(writer func(string, []byte, os.FileMode) error) *Initializer {
 	i := newInitializer()
 	i.writeFile = writer
+	return i
+}
+
+// NewInitializerWithIgnoreFileWriter is a narrow source-publication seam for
+// hermetic init failure tests. Production callers use NewInitializer.
+func NewInitializerWithIgnoreFileWriter(writer IgnoreFileWriter) *Initializer {
+	i := newInitializer()
+	i.applyIgnores = NewIgnoreApplierWith(writer).Apply
 	return i
 }
 
@@ -128,10 +136,17 @@ func (i *Initializer) Init(ctx context.Context, request InitRequest) (InitResult
 	if request.DryRun {
 		return plan.result(true), nil
 	}
+	ignoreResult, err := i.applyIgnores(ctx, plan.ignorePlan)
+	if err != nil {
+		return InitResult{}, retainInitIgnoreProgress(plan.ignorePlan, ignoreResult, fmt.Errorf("apply source ignore protection: %w", err))
+	}
+	if err := i.verifyIgnores(ctx, plan.ignoreRequirements); err != nil {
+		return InitResult{}, retainInitIgnoreProgress(plan.ignorePlan, ignoreResult, fmt.Errorf("verify source ignore protection: %w", err))
+	}
 
 	registryLock, err := (lock.Manager{}).RegistryLock(ctx, request.DataDir, time.Second)
 	if err != nil {
-		return InitResult{}, err
+		return InitResult{}, retainInitIgnoreProgress(plan.ignorePlan, ignoreResult, err)
 	}
 	defer registryLock.Unlock()
 	if i.beforeLockedRegistryPreflight != nil {
@@ -142,29 +157,62 @@ func (i *Initializer) Init(ctx context.Context, request InitRequest) (InitResult
 	// lock, before creating a project lock directory for a rejected init.
 	lockedRegistry, _, err := loadRegistry(plan.registryPath)
 	if err != nil {
-		return InitResult{}, err
+		return InitResult{}, retainInitIgnoreProgress(plan.ignorePlan, ignoreResult, err)
 	}
 	if err := rejectRegistrationConflicts(plan.configPath, plan.identityMap, lockedRegistry); err != nil {
-		return InitResult{}, err
+		return InitResult{}, retainInitIgnoreProgress(plan.ignorePlan, ignoreResult, err)
 	}
 	if _, exists := lockedRegistry.Projects[plan.id]; exists {
-		return InitResult{}, NewError(ErrorConflict, fmt.Errorf("deterministic project ID %q is already registered", plan.id))
+		return InitResult{}, retainInitIgnoreProgress(plan.ignorePlan, ignoreResult, NewError(ErrorConflict, fmt.Errorf("deterministic project ID %q is already registered", plan.id)))
 	}
 	if err := revalidateSnapshot(snapshotForPath(plan.targetSnapshots, plan.registryPath)); err != nil {
-		return InitResult{}, NewError(ErrorConflict, fmt.Errorf("project registry changed after preflight: %w", err))
+		return InitResult{}, retainInitIgnoreProgress(plan.ignorePlan, ignoreResult, NewError(ErrorConflict, fmt.Errorf("project registry changed after preflight: %w", err)))
 	}
 	projectLock, err := (lock.Manager{}).ProjectLock(ctx, request.DataDir, plan.id, time.Second)
 	if err != nil {
-		return InitResult{}, err
+		return InitResult{}, retainInitIgnoreProgress(plan.ignorePlan, ignoreResult, err)
 	}
 	defer projectLock.Unlock()
 	if i.beforePublish != nil {
 		i.beforePublish()
 	}
 	if err := plan.publish(ctx, i); err != nil {
-		return InitResult{}, err
+		return InitResult{}, retainInitIgnoreProgress(plan.ignorePlan, ignoreResult, err)
 	}
 	return plan.result(false), nil
+}
+
+func retainInitIgnoreProgress(plan IgnorePlan, result IgnoreApplyResult, cause error) error {
+	if err := verifyRetainedIgnoreProgress(plan, result); err != nil {
+		cause = NewError(ErrorRollbackIncomplete, fmt.Errorf("%w; retained source ignore generation changed: %v", cause, err))
+	}
+	return wrapIgnoreProgress(result, cause)
+}
+
+func verifyRetainedIgnoreProgress(plan IgnorePlan, result IgnoreApplyResult) error {
+	if len(result.Changed) == 0 {
+		return nil
+	}
+	changed := make(map[string]IgnoreFilePlan, len(plan.Files))
+	for _, file := range plan.Files {
+		if file.Changed {
+			changed[file.Path] = file
+		}
+	}
+	for _, update := range result.Changed {
+		file, found := changed[update.Path]
+		if !found {
+			return fmt.Errorf("unknown changed target %q", update.Path)
+		}
+		current, err := captureIgnoreFile(file.Path)
+		if err != nil {
+			return fmt.Errorf("read %q: %w", file.Path, err)
+		}
+		if !current.Exists || !bytes.Equal(current.Bytes, file.NewBytes) {
+			return fmt.Errorf("target %q no longer contains the applied generation", file.Path)
+		}
+	}
+	return nil
 }
 
 type initPlan struct {
@@ -176,15 +224,9 @@ type initPlan struct {
 	state                                                           store.WorkspaceState
 	registry                                                        store.Registry
 	registryHad                                                     bool
-	ignoreWrites                                                    []fileWrite
+	ignorePlan                                                      IgnorePlan
+	ignoreRequirements                                              []IgnoreRequirement
 	targetSnapshots                                                 []fileSnapshot
-}
-type fileWrite struct {
-	path   string
-	data   []byte
-	mode   os.FileMode
-	exists bool
-	update IgnoreUpdate
 }
 type fileSnapshot struct {
 	path   string
@@ -295,7 +337,7 @@ func (i *Initializer) plan(ctx context.Context, request InitRequest) (initPlan, 
 	p.registry.Projects[p.id] = store.RegistryProject{Name: p.configuration.Project.Name, ConfigPath: configPath, RepositoryIDs: p.identityMap}
 	p.workspacePath = WorkspaceStatePath(request.DataDir, p.id, "default")
 	p.state = store.WorkspaceState{Version: store.Version, ID: "default", Name: "default", Path: root, Repositories: checkouts}
-	if err := i.preflightIgnores(ctx, &p, request.AddIgnore); err != nil {
+	if err := i.preflightIgnores(ctx, &p); err != nil {
 		return initPlan{}, err
 	}
 	// Encode and snapshot all targets while the operation is still read-only.
@@ -305,11 +347,7 @@ func (i *Initializer) plan(ctx context.Context, request InitRequest) (initPlan, 
 	if _, err := config.MarshalPortableManifest(p.manifest); err != nil {
 		return initPlan{}, err
 	}
-	targets := make([]string, 0, len(p.ignoreWrites)+4)
-	for _, write := range p.ignoreWrites {
-		targets = append(targets, write.path)
-	}
-	targets = append(targets, configPath, manifestPath, p.registryPath, p.workspacePath)
+	targets := []string{configPath, manifestPath, p.registryPath, p.workspacePath}
 	for _, path := range targets {
 		if err := preflightTarget(path); err != nil {
 			return initPlan{}, err
@@ -323,149 +361,56 @@ func (i *Initializer) plan(ctx context.Context, request InitRequest) (initPlan, 
 	return p, nil
 }
 
-func (i *Initializer) preflightIgnores(ctx context.Context, p *initPlan, add bool) error {
-	changes := map[string]*fileWrite{}
-	addRule := func(repositoryID, path, mount string) error {
-		w, found := changes[path]
-		if !found {
-			data, mode, err := readOptionalFile(path)
-			if err != nil {
-				return err
-			}
-			_, statErr := os.Lstat(path)
-			w = &fileWrite{path: path, data: data, mode: mode, exists: statErr == nil, update: IgnoreUpdate{RepositoryID: repositoryID, Path: path}}
-			changes[path] = w
-		}
-		rule := gitIgnoreRule(mount)
-		newline := gitIgnoreNewline(w.data)
-		if len(w.data) != 0 && !hasGitIgnoreNewline(w.data) {
-			w.data = append(w.data, []byte(newline)...)
-		}
-		w.data = append(w.data, []byte(rule+newline)...)
-		w.update.AddedRules = append(w.update.AddedRules, rule)
-		return nil
+func (i *Initializer) preflightIgnores(ctx context.Context, p *initPlan) error {
+	inspector, ok := i.git.(gitadapter.WorkingTreeIgnoreInspector)
+	if !ok {
+		return NewError(ErrorInternal, errors.New("initializer git implementation does not inspect working-tree ignores"))
 	}
-	// Local configuration stays ignored, while project.wtree.yml is intentionally visible.
-	rootIgnore := filepath.Join(p.root, ".gitignore")
-	ignored, err := i.git.IsIgnoredWorkingTree(ctx, p.root, ".wtree.yml")
+	localConfigIgnored, err := i.git.IsIgnoredWorkingTree(ctx, p.root, ".wtree.yml")
 	if err != nil {
 		return NewError(ErrorGit, fmt.Errorf("inspect root local configuration ignore: %w", err))
 	}
-	if !ignored {
-		if err := addRule("root", rootIgnore, ".wtree.yml"); err != nil {
-			return err
-		}
+	byID := make(map[string]discovery.Repository, len(p.repositories))
+	for _, repository := range p.repositories {
+		byID[repository.ID] = repository
 	}
-	children := append([]discovery.Repository(nil), p.repositories...)
-	sort.SliceStable(children, func(left, right int) bool {
-		leftDepth, rightDepth := repositoryDepth(children[left], p.repositories), repositoryDepth(children[right], p.repositories)
-		if leftDepth != rightDepth {
-			return leftDepth < rightDepth
-		}
-		return children[left].ID < children[right].ID
-	})
-	for _, child := range children {
+	p.ignoreRequirements = []IgnoreRequirement{{ParentRepositoryID: "root", ChildRepositoryID: "root", ParentPath: p.root, LocalConfig: true, AlreadyProtected: localConfigIgnored}}
+	for _, child := range p.repositories {
 		if child.ParentID == "" {
 			continue
 		}
-		parent := p.repositories[0]
-		for _, candidate := range p.repositories {
-			if candidate.ID == child.ParentID {
-				parent = candidate
-				break
-			}
+		parent, found := byID[child.ParentID]
+		if !found {
+			return NewError(ErrorValidation, fmt.Errorf("repository %q has unknown parent %q", child.ID, child.ParentID))
 		}
-		ignored, err := i.git.IsIgnoredAt(ctx, parent.Path, "HEAD", child.Mount)
-		if err != nil {
-			return NewError(ErrorGit, fmt.Errorf("verify mount %q for repository %q: %w", child.Mount, child.ID, err))
-		}
-		if !ignored && !add {
-			return NewError(ErrorValidation, fmt.Errorf("mount %q for repository %q is not ignored by parent repository %q; Run `wtree add-ignore`, commit the changed .gitignore files, and retry; or rerun `wtree init --add-ignore` to initialize and add the rules now.", child.Mount, child.ID, parent.ID))
-		}
-		if !ignored {
-			workingIgnored, err := i.git.IsIgnoredWorkingTree(ctx, parent.Path, child.Mount)
-			if err != nil {
-				return NewError(ErrorGit, fmt.Errorf("inspect working ignore for mount %q in repository %q: %w", child.Mount, parent.ID, err))
-			}
-			if workingIgnored {
-				continue
-			}
-			if err := addRule(parent.ID, filepath.Join(parent.Path, ".gitignore"), filepath.ToSlash(child.Mount)); err != nil {
-				return err
-			}
-		}
+		p.ignoreRequirements = append(p.ignoreRequirements, IgnoreRequirement{ParentRepositoryID: parent.ID, ChildRepositoryID: child.ID, ParentPath: parent.Path, Mount: child.Mount})
 	}
-	for _, write := range changes {
-		if len(write.update.AddedRules) != 0 {
-			p.ignoreWrites = append(p.ignoreWrites, *write)
-		}
+	ignorePlan, err := NewIgnorePlanner(inspector).Plan(ctx, p.ignoreRequirements)
+	if err != nil {
+		return err
 	}
-	sortIgnoreWrites(p.ignoreWrites, p.repositories)
+	p.ignorePlan = ignorePlan
 	return nil
 }
 
-func sortIgnoreWrites(writes []fileWrite, repositories []discovery.Repository) {
-	sort.Slice(writes, func(a, b int) bool {
-		leftID, rightID := writes[a].update.RepositoryID, writes[b].update.RepositoryID
-		leftDepth, rightDepth := 0, 0
-		for _, repository := range repositories {
-			if repository.ID == leftID {
-				leftDepth = repositoryDepth(repository, repositories)
-			}
-			if repository.ID == rightID {
-				rightDepth = repositoryDepth(repository, repositories)
-			}
+func (i *Initializer) verifyIgnores(ctx context.Context, requirements []IgnoreRequirement) error {
+	inspector, ok := i.git.(gitadapter.WorkingTreeIgnoreInspector)
+	if !ok {
+		return NewError(ErrorInternal, errors.New("initializer git implementation does not inspect working-tree ignores"))
+	}
+	for _, requirement := range requirements {
+		if requirement.LocalConfig {
+			continue
 		}
-		if leftDepth != rightDepth {
-			return leftDepth < rightDepth
+		evidence, err := inspector.InspectWorkingTreeIgnore(ctx, requirement.ParentPath, requirement.Mount)
+		if err != nil {
+			return NewError(ErrorGit, fmt.Errorf("verify mount %q for repository %q: %w", requirement.Mount, requirement.ChildRepositoryID, err))
 		}
-		if leftID != rightID {
-			return leftID < rightID
-		}
-		return writes[a].path < writes[b].path
-	})
-}
-
-func repositoryDepth(repository discovery.Repository, all []discovery.Repository) int {
-	depth := 0
-	parent := repository.ParentID
-	for parent != "" {
-		depth++
-		for _, candidate := range all {
-			if candidate.ID == parent {
-				parent = candidate.ParentID
-				break
-			}
+		if !evidence.Qualifies(requirement.ParentPath) {
+			return NewError(ErrorConflict, fmt.Errorf("mount %q for repository %q is not protected by an effective .gitignore in parent repository %q", requirement.Mount, requirement.ChildRepositoryID, requirement.ParentRepositoryID))
 		}
 	}
-	return depth
-}
-
-func gitIgnoreRule(mount string) string {
-	var escaped strings.Builder
-	escaped.WriteByte('/')
-	for _, character := range filepath.ToSlash(mount) {
-		switch character {
-		case '\\', '#', '!', '*', '?', '[', ']', ' ', '\t':
-			escaped.WriteByte('\\')
-		}
-		escaped.WriteRune(character)
-	}
-	if mount != ".wtree.yml" {
-		escaped.WriteByte('/')
-	}
-	return escaped.String()
-}
-
-func hasGitIgnoreNewline(data []byte) bool {
-	return len(data) != 0 && data[len(data)-1] == '\n'
-}
-
-func gitIgnoreNewline(data []byte) string {
-	if bytes.Contains(data, []byte("\r\n")) && !bytes.Contains(bytes.ReplaceAll(data, []byte("\r\n"), nil), []byte("\n")) {
-		return "\r\n"
-	}
-	return "\n"
+	return nil
 }
 
 func (p initPlan) publish(ctx context.Context, i *Initializer) error {
@@ -517,19 +462,6 @@ func (p initPlan) publish(ctx context.Context, i *Initializer) error {
 			return NewError(ErrorRollbackIncomplete, fmt.Errorf("publish init: %w; cleanup failed: %v", cause, rollbackErr))
 		}
 		return NewCleanRollbackError(cause)
-	}
-	for _, write := range p.ignoreWrites {
-		if err := i.writePublishedFile(snapshotForPath(p.targetSnapshots, write.path), write.data, write.mode, write.exists); err != nil {
-			recordFailedPublication(write.path, write.data)
-			return rollback(fmt.Errorf("publish %s: %w", write.path, err))
-		}
-		if err := recordOwned(write.path, write.data); err != nil {
-			recordUnownedChange(write.path)
-			return rollback(NewError(ErrorConflict, fmt.Errorf("publish %s: %w", write.path, err)))
-		}
-		if err := ctx.Err(); err != nil {
-			return rollback(err)
-		}
 	}
 	if err := i.writePublishedFile(snapshotForPath(p.targetSnapshots, p.configPath), local, 0o600, false); err != nil {
 		recordFailedPublication(p.configPath, local)
@@ -638,9 +570,12 @@ func (i *Initializer) writePublishedWorkspace(before fileSnapshot, path string, 
 }
 
 func (p initPlan) result(dry bool) InitResult {
-	updates := make([]IgnoreUpdate, 0, len(p.ignoreWrites))
-	for _, write := range p.ignoreWrites {
-		updates = append(updates, write.update)
+	updates := make([]IgnoreUpdate, 0, len(p.ignorePlan.Files))
+	for _, file := range p.ignorePlan.Files {
+		if !file.Changed {
+			continue
+		}
+		updates = append(updates, IgnoreUpdate{RepositoryID: file.ParentRepositoryID, Path: file.Path, AddedRules: append([]string(nil), file.AddedRules...)})
 	}
 	return InitResult{ProjectID: p.id, ConfigPath: p.configPath, ManifestPath: p.manifestPath, ManifestSource: p.configuration.Manifest.Source, Repositories: p.repositories, DryRun: dry, LocalConfig: p.configuration, PortableManifest: p.manifest, IgnoreUpdates: updates}
 }

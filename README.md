@@ -69,8 +69,9 @@ See [docs/INSTALL.md](docs/INSTALL.md) for local release builds and checksums.
 
 To publish an existing project, first push every repository and connect its
 current branch to the intended upstream. `wtree init` then discovers the
-independent nested repositories, writes ignored local `.wtree.yml`, writes
-portable `project.wtree.yml`, and ensures the local file is ignored.
+independent nested repositories, automatically protects every nested mount in
+its immediate parent `.gitignore`, writes ignored local `.wtree.yml`, and
+writes portable `project.wtree.yml`.
 
 ```sh
 cd ~/code/product
@@ -80,7 +81,7 @@ git add .gitignore project.wtree.yml
 
 `project.wtree.yml` is a portable, reviewable authoring artifact. `init` never
 stages, commits, or pushes; review and commit the portable manifest and any
-`.gitignore` change yourself.
+automatic `.gitignore` changes yourself.
 
 Portable manifests use schema version 2. The `project.base_repository` field
 names the sole root checkout, which continues to contain the tracked manifest
@@ -137,15 +138,13 @@ cd "$(wtree path feature/login)"
 ```
 
 Create from another ref, or change a nested repository's mount in this one
-workspace. A custom mount must already be ignored by a committed `.gitignore`
-in its parent repository at the selected base ref; otherwise `create` stops
-before making branches or worktrees:
+workspace. `create` validates the effective mounts first, then automatically
+ensures their literal rules in the new parent worktrees. It never changes a
+source checkout, stages, or commits an ignore file:
 
 ```sh
 wtree create feature/from-main --from main
 
-printf '/api/\n' >> .gitignore
-git add .gitignore && git commit -m 'ignore api workspace mount'
 wtree create feature/login --mount backend=api
 ```
 

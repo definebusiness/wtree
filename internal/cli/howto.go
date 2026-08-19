@@ -27,7 +27,8 @@ const globalHowTo = `WTREE HOW-TO
    Run: wtree create feature/login --from main
 10. Override nested repository mounts
    Run: wtree create feature/login --mount backend=api
-   Commit an effective /api/ rule to the parent repository's .gitignore first.
+   Create automatically ensures the effective /api/ rule in the new parent
+   worktree before adding the child; it never changes the source checkout.
 11. Work inside a workspace
    Jump to a branch workspace: cd "$(wtree path feature/login)"
    Jump back to the original clone (the default workspace): cd "$(wtree path default)"
@@ -84,7 +85,7 @@ EXAMPLES
 `,
 	"init": `HOW TO: init
 
-Discover the complete local repository tree after every repository has been pushed and connected to its intended upstream. Write ignored .wtree.yml and portable project.wtree.yml, and ensure /.wtree.yml is in the root .gitignore.
+Discover the complete local repository tree after every repository has been pushed and connected to its intended upstream. Automatically protect every nested mount in its immediate parent .gitignore, write ignored .wtree.yml and portable project.wtree.yml, then review and commit the changed .gitignore files yourself. init never stages or commits them.
 
 EXAMPLES
   wtree init
@@ -102,14 +103,14 @@ the intended registration is explicitly removed, retry wtree init.
 `,
 	"create": `HOW TO: create
 
-Create a synchronized branch and parent-first worktrees after preflight succeeds.
+Create a synchronized branch and parent-first worktrees after preflight succeeds. Create automatically ensures each nested mount is ignored in its new parent worktree; --dry-run lists those requirements without mutation.
 
 EXAMPLES
   wtree create feature/login
   wtree create feature/login --from main
   wtree create feature/login --mount backend=api --dry-run
 
-Custom mounts must be ignored by a committed parent .gitignore at the selected base.
+Custom mounts are normalized and validated during preflight. Create ensures their literal rules in the new parent worktrees; it never changes source checkouts.
 `,
 	"import": `HOW TO: import
 

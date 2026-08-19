@@ -1,6 +1,7 @@
 # Nested mount ignore management specification
 
-Status: planned
+Status: superseded
+Superseded by: [Automatic nested mount ignore protection story](../ideas/automatic-nested-mount-ignore-protection.md)
 Source idea: none (created directly)
 Implementation plan: [Nested mount ignore management implementation plan](../plans/nested-mount-ignore-management.md)
 Applies to: `wtree add-ignore`, `wtree init`, `wtree create`, workspace

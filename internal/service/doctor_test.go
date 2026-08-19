@@ -118,7 +118,7 @@ func TestDoctorFixPreservesRetainedRemovalStateForCheckout(t *testing.T) {
 	project, _, _, data := createFixture(t)
 	target := filepath.Join(t.TempDir(), "retained")
 	creator := service.NewWorkspaceCreator()
-	if _, err := creator.Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/retained", TargetPath: target, DataDir: data}, nil); err != nil {
+	if _, err := createFixtureWorkspace(t, project, "feature/retained", target, data); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := service.RequireWorkspace(project, data, "feature/retained")
@@ -142,8 +142,7 @@ func TestDoctorFixPreservesRetainedRemovalStateForCheckout(t *testing.T) {
 func TestDoctorFixPreservesStateWithRecoveryRecord(t *testing.T) {
 	project, _, _, data := createFixture(t)
 	target := filepath.Join(t.TempDir(), "recovery")
-	creator := service.NewWorkspaceCreator()
-	if _, err := creator.Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/recovery", TargetPath: target, DataDir: data}, nil); err != nil {
+	if _, err := createFixtureWorkspace(t, project, "feature/recovery", target, data); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := service.RequireWorkspace(project, data, "feature/recovery")

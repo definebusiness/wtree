@@ -43,6 +43,8 @@ func TestProjectRejectsInvalidGraphAndMounts(t *testing.T) {
 		{name: "cycle", project: domain.Project{Version: 1, ID: "p", Repositories: []domain.Repository{{ID: "root", DefaultMount: "."}, {ID: "first", ParentID: "second", DefaultMount: "first"}, {ID: "second", ParentID: "first", DefaultMount: "second"}}}, want: "cycle"},
 		{name: "unsafe child mount", project: domain.Project{Version: 1, ID: "p", Repositories: []domain.Repository{{ID: "root", DefaultMount: "."}, {ID: "child", ParentID: "root", DefaultMount: "../outside"}}}, want: "escapes"},
 		{name: "moved root mount", project: domain.Project{Version: 1, ID: "p", Repositories: []domain.Repository{{ID: "root", DefaultMount: "elsewhere"}}}, want: "root repository mount"},
+		{name: "empty root mount", project: domain.Project{Version: 1, ID: "p", Repositories: []domain.Repository{{ID: "root", DefaultMount: ""}}}, want: "root repository mount"},
+		{name: "collapsing root mount", project: domain.Project{Version: 1, ID: "p", Repositories: []domain.Repository{{ID: "root", DefaultMount: "segment/.."}}}, want: "root repository mount"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := test.project.Validate()

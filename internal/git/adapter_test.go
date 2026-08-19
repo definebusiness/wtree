@@ -92,6 +92,222 @@ func TestAdapterWorkingTreeIgnoreUsesGitSemanticsAndExcludesInfoRules(t *testing
 	}
 }
 
+func TestAdapterInspectsAndQualifiesWorkingTreeGitignoreEvidence(t *testing.T) {
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile("tracked", "initial\n", "initial")
+	adapter := git.NewAdapter("git")
+
+	if err := os.WriteFile(filepath.Join(repository.Path, ".gitignore"), []byte("/root-child/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := adapter.InspectWorkingTreeIgnore(context.Background(), repository.Path, "root-child")
+	if err != nil || !evidence.Ignored || evidence.Negated || !evidence.Qualifies(repository.Path) {
+		t.Fatalf("root evidence = %#v, %v; want qualifying ignored .gitignore", evidence, err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(repository.Path, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository.Path, "nested", ".gitignore"), []byte("/child/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err = adapter.InspectWorkingTreeIgnore(context.Background(), repository.Path, "nested/child")
+	if err != nil || !evidence.Ignored || !evidence.Qualifies(repository.Path) {
+		t.Fatalf("deeper evidence = %#v, %v; want qualifying in-parent .gitignore", evidence, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(repository.Path, ".git", "info", "exclude"), []byte("/info-only/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err = adapter.InspectWorkingTreeIgnore(context.Background(), repository.Path, "info-only")
+	if err != nil || !evidence.Ignored || evidence.Qualifies(repository.Path) {
+		t.Fatalf("info/exclude evidence = %#v, %v; want non-qualifying ignored result", evidence, err)
+	}
+
+	evidence, err = git.NewAdapter(filepath.Join(t.TempDir(), "missing-git")).InspectWorkingTreeIgnore(context.Background(), repository.Path, "root-child")
+	if err == nil || evidence.Qualifies(repository.Path) {
+		t.Fatalf("Git failure evidence = %#v, %v; want non-qualifying error", evidence, err)
+	}
+}
+
+func TestAdapterWorkingTreeIgnoreRejectsConfiguredExcludeInsideCheckout(t *testing.T) {
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile("tracked", "initial\n", "initial")
+
+	exclude := filepath.Join(repository.Path, "nested", ".gitignore")
+	if err := os.MkdirAll(filepath.Dir(exclude), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exclude, []byte("/child/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repository.Run(t, "config", "core.excludesFile", "nested/.gitignore")
+
+	evidence, err := git.NewAdapter("git").InspectWorkingTreeIgnore(context.Background(), repository.Path, "nested/child")
+	if err != nil || !evidence.Ignored || !evidence.ConfiguredExclude || evidence.Qualifies(repository.Path) {
+		t.Fatalf("configured-exclude evidence = %#v, %v; want non-qualifying ignored evidence", evidence, err)
+	}
+}
+
+func TestAdapterWorkingTreeIgnoreCapturesGitWinningDirectoryNegation(t *testing.T) {
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile("tracked", "initial\n", "initial")
+	if err := os.WriteFile(filepath.Join(repository.Path, ".gitignore"), []byte("child/*\n!child/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := git.NewAdapter("git")
+	evidence, err := adapter.InspectWorkingTreeIgnore(context.Background(), repository.Path, "child")
+	if err != nil || !evidence.Ignored || evidence.Pattern != "child/*" || evidence.Qualifies(repository.Path) {
+		t.Fatalf("absent child evidence = %#v, %v; want recorded but non-qualifying non-directory evidence", evidence, err)
+	}
+
+	if err := os.Mkdir(filepath.Join(repository.Path, "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err = adapter.InspectWorkingTreeIgnore(context.Background(), repository.Path, "child")
+	if err != nil || evidence.Ignored || !evidence.Negated || evidence.Pattern != "!child/" || evidence.Qualifies(repository.Path) {
+		t.Fatalf("negation evidence = %#v, %v; want real non-qualifying negation", evidence, err)
+	}
+}
+
+func TestAdapterWorkingTreeIgnoreDoesNotQualifyAbsentDirectoryBeforeNegationBecomesEffective(t *testing.T) {
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile("tracked", "initial\n", "initial")
+	if err := os.WriteFile(filepath.Join(repository.Path, ".gitignore"), []byte("*\n!child/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := git.NewAdapter("git")
+	evidence, err := adapter.InspectWorkingTreeIgnore(context.Background(), repository.Path, "child")
+	if err != nil || !evidence.Ignored || evidence.Pattern != "*" || evidence.Qualifies(repository.Path) {
+		t.Fatalf("absent child evidence = %#v, %v; want recorded but non-qualifying broad evidence", evidence, err)
+	}
+
+	if err := os.Mkdir(filepath.Join(repository.Path, "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err = adapter.InspectWorkingTreeIgnore(context.Background(), repository.Path, "child")
+	if err != nil || evidence.Ignored || !evidence.Negated || evidence.Pattern != "!child/" || evidence.Qualifies(repository.Path) {
+		t.Fatalf("created child evidence = %#v, %v; want Git's effective non-qualifying negation", evidence, err)
+	}
+}
+
+func TestAdapterWorkingTreeIgnoreQualifiesBroadPatternForExistingDirectory(t *testing.T) {
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile("tracked", "initial\n", "initial")
+	if err := os.WriteFile(filepath.Join(repository.Path, ".gitignore"), []byte("*\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repository.Path, "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	evidence, err := git.NewAdapter("git").InspectWorkingTreeIgnore(context.Background(), repository.Path, "child")
+	if err != nil || !evidence.Ignored || evidence.Negated || evidence.Pattern != "*" || !evidence.DirectoryObserved || !evidence.Qualifies(repository.Path) {
+		t.Fatalf("existing child evidence = %#v, %v; want qualifying Git-effective broad pattern", evidence, err)
+	}
+}
+
+func TestAdapterWorkingTreeIgnoreQualifiesBroadPatternForExistingNestedDirectory(t *testing.T) {
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile("tracked", "initial\n", "initial")
+	if err := os.WriteFile(filepath.Join(repository.Path, ".gitignore"), []byte("*\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repository.Path, "nested", "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	evidence, err := git.NewAdapter("git").InspectWorkingTreeIgnore(context.Background(), repository.Path, "nested/child")
+	if err != nil || !evidence.Ignored || evidence.Negated || evidence.Pattern != "*" || !evidence.DirectoryObserved || !evidence.Qualifies(repository.Path) {
+		t.Fatalf("existing nested child evidence = %#v, %v; want qualifying Git-effective broad pattern", evidence, err)
+	}
+}
+
+func TestAdapterWorkingTreeIgnoreDoesNotQualifyBroadPatternWhenDirectoryMovesDuringGitProbe(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("shell wrapper fixture is POSIX-only")
+	}
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile("tracked", "initial\n", "initial")
+	if err := os.WriteFile(filepath.Join(repository.Path, ".gitignore"), []byte("*\n!child/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(repository.Path, "child")
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	checkIgnoreCalls := filepath.Join(t.TempDir(), "check-ignore-calls")
+	lsFilesCalls := filepath.Join(t.TempDir(), "ls-files-calls")
+	wrapper := filepath.Join(t.TempDir(), "git-wrapper")
+	script := fmt.Sprintf(`#!/bin/sh
+for argument in "$@"; do
+	if [ "$argument" = check-ignore ]; then
+		calls=0
+		if [ -f %q ]; then calls=$(cat %q); fi
+		calls=$((calls + 1))
+		printf '%%s' "$calls" > %q
+		if [ "$calls" -eq 1 ]; then
+			mv %q %q
+			git "$@"
+			status=$?
+			mv %q %q
+			exit "$status"
+		fi
+		break
+	fi
+	if [ "$argument" = ls-files ]; then
+		printf '1' > %q
+		break
+	fi
+done
+exec git "$@"
+`, checkIgnoreCalls, checkIgnoreCalls, checkIgnoreCalls, child, child+".saved", child+".saved", child, lsFilesCalls)
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	evidence, err := git.NewAdapter(wrapper).InspectWorkingTreeIgnore(context.Background(), repository.Path, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Qualifies(repository.Path) {
+		t.Fatalf("moved-directory evidence = %#v; want no protection so generated-rule planning is required", evidence)
+	}
+	calls, err := os.ReadFile(checkIgnoreCalls)
+	if err != nil || string(calls) != "1" {
+		t.Fatalf("check-ignore calls = %q, %v; want one first probe", calls, err)
+	}
+	if calls, err := os.ReadFile(lsFilesCalls); err != nil || string(calls) != "1" {
+		t.Fatalf("ls-files calls = %q, %v; want Git-owned directory validation after first-probe restoration", calls, err)
+	}
+
+	evidence, err = git.NewAdapter("git").InspectWorkingTreeIgnore(context.Background(), repository.Path, "child")
+	if err != nil || evidence.Ignored || !evidence.Negated || evidence.Pattern != "!child/" || evidence.Qualifies(repository.Path) {
+		t.Fatalf("restored child evidence = %#v, %v; want Git's winning non-qualifying directory negation", evidence, err)
+	}
+}
+
+func TestAdapterWorkingTreeIgnoreDecodesNULDelimitedUnicodeSource(t *testing.T) {
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile("tracked", "initial\n", "initial")
+	sourceDirectory := "deeper:12:\t\u4e16\u754c"
+	if err := os.MkdirAll(filepath.Join(repository.Path, sourceDirectory), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository.Path, sourceDirectory, ".gitignore"), []byte("/child/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mount := sourceDirectory + "/child"
+
+	evidence, err := git.NewAdapter("git").InspectWorkingTreeIgnore(context.Background(), repository.Path, mount)
+	if err != nil || !evidence.Ignored || evidence.Source != sourceDirectory+"/.gitignore" || !evidence.Qualifies(repository.Path) {
+		t.Fatalf("NUL-delimited evidence = %#v, %v; want qualifying Unicode source", evidence, err)
+	}
+}
+
 func TestAdapterCanonicalizesCommonGitDirFromSymlinkedCheckout(t *testing.T) {
 	repository := testutil.NewGitRepository(t)
 	repository.CommitFile("readme.txt", "initial\n", "initial")
