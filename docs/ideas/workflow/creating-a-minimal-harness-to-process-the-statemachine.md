@@ -140,6 +140,48 @@ Remaining: M4, AC7, RF3
 
 There is no reason to spend expensive orchestrator tokens on a long explanation every time.
 
+## Print human-readable progress to the terminal
+
+The persisted run state should remain authoritative, but a person running the
+harness should also be able to follow its progress without inspecting that
+state directly. The harness should print a concise human-readable message for
+every significant state transition.
+
+At minimum, it should print when it:
+
+* starts implementing a new milestone;
+* starts reviewing a milestone;
+* starts remediating review findings;
+* sends remediated work back for review;
+* approves or blocks a milestone; and
+* completes or otherwise halts the run.
+
+Every progress message should include the current milestone, the current
+phase, and the number of remediation cycles entered for that milestone. The
+remediation count starts at zero for each new milestone and increments whenever
+the harness enters remediation. It should remain visible in every later
+message for that milestone, not only while remediation is active.
+
+For example:
+
+```text
+[M4 | IMPLEMENTING | remediations=0] Starting milestone implementation
+[M4 | REVIEWING    | remediations=0] Starting independent review
+[M4 | REMEDIATING  | remediations=1] Addressing findings R1, R2
+[M4 | REVIEWING    | remediations=1] Reviewing remediated work
+[M4 | REMEDIATING  | remediations=2] Addressing unresolved finding R2
+[M4 | APPROVED     | remediations=2] Milestone approved
+[M5 | IMPLEMENTING | remediations=0] Starting milestone implementation
+```
+
+The displayed values should be derived from the same persisted facts that
+drive state transitions. Console output is observational only: it must not
+authorize, perform, or substitute for a transition.
+
+If standard output is part of a machine-readable harness protocol, these
+human-readable progress messages should be written to standard error so they
+remain visible in the terminal without corrupting structured output.
+
 ## Validate transitions, not just the current status
 
 I would make the state machine prevent invalid transitions as well.

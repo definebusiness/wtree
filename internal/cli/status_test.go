@@ -23,6 +23,10 @@ func TestExecuteStatusRendersCleanWorkspaceJSON(t *testing.T) {
 	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/status", "--data-dir", data, "--path", target); result.Err != nil {
 		t.Fatalf("create = %#v", result)
 	}
+	checkout := testutil.GitRepository{Path: target}
+	checkout.Run(t, "config", "branch.feature/status.remote", ".")
+	checkout.Run(t, "config", "branch.feature/status.merge", "refs/heads/main")
+	project.CommitFile("behind.txt", "behind\n", "advance main")
 	// State directories are keyed by project ID; obtain it from the project
 	// configuration rather than reconstructing a checkout path.
 	resolution, err := service.NewResolver().Resolve(context.Background(), service.ResolveRequest{Path: project.Path, ProjectPath: project.Path, DataDir: data})
@@ -46,17 +50,25 @@ func TestExecuteStatusRendersCleanWorkspaceJSON(t *testing.T) {
 	var value struct {
 		Workspace    string `json:"workspace"`
 		Repositories []struct {
-			ID     string `json:"id"`
-			Branch string `json:"branch"`
-			Path   string `json:"path"`
-			Clean  bool   `json:"clean"`
+			ID       string `json:"id"`
+			Branch   string `json:"branch"`
+			Path     string `json:"path"`
+			Clean    bool   `json:"clean"`
+			Ahead    int    `json:"ahead"`
+			Behind   int    `json:"behind"`
+			Upstream bool   `json:"upstream"`
 		} `json:"repositories"`
 	}
 	if err := json.Unmarshal([]byte(result.Stdout), &value); err != nil {
 		t.Fatal(err)
 	}
-	if value.Workspace != "feature/status" || len(value.Repositories) != 1 || value.Repositories[0].ID != "root" || value.Repositories[0].Branch != "feature/status" || value.Repositories[0].Path != target || !value.Repositories[0].Clean {
+	if value.Workspace != "feature/status" || len(value.Repositories) != 1 || value.Repositories[0].ID != "root" || value.Repositories[0].Branch != "feature/status" || value.Repositories[0].Path != target || !value.Repositories[0].Clean || value.Repositories[0].Ahead != 0 || value.Repositories[0].Behind != 1 || !value.Repositories[0].Upstream {
 		t.Fatalf("status JSON = %s", result.Stdout)
+	}
+	human := testutil.RunCommand(t, cli.Execute, "status", "--project", project.Path, "feature/status", "--data-dir", data)
+	wantHuman := "Workspace: feature/status\n\nREPOSITORY  BRANCH          MOUNT  STATUS  UPSTREAM\nroot        feature/status  .      clean   behind 1\n"
+	if human.Err != nil || human.Stderr != "" || human.Stdout != wantHuman {
+		t.Fatalf("status human = %#v, want %q", human, wantHuman)
 	}
 	after, err := os.ReadFile(statePath)
 	if err != nil || !bytes.Equal(before, after) {
@@ -93,7 +105,7 @@ func TestExecuteStatusInfersCurrentWorkspaceAndRendersHumanTable(t *testing.T) {
 	if result.Err != nil || result.Stderr != "" {
 		t.Fatalf("status = %#v", result)
 	}
-	want := "Workspace: feature/inferred\n\nREPOSITORY  BRANCH            MOUNT  STATUS\nroot        feature/inferred  .      clean\nbackend     feature/inferred  api    clean\n"
+	want := "Workspace: feature/inferred\n\nREPOSITORY  BRANCH            MOUNT  STATUS  UPSTREAM\nroot        feature/inferred  .      clean   none\nbackend     feature/inferred  api    clean   none\n"
 	if result.Stdout != want {
 		t.Fatalf("status stdout = %q, want %q", result.Stdout, want)
 	}

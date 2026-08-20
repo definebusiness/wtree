@@ -208,13 +208,16 @@ ref, index, or configuration mutation.
 
 `--dry-run` performs this complete plan and may contact declared manifest and
 Git remotes. Human output lists the source, destination, repositories,
-remotes, branches, mounts, exact planned commits, and verification steps, then
-ends with `No changes made.`
+remotes, branches, mounts, observed commits, and verification steps, then ends
+with `No changes made.` An observed commit is the selected branch tip reported
+during preflight; it is diagnostic information, not an execution promise.
 
-JSON output has its own version-one plan contract and includes operation
+Clone plan and dry-run-result JSON use version two. They include operation
 `clone`, normalized source, destination, project identity, deterministic
-repositories, exact commits, and ordered actions. Human stderr remains empty
-in JSON mode, and errors use one JSON envelope on stdout.
+repositories with `observedCommit`, and ordered actions. They do not emit
+`exactCommit` or `parentCommit` as execution claims. Completed clone JSON
+reports the actual checked-out commit for every repository. Human stderr
+remains empty in JSON mode, and errors use one JSON envelope on stdout.
 
 ## 8. Clone execution and verification
 
@@ -224,16 +227,21 @@ global registry lock during remote Git operations.
 
 Repositories are cloned into staging in parent-first order. Commands use
 argument arrays and the hardened non-interactive Git environment, never a
-shell. Each checkout must obtain and use the exact commit captured by the
-immutable plan. If a branch moves or the planned object can no longer be
-obtained, clone fails instead of substituting a newer tip.
+shell. Execution initializes the configured remote without accepting an
+implicit branch, fetches only the manifest-selected remote ref, and checks out
+the tip obtained by that execution-time fetch. The remote symbolic `HEAD`
+must not select or create a local branch. A selected branch may advance after
+preflight and before the execution fetch; ordinary clone uses the newly
+fetched tip rather than the earlier observed commit. A deleted selected ref,
+or a replacement whose actual checkout cannot satisfy verification, fails
+safely without fallback to another branch or stale preflight object.
 
-The configured local default branch starts at the planned commit and tracks
-the exact recorded remote and merge ref. Clone must not substitute the
+The configured local default branch starts at the actual checked-out commit
+and tracks the recorded remote and merge ref. Clone must not substitute the
 remote's default branch.
 
 Before creating a child checkout, clone inspects the already-cloned immediate
-parent at its selected commit and requires that parent's committed
+parent at its actual checked-out commit and requires that parent's committed
 `.gitignore` content to ignore the effective child mount. Local and global
 excludes do not qualify. A missing or ineffective rule fails before the child
 path exists. Before retrying clone, users must add and commit the required
@@ -248,9 +256,11 @@ After each repository clone, verify:
 - expected parent-relative mount; and
 - absence of submodules.
 
-The root's tracked `project.wtree.yml` at the planned commit must be
-byte-identical to the fetched manifest. This rejects unpublished, stale, or
-unrelated manifest copies.
+The root's tracked `project.wtree.yml` at its actual checked-out commit must
+be byte-identical to the fetched manifest. This rejects unpublished, stale, or
+unrelated manifest copies. Identity, committed-ignore, tracked-manifest,
+workspace-state, and completed-result checks are all bound to each
+repository's actual `HEAD`.
 
 After repository verification, clone writes ignored local `.wtree.yml` in
 staging with the final source paths, manifest metadata, worktree-root setting,
@@ -262,7 +272,8 @@ and default checkout data. Committed root content must already ignore
 Immediately before publication, clone acquires locks in the established
 registry-then-project order and revalidates destination absence, registry
 conflicts, and local path identities. It does not re-read remote refs because
-execution is bound to the planned commits.
+the selected refs have already been fetched and verified at their
+execution-time tips.
 
 The complete staged root is atomically renamed into the final destination.
 Clone then verifies final canonical common Git directories and atomically
@@ -313,7 +324,7 @@ adoption.
 | portable and local schemas | `internal/config` | `portable_manifest_test.go`, `portable_manifest_fuzz_test.go` |
 | init authoring and publication | `internal/service/init.go`, `internal/cli/root.go` | `init_manifest_test.go`, `init_publication_internal_test.go`, `init_manifest_test.go` in CLI |
 | bounded local and HTTP sources | `internal/service/manifest_source.go` | `manifest_source_test.go` |
-| immutable read-only planning and stable planning JSON | `internal/service/clone_plan.go`, `internal/service/clone_result.go` | `clone_plan_test.go`, `clone_result_test.go`, registry-facts tests |
-| exact-commit staging, verification, publication, and rollback | `internal/service/clone_execute.go`, `internal/git/portable.go` | clone-execute, clone-safety, Git portable, concurrency, and publication tests |
+| read-only planning with version-two observed-commit JSON | `internal/service/clone_plan.go`, `internal/service/clone_result.go` | `clone_plan_test.go`, `clone_result_test.go`, registry-facts tests |
+| selected-ref execution, actual-HEAD verification and result reporting, publication, and rollback | `internal/service/clone_execute.go`, `internal/git/portable.go` | clone-execute, clone-safety, Git portable, concurrency, and publication tests; [live-branch clone focused specification](clone-live-branch-and-upstream-status.md) |
 | command grammar, output, help, and how-to | `internal/cli/clone.go`, `internal/cli/root.go`, `internal/cli/howto.go`, `internal/render` | clone CLI, help/how-to, error-envelope, and `cmd/wtree` process-boundary tests |
 | nested local/served project lifecycle | public CLI boundary plus resolver/current workspace commands | three-level clone E2E covering parent ignores, `git add .`, `path`, `repo path`, `status`, and workspace creation |

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -144,7 +146,7 @@ func TestAdapterRemoteAdvertisementUsesOptionalLocksAndRedactsTransportFailure(t
 	}
 }
 
-func TestAdapterClonesExactCommitWithNamedRemoteAndDifferentBranch(t *testing.T) {
+func TestAdapterClonesLiveSelectedBranchWithNamedRemoteAndDifferentBranch(t *testing.T) {
 	source, remote := pushedRepository(t, "published")
 	planned := mustHead(t, source)
 	adapter := git.NewAdapter("git")
@@ -152,25 +154,168 @@ func TestAdapterClonesExactCommitWithNamedRemoteAndDifferentBranch(t *testing.T)
 	if err := adapter.Clone(context.Background(), remote, target, "mirror"); err != nil {
 		t.Fatal(err)
 	}
-	// Move the advertised branch after planning. The clone must continue to use
-	// the immutable planned object rather than the newer remote tip.
+	// Move the selected branch after planning. Execution must use the newer
+	// fetched tip rather than the preflight observation.
 	source.CommitFile("new-tip.txt", "new\n", "new remote tip")
 	source.Run(t, "push", "publish", "main:refs/heads/published")
-	if err := adapter.FetchCommit(context.Background(), target, "mirror", planned); err != nil {
+	live := mustHead(t, source)
+	if err := adapter.FetchTrackingBranch(context.Background(), target, "mirror", "refs/heads/published"); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.CheckoutTrackingBranch(context.Background(), target, "main", "mirror", "refs/heads/published", planned); err != nil {
+	checkedOut, err := adapter.CheckoutTrackingBranch(context.Background(), target, "main", "mirror", "refs/heads/published")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if checkedOut != live {
+		t.Fatalf("CheckoutTrackingBranch() = %q, want live %q", checkedOut, live)
 	}
 	upstream, err := adapter.Upstream(context.Background(), target)
 	if err != nil || upstream.LocalBranch != "main" || upstream.Remote != "mirror" || upstream.Merge != "refs/heads/published" || upstream.FetchURL != remote {
 		t.Fatalf("clone Upstream() = %#v, %v", upstream, err)
 	}
-	if head := mustHead(t, testutil.GitRepository{Path: target}); head != planned {
-		t.Fatalf("clone HEAD = %q, want %q", head, planned)
+	if head := mustHead(t, testutil.GitRepository{Path: target}); head != live || head == planned {
+		t.Fatalf("clone HEAD = %q, want live %q instead of planned %q", head, live, planned)
 	}
 	if clean, err := adapter.IsClean(context.Background(), target); err != nil || !clean {
 		t.Fatalf("IsClean() = %t, %v", clean, err)
+	}
+}
+
+func TestAdapterChecksOutMainWhenRemoteHeadAndManifestBranchAreMain(t *testing.T) {
+	source, remote := pushedRepository(t, "main")
+	source.Run(t, "--git-dir", remote, "symbolic-ref", "HEAD", "refs/heads/main")
+	target := filepath.Join(t.TempDir(), "clone")
+	adapter := git.NewAdapter("git")
+	if err := adapter.Clone(context.Background(), remote, target, "mirror"); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.FetchTrackingBranch(context.Background(), target, "mirror", "refs/heads/main"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.CheckoutTrackingBranch(context.Background(), target, "main", "mirror", "refs/heads/main"); err != nil {
+		t.Fatal(err)
+	}
+	if upstream, err := adapter.Upstream(context.Background(), target); err != nil || upstream.LocalBranch != "main" || upstream.Remote != "mirror" || upstream.Merge != "refs/heads/main" {
+		t.Fatalf("upstream = %#v, %v", upstream, err)
+	}
+	if branches := localBranchNames(t, target); !reflect.DeepEqual(branches, []string{"main"}) {
+		t.Fatalf("local branches = %v", branches)
+	}
+	if head := mustHead(t, testutil.GitRepository{Path: target}); head != mustHead(t, source) {
+		t.Fatalf("clone HEAD = %q, want %q", head, mustHead(t, source))
+	}
+}
+
+func TestAdapterIgnoresDifferentRemoteHeadAndKeepsOnlyManifestBranch(t *testing.T) {
+	source, remote := pushedRepository(t, "published")
+	source.Run(t, "push", "publish", "main:refs/heads/transport-default")
+	source.Run(t, "--git-dir", remote, "symbolic-ref", "HEAD", "refs/heads/transport-default")
+	target := filepath.Join(t.TempDir(), "clone")
+	adapter := git.NewAdapter("git")
+	if err := adapter.Clone(context.Background(), remote, target, "mirror"); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.FetchTrackingBranch(context.Background(), target, "mirror", "refs/heads/published"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.CheckoutTrackingBranch(context.Background(), target, "local-release", "mirror", "refs/heads/published"); err != nil {
+		t.Fatal(err)
+	}
+	if upstream, err := adapter.Upstream(context.Background(), target); err != nil || upstream.LocalBranch != "local-release" || upstream.Remote != "mirror" || upstream.Merge != "refs/heads/published" {
+		t.Fatalf("upstream = %#v, %v", upstream, err)
+	}
+	if branches := localBranchNames(t, target); !reflect.DeepEqual(branches, []string{"local-release"}) {
+		t.Fatalf("local branches = %v", branches)
+	}
+	if head := mustHead(t, testutil.GitRepository{Path: target}); head != mustHead(t, source) {
+		t.Fatalf("clone HEAD = %q, want selected %q", head, mustHead(t, source))
+	}
+}
+
+func TestAdapterSelectedRefFetchExcludesUnrelatedRefsTagsAndObjects(t *testing.T) {
+	source, remote := pushedRepository(t, "published")
+	source.Run(t, "checkout", "--orphan", "unrelated")
+	source.Run(t, "rm", "-rf", ".")
+	source.CommitFile("unrelated.txt", "unrelated\n", "unrelated history")
+	unrelated := mustHead(t, source)
+	source.Run(t, "push", "publish", "unrelated:refs/heads/unrelated")
+	source.Run(t, "tag", "unrelated-tag", unrelated)
+	source.Run(t, "push", "publish", "refs/tags/unrelated-tag")
+	source.Run(t, "checkout", "main")
+
+	target := filepath.Join(t.TempDir(), "clone")
+	adapter := git.NewAdapter("git")
+	if err := adapter.Clone(context.Background(), remote, target, "mirror"); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.FetchTrackingBranch(context.Background(), target, "mirror", "refs/heads/published"); err != nil {
+		t.Fatal(err)
+	}
+	if got := fullRefNames(t, target, "refs/remotes"); !reflect.DeepEqual(got, []string{"refs/remotes/mirror/published"}) {
+		t.Fatalf("remote refs = %v", got)
+	}
+	if got := fullRefNames(t, target, "refs/tags"); len(got) != 0 {
+		t.Fatalf("tags = %v, want none", got)
+	}
+	if gitObjectExists(t, target, unrelated) {
+		t.Fatalf("unrelated branch object %q was transferred", unrelated)
+	}
+}
+
+func TestAdapterCheckoutUsesFullBranchRefsWhenTagHasSameShortName(t *testing.T) {
+	_, remote := pushedRepository(t, "published")
+	target := filepath.Join(t.TempDir(), "clone")
+	adapter := git.NewAdapter("git")
+	if err := adapter.Clone(context.Background(), remote, target, "mirror"); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.FetchTrackingBranch(context.Background(), target, "mirror", "refs/heads/published"); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("git", "-C", target, "tag", "local-release", "refs/remotes/mirror/published").Run(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.CheckoutTrackingBranch(context.Background(), target, "local-release", "mirror", "refs/heads/published"); err != nil {
+		t.Fatal(err)
+	}
+	if got := fullRefNames(t, target, "refs/heads"); !reflect.DeepEqual(got, []string{"refs/heads/local-release"}) {
+		t.Fatalf("local branch refs = %v", got)
+	}
+	if got := fullRefNames(t, target, "refs/tags"); !reflect.DeepEqual(got, []string{"refs/tags/local-release"}) {
+		t.Fatalf("tag refs = %v", got)
+	}
+}
+
+func TestAdapterFetchTrackingBranchForceUpdatesSelectedPrivateRef(t *testing.T) {
+	source, remote := pushedRepository(t, "published")
+	target := filepath.Join(t.TempDir(), "clone")
+	adapter := git.NewAdapter("git")
+	if err := adapter.Clone(context.Background(), remote, target, "mirror"); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.FetchTrackingBranch(context.Background(), target, "mirror", "refs/heads/published"); err != nil {
+		t.Fatal(err)
+	}
+
+	source.Run(t, "checkout", "--orphan", "replacement")
+	source.Run(t, "rm", "-rf", ".")
+	source.CommitFile("replacement.txt", "replacement\n", "replace selected branch")
+	replacement := mustHead(t, source)
+	source.Run(t, "push", "--force", "publish", "replacement:refs/heads/published")
+	source.Run(t, "checkout", "main")
+
+	if err := adapter.FetchTrackingBranch(context.Background(), target, "mirror", "refs/heads/published"); err != nil {
+		t.Fatalf("FetchTrackingBranch() after non-fast-forward replacement: %v", err)
+	}
+	actual, err := adapter.CheckoutTrackingBranch(context.Background(), target, "local-release", "mirror", "refs/heads/published")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual != replacement {
+		t.Fatalf("checked out replacement = %q, want %q", actual, replacement)
+	}
+	if got := fullRefNames(t, target, "refs/remotes"); !reflect.DeepEqual(got, []string{"refs/remotes/mirror/published"}) {
+		t.Fatalf("remote refs after replacement = %v", got)
 	}
 }
 
@@ -179,7 +324,6 @@ func TestAdapterCloneCheckoutSuppressesHooksAndPreservesTracking(t *testing.T) {
 		t.Skip("hook fixture is POSIX-only")
 	}
 	source, remote := pushedRepository(t, "published")
-	planned := mustHead(t, source)
 	adapter := git.NewAdapter("git")
 	target := filepath.Join(t.TempDir(), "clone")
 	if err := adapter.Clone(context.Background(), remote, target, "mirror"); err != nil {
@@ -190,37 +334,57 @@ func TestAdapterCloneCheckoutSuppressesHooksAndPreservesTracking(t *testing.T) {
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.FetchCommit(context.Background(), target, "mirror", planned); err != nil {
+	if err := adapter.FetchTrackingBranch(context.Background(), target, "mirror", "refs/heads/published"); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.CheckoutTrackingBranch(context.Background(), target, "main", "mirror", "refs/heads/published", planned); err != nil {
+	if _, err := adapter.CheckoutTrackingBranch(context.Background(), target, "main", "mirror", "refs/heads/published"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("CheckoutTrackingBranch ran repository hook: %v", err)
 	}
 	upstream, err := adapter.Upstream(context.Background(), target)
-	if err != nil || upstream.LocalBranch != "main" || upstream.Remote != "mirror" || upstream.Merge != "refs/heads/published" || mustHead(t, testutil.GitRepository{Path: target}) != planned {
+	if err != nil || upstream.LocalBranch != "main" || upstream.Remote != "mirror" || upstream.Merge != "refs/heads/published" || mustHead(t, testutil.GitRepository{Path: target}) != mustHead(t, source) {
 		t.Fatalf("checkout tracking facts = %#v, %v", upstream, err)
 	}
 }
 
-func TestAdapterFailsRatherThanReplacingPlannedCommitWhenBranchIsDeleted(t *testing.T) {
+func TestAdapterFailsWhenSelectedBranchIsDeletedBeforeExecutionFetch(t *testing.T) {
 	source, remote := pushedRepository(t, "published")
-	planned := mustHead(t, source)
 	adapter := git.NewAdapter("git")
 	target := filepath.Join(t.TempDir(), "clone")
 	if err := adapter.Clone(context.Background(), remote, target, "mirror"); err != nil {
 		t.Fatal(err)
 	}
-	// The immutable object is already obtainable, but the planned branch is no
-	// longer advertised. Execution must fail, never select another branch tip.
+	// An observed object remains obtainable, but execution must fail rather
+	// than select another branch or a stale preflight commit.
 	source.Run(t, "--git-dir", remote, "update-ref", "-d", "refs/heads/published")
-	if err := adapter.FetchCommit(context.Background(), target, "mirror", planned); err != nil {
+	if err := adapter.FetchTrackingBranch(context.Background(), target, "mirror", "refs/heads/published"); err == nil {
+		t.Fatal("FetchTrackingBranch() after branch deletion error = nil")
+	}
+}
+
+func TestAdapterFetchTrackingBranchHonorsCancellation(t *testing.T) {
+	_, remote := pushedRepository(t, "published")
+	target := filepath.Join(t.TempDir(), "clone")
+	adapter := git.NewAdapter("git")
+	if err := adapter.Clone(context.Background(), remote, target, "mirror"); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.CheckoutTrackingBranch(context.Background(), target, "main", "mirror", "refs/heads/published", planned); err == nil {
-		t.Fatal("CheckoutTrackingBranch() after branch deletion error = nil")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := adapter.FetchTrackingBranch(ctx, target, "mirror", "refs/heads/published"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("FetchTrackingBranch() error = %v, want context cancellation", err)
+	}
+}
+
+func TestAdapterSelectedBranchOperationsRejectMalformedMergeRef(t *testing.T) {
+	adapter := git.NewAdapter("git")
+	if err := adapter.FetchTrackingBranch(context.Background(), t.TempDir(), "mirror", "refs/tags/v1"); err == nil {
+		t.Fatal("FetchTrackingBranch() accepted non-branch merge ref")
+	}
+	if _, err := adapter.CheckoutTrackingBranch(context.Background(), t.TempDir(), "main", "mirror", "refs/tags/v1"); err == nil {
+		t.Fatal("CheckoutTrackingBranch() accepted non-branch merge ref")
 	}
 }
 
@@ -341,8 +505,7 @@ func TestAdapterCloneAndCheckoutIgnoreHostileTemplateAndConfiguration(t *testing
 	if os.PathSeparator == '\\' {
 		t.Skip("hook fixture is POSIX-only")
 	}
-	source, remote := pushedRepository(t, "published")
-	planned := mustHead(t, source)
+	_, remote := pushedRepository(t, "published")
 	template := filepath.Join(t.TempDir(), "template")
 	if err := os.MkdirAll(filepath.Join(template, "hooks"), 0o755); err != nil {
 		t.Fatal(err)
@@ -364,10 +527,10 @@ func TestAdapterCloneAndCheckoutIgnoreHostileTemplateAndConfiguration(t *testing
 	if _, err := os.Stat(filepath.Join(target, ".git", "hooks", "post-checkout")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Clone honored hostile template: %v", err)
 	}
-	if err := adapter.FetchCommit(context.Background(), target, "mirror", planned); err != nil {
+	if err := adapter.FetchTrackingBranch(context.Background(), target, "mirror", "refs/heads/published"); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.CheckoutTrackingBranch(context.Background(), target, "main", "mirror", "refs/heads/published", planned); err != nil {
+	if _, err := adapter.CheckoutTrackingBranch(context.Background(), target, "main", "mirror", "refs/heads/published"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
@@ -429,6 +592,35 @@ func mustHead(t *testing.T, repository testutil.GitRepository) string {
 		t.Fatal(err)
 	}
 	return head
+}
+
+func localBranchNames(t *testing.T, repository string) []string {
+	t.Helper()
+	command := exec.Command("git", "-C", repository, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+	command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "LANG=C")
+	output, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Fields(string(output))
+}
+
+func fullRefNames(t *testing.T, repository, prefix string) []string {
+	t.Helper()
+	command := exec.Command("git", "-C", repository, "for-each-ref", "--format=%(refname)", prefix)
+	command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "LANG=C")
+	output, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Fields(string(output))
+}
+
+func gitObjectExists(t *testing.T, repository, object string) bool {
+	t.Helper()
+	command := exec.Command("git", "-C", repository, "cat-file", "-e", object+"^{commit}")
+	command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "LANG=C")
+	return command.Run() == nil
 }
 
 func TestAdapterCommandContextCancelsLongRemote(t *testing.T) {

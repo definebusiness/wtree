@@ -114,7 +114,6 @@ The fake origins and their branches are:
 | Branch | Parent origin | Backend origin | Frontend origin |
 |---|---:|---:|---:|
 | `main` | yes | yes | yes |
-| `fixture/clone-bootstrap` | yes | yes | yes |
 | `feature/customer-search` | yes | yes | yes |
 | `release/2026-q3` | yes | yes | no |
 | `chore/structured-logging` | yes | yes | no |
@@ -143,9 +142,8 @@ cd "$WTREE_PROJECT"
 ```
 
 The manifest declares version 2 and names `root` as its base repository. The
-fake origins advertise `fixture/clone-bootstrap` as their transport default,
-while the manifest selects `main`; the resulting checkout demonstrates that
-clone follows the explicit manifest contract rather than remote `HEAD`.
+fake origins use their ordinary `main` heads, and clone follows the explicit
+manifest contract while recording the execution-time checked-out commits.
 
 The clone contains an ignored local configuration, its ignored persistent
 configuration lock, and the tracked portable manifest from the parent
@@ -170,6 +168,10 @@ wtree list
 wtree status
 wtree status default --json
 ```
+
+The human table's `STATUS` column reports working-tree and structural state.
+Its `UPSTREAM` column reports the last-fetched local upstream relationship;
+`wtree status` does not fetch or contact remotes.
 
 Inspect the remote-tracking branches created by the clone:
 
@@ -211,17 +213,16 @@ Future `update` and `sync` ideas may re-author a manifest from local
 repositories or reconcile a checkout from its stored manifest source. They
 are intentionally not available commands in this release. Release-lock
 manifests are also future work; today's portable manifest follows movable
-default branches while clone executes the exact commits observed during its
-preflight.
+default branches while dry-run observations remain diagnostic and clone uses
+the selected branch tip fetched during execution.
 
 ## 5. Understand remote and local branches
 
 `wtree checkout` uses branches that already exist locally in every configured
 repository. It does not create a local branch from an `origin/...`
-remote-tracking ref. The fresh clones initially have manifest-selected `main`
-and the fixture's transport-default `fixture/clone-bootstrap` as local
-branches, while the fake origins advertise several additional branches only
-as remote-tracking refs.
+remote-tracking ref. The fresh clones initially have only the
+manifest-selected `main` local branch, while the fake origins advertise
+several additional branches that are not fetched by clone.
 
 Compare local and remote-tracking branches:
 

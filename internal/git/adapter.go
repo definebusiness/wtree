@@ -47,8 +47,8 @@ type Git interface {
 	ContainsCommits(context.Context, string, []string) (bool, error)
 	TrackedFile(context.Context, string, string, string) ([]byte, error)
 	Clone(context.Context, string, string, string) error
-	FetchCommit(context.Context, string, string, string) error
-	CheckoutTrackingBranch(context.Context, string, string, string, string, string) error
+	FetchTrackingBranch(context.Context, string, string, string) error
+	CheckoutTrackingBranch(context.Context, string, string, string, string) (string, error)
 }
 
 // Adapter invokes Git only through locale-neutral, non-interactive subprocesses.

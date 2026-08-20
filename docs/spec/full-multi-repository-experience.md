@@ -62,8 +62,10 @@ Every capability in this specification must preserve these invariants:
 5. Rollback may remove only artifacts proven to have been created by the
    current operation. Incomplete rollback must create recovery evidence and
    return the established rollback-incomplete error.
-6. Default branch operations must not silently substitute another branch,
-   create a missing branch, or replace a pinned revision with a moving tip.
+6. Default branch operations must not silently substitute another branch or
+   create a missing branch. An operation that explicitly materializes a
+   pinned lock or release revision must not replace that pinned revision with
+   a moving tip.
 7. Every new command must provide stable JSON output. Every new mutating
    command must provide `--dry-run`; JSON mode must not emit human progress on
    stderr.
@@ -79,7 +81,9 @@ Every capability in this specification must preserve these invariants:
 Every aggregate command must resolve the project and workspace through the
 central resolver and produce one per-repository result keyed by repository ID.
 The result must include the resolved checkout path, effective mount, actual or
-planned branch, and exact commit when those fields apply.
+planned branch, and the relevant actual checkout commit or preflight
+observation. Exact commit targets apply only to an explicitly specified lock
+or release operation.
 
 Planning failures identify the repository and failed check and occur before
 mutation. Execution failures preserve successful and failed per-repository
@@ -123,8 +127,8 @@ structurally inconsistent.
 
 The default update may:
 
-- fetch and fast-forward configured default branches to the exact commits
-  captured by the plan;
+- fetch and fast-forward configured default branches to their selected remote
+  refs' execution-time tips, subject to its focused reconciliation contract;
 - clone newly declared repositories into staging and publish them at their
   verified mounts;
 - relocate a clean unchanged-identity checkout when the manifest changes its
@@ -144,10 +148,13 @@ A removed repository is reported as retained and unmanaged. Cleanup requires
 a separately specified explicit destructive operation. A move that cannot be
 performed and rolled back safely fails preflight.
 
-Update reuses clone's exact-commit, upstream, initial-commit, ignore, tracked
-manifest, URL, and submodule verification. Newly added repositories are
-staged before publication. Existing-checkout changes use an operation journal,
-byte-for-byte metadata backups, and reverse-order rollback.
+Update reuses clone's selected-ref, actual-HEAD, upstream, initial-commit,
+ignore, tracked-manifest, URL, and submodule verification. Ordinary update
+does not inherit an exact preflight-commit checkout target; fixed revisions
+belong only to explicitly specified lock or release materialization. Newly
+added repositories are staged before publication. Existing-checkout changes
+use an operation journal, byte-for-byte metadata backups, and reverse-order
+rollback.
 
 ### 5.2 Portable acquisition baseline
 
@@ -565,7 +572,11 @@ specification, evidence must cover:
 
 - strict preflight with zero mutation on invalid aggregate operations;
 - deterministic ordering and JSON for every new command;
-- exact-commit planning and branch-movement resistance;
+- for ordinary clone and update, separation of preflight observations from
+  actual checked-out commits, safe selected-branch movement, and safe failure
+  for deleted or unverifiable replacements; and, for explicitly specified
+  lock or release materialization, exact-commit planning and
+  branch-movement resistance;
 - rollback after failure at every owned mutation boundary;
 - incomplete rollback recovery records and doctor visibility;
 - dirty, divergent, detached, missing, omitted, mixed, and locked states;

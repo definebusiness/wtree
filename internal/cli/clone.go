@@ -13,17 +13,24 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// cloneCommandResult is the stable public success envelope. The immutable
-// plan remains available in full so automation can audit exactly what ran.
+// cloneCommandResult is the stable public success envelope. The plan records
+// preflight observations; repositories records what execution actually checked
+// out in deterministic repository-ID order.
 type cloneCommandResult struct {
-	Version         int               `json:"version"`
-	Operation       string            `json:"operation"`
-	Status          string            `json:"status"`
-	Project         cloneProjectView  `json:"project"`
-	Destination     string            `json:"destination"`
-	RepositoryCount int               `json:"repositoryCount"`
-	ManifestSource  string            `json:"manifestSource"`
-	Plan            service.ClonePlan `json:"plan"`
+	Version         int                        `json:"version"`
+	Operation       string                     `json:"operation"`
+	Status          string                     `json:"status"`
+	Project         cloneProjectView           `json:"project"`
+	Destination     string                     `json:"destination"`
+	RepositoryCount int                        `json:"repositoryCount"`
+	ManifestSource  string                     `json:"manifestSource"`
+	Repositories    []cloneCompletedRepository `json:"repositories"`
+	Plan            service.ClonePlan          `json:"plan"`
+}
+
+type cloneCompletedRepository struct {
+	ID           string `json:"id"`
+	ActualCommit string `json:"actualCommit"`
 }
 
 type cloneProjectView struct {
@@ -37,7 +44,7 @@ func newCloneCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Comma
 	command := &cobra.Command{
 		Use:   "clone <manifest-source> [destination]",
 		Short: "clone and register a complete portable project",
-		Long:  "Read a local or HTTP(S) portable manifest, resolve every declared branch to an exact commit, assemble all repositories in private staging, verify the result, then atomically publish and register the default workspace. Use --dry-run for a complete read-only plan.",
+		Long:  "Read a local or HTTP(S) portable manifest, observe every declared remote branch, assemble all repositories in private staging from execution-time selected branch tips, verify the result, then atomically publish and register the default workspace. Use --dry-run for a complete read-only plan.",
 		Args:  cloneArguments,
 		RunE: func(command *cobra.Command, arguments []string) error {
 			// A root-scoped project has no meaning before the new project exists.
@@ -103,10 +110,10 @@ func newCloneCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Comma
 			}
 			if jsonOutput {
 				return render.JSON(stdout, cloneCommandResult{
-					Version: 1, Operation: "clone", Status: "completed",
+					Version: 2, Operation: "clone", Status: "completed",
 					Project:     cloneProjectView{ID: result.ProjectID, Name: plan.Project.Name},
 					Destination: result.Destination, RepositoryCount: len(result.Repositories),
-					ManifestSource: plan.Source.Value, Plan: plan,
+					ManifestSource: plan.Source.Value, Repositories: completedCloneRepositories(result), Plan: plan,
 				})
 			}
 			return renderCloneSuccess(stdout, plan, result)
@@ -150,7 +157,7 @@ func renderClonePlan(stdout io.Writer, plan service.ClonePlan) error {
 		return err
 	}
 	for _, repository := range plan.Repositories {
-		if _, err := fmt.Fprintf(stdout, "  %s\n    remote: %s\n    url: %s\n    branch: %s\n    merge: %s\n    mount: %s\n    exact commit: %s\n    verify: initial roots, clean checkout, no submodules, tracked manifest%s\n", repository.ID, repository.CloneRemote, repository.CloneURL, repository.LocalBranch, repository.RemoteRef, repository.Mount, repository.AdvertisedCommit, cloneParentIgnoreSuffix(repository.Parent)); err != nil {
+		if _, err := fmt.Fprintf(stdout, "  %s\n    remote: %s\n    url: %s\n    branch: %s\n    merge: %s\n    mount: %s\n    observed commit: %s\n    verify: initial roots, clean checkout, no submodules, tracked manifest%s\n", repository.ID, repository.CloneRemote, repository.CloneURL, repository.LocalBranch, repository.RemoteRef, repository.Mount, repository.ObservedCommit, cloneParentIgnoreSuffix(repository.Parent)); err != nil {
 			return err
 		}
 	}
@@ -191,5 +198,19 @@ func renderCloneSuccess(stdout io.Writer, plan service.ClonePlan, result service
 			return err
 		}
 	}
+	for _, repository := range completedCloneRepositories(result) {
+		if err := render.Line(stdout, fmt.Sprintf("Actual checkout: %s %s", repository.ID, repository.ActualCommit)); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func completedCloneRepositories(result service.CloneExecutionResult) []cloneCompletedRepository {
+	ids := result.RepositoryIDs()
+	repositories := make([]cloneCompletedRepository, 0, len(ids))
+	for _, id := range ids {
+		repositories = append(repositories, cloneCompletedRepository{ID: id, ActualCommit: result.Repositories[id].Head})
+	}
+	return repositories
 }

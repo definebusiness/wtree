@@ -102,8 +102,9 @@ repositories:
 
 Clone a published project from a local manifest file or an HTTP(S) URL. The
 optional destination defaults to the manifest's safe project name. A dry run
-reads the manifest, checks every remote, and renders the exact-commit plan
-without creating directories or local state:
+reads the manifest, checks every remote, and renders observed-commit
+preflight evidence without creating directories or local state. Execution
+then checks out each selected branch tip fetched at that time:
 
 ```sh
 wtree clone ./project.wtree.yml ./product --dry-run
@@ -149,7 +150,9 @@ wtree create feature/login --mount backend=api
 ```
 
 Inspect the workspace, including expected branches, mounts, and checkout
-state:
+state. `STATUS` reports working-tree and structural state; `UPSTREAM` reports
+the last-fetched local upstream relationship. `wtree status` does not fetch or
+contact remotes:
 
 ```sh
 wtree status feature/login

@@ -19,7 +19,7 @@ import (
 	gitadapter "github.com/definebusiness/wtree/internal/git"
 )
 
-const ClonePlanVersion = 1
+const ClonePlanVersion = 2
 
 type ClonePlanRequest struct {
 	ManifestSource string
@@ -62,16 +62,16 @@ type CloneVerification struct {
 }
 
 type ClonePlanRepository struct {
-	ID               string            `json:"id"`
-	Parent           string            `json:"parent"`
-	Mount            string            `json:"mount"`
-	Path             string            `json:"path"`
-	CloneRemote      string            `json:"cloneRemote"`
-	CloneURL         string            `json:"cloneUrl"`
-	LocalBranch      string            `json:"localBranch"`
-	RemoteRef        string            `json:"remoteRef"`
-	AdvertisedCommit string            `json:"advertisedCommit"`
-	Verification     CloneVerification `json:"verification"`
+	ID             string            `json:"id"`
+	Parent         string            `json:"parent"`
+	Mount          string            `json:"mount"`
+	Path           string            `json:"path"`
+	CloneRemote    string            `json:"cloneRemote"`
+	CloneURL       string            `json:"cloneUrl"`
+	LocalBranch    string            `json:"localBranch"`
+	RemoteRef      string            `json:"remoteRef"`
+	ObservedCommit string            `json:"observedCommit"`
+	Verification   CloneVerification `json:"verification"`
 }
 
 type ClonePlanAction struct {
@@ -79,10 +79,8 @@ type ClonePlanAction struct {
 	Action              string   `json:"action"`
 	RepositoryID        string   `json:"repositoryId,omitempty"`
 	Path                string   `json:"path,omitempty"`
-	ExactCommit         string   `json:"exactCommit,omitempty"`
 	ParentRepositoryID  string   `json:"parentRepositoryId,omitempty"`
 	ParentPath          string   `json:"parentPath,omitempty"`
-	ParentCommit        string   `json:"parentCommit,omitempty"`
 	ChildMount          string   `json:"childMount,omitempty"`
 	IgnoreRuleSubject   string   `json:"ignoreRuleSubject,omitempty"`
 	ChildInitialCommits []string `json:"childInitialCommits,omitempty"`
@@ -168,7 +166,7 @@ func (plan ClonePlan) Validate() error {
 	seen := map[string]bool{}
 	paths := map[string]string{}
 	for _, repository := range plan.Repositories {
-		if repository.ID == "" || !validClonePlanObjectID(repository.AdvertisedCommit) || seen[repository.ID] || (repository.Parent != "" && !seen[repository.Parent]) {
+		if repository.ID == "" || !validClonePlanObjectID(repository.ObservedCommit) || seen[repository.ID] || (repository.Parent != "" && !seen[repository.Parent]) {
 			return fmt.Errorf("invalid parent-first clone repository %q", repository.ID)
 		}
 		expectedPath := plan.Destination.Path
@@ -356,8 +354,8 @@ func (planner *ClonePlanner) planAttempt(ctx context.Context, request ClonePlanR
 			ID: id, Parent: repository.Parent, Mount: repository.Mount, Path: path,
 			CloneRemote: repository.Clone.Remote, CloneURL: repository.Clone.URL,
 			LocalBranch: repository.DefaultBranch, RemoteRef: repository.Upstream.Merge,
-			AdvertisedCommit: commit,
-			Verification:     CloneVerification{TrackedManifestExact: repository.Parent == "", InitialCommits: append([]string(nil), repository.Identity.InitialCommits...), CleanWorktree: true, NoSubmodules: true, CommittedParentIgnore: repository.Parent != ""},
+			ObservedCommit: commit,
+			Verification:   CloneVerification{TrackedManifestExact: repository.Parent == "", InitialCommits: append([]string(nil), repository.Identity.InitialCommits...), CleanWorktree: true, NoSubmodules: true, CommittedParentIgnore: repository.Parent != ""},
 		})
 	}
 	if len(remoteErrors) != 0 {
@@ -667,30 +665,31 @@ func clonePlanActions(repositories []ClonePlanRepository, destination string) []
 	for _, repository := range repositories {
 		byID[repository.ID] = repository
 	}
-	add := func(action, id, path, commit string) {
-		actions = append(actions, ClonePlanAction{Sequence: len(actions) + 1, Action: action, RepositoryID: id, Path: path, ExactCommit: commit})
+	add := func(action, id, path string) {
+		actions = append(actions, ClonePlanAction{Sequence: len(actions) + 1, Action: action, RepositoryID: id, Path: path})
 	}
 	for _, repository := range repositories {
 		if repository.Parent != "" {
 			parent := byID[repository.Parent]
 			actions = append(actions, ClonePlanAction{
 				Sequence: len(actions) + 1, Action: "verify_parent_ignore",
-				RepositoryID: repository.ID, Path: repository.Path, ExactCommit: repository.AdvertisedCommit,
-				ParentRepositoryID: parent.ID, ParentPath: parent.Path, ParentCommit: parent.AdvertisedCommit,
+				RepositoryID: repository.ID, Path: repository.Path,
+				ParentRepositoryID: parent.ID, ParentPath: parent.Path,
 				ChildMount: repository.Mount, IgnoreRuleSubject: filepath.ToSlash(repository.Mount),
 				ChildInitialCommits: append([]string(nil), repository.Verification.InitialCommits...),
 			})
 		}
-		add("clone_repository", repository.ID, repository.Path, repository.AdvertisedCommit)
-		add("checkout_exact_commit", repository.ID, repository.Path, repository.AdvertisedCommit)
-		add("verify_repository", repository.ID, repository.Path, repository.AdvertisedCommit)
+		add("clone_repository", repository.ID, repository.Path)
+		add("fetch_selected_branch", repository.ID, repository.Path)
+		add("checkout_selected_branch", repository.ID, repository.Path)
+		add("verify_repository", repository.ID, repository.Path)
 		if repository.Parent == "" {
-			add("verify_tracked_manifest", repository.ID, repository.Path, repository.AdvertisedCommit)
+			add("verify_tracked_manifest", repository.ID, repository.Path)
 		}
 	}
-	add("write_local_configuration", "", filepath.Join(destination, ".wtree.yml"), "")
-	add("publish_destination", "", destination, "")
-	add("publish_workspace_state", "", destination, "")
-	add("register_project", "", destination, "")
+	add("write_local_configuration", "", filepath.Join(destination, ".wtree.yml"))
+	add("publish_destination", "", destination)
+	add("publish_workspace_state", "", destination)
+	add("register_project", "", destination)
 	return actions
 }

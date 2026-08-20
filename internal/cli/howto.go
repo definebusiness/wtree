@@ -38,6 +38,8 @@ const globalHowTo = `WTREE HOW-TO
     Run: wtree repo path backend
 14. Inspect status
     Run: wtree status feature/login --json
+    STATUS reports working-tree and structural state; UPSTREAM reports
+    last-fetched local upstream facts. status does not fetch or contact remotes.
 15. Import an existing workspace
     Run: wtree import /path/to/workspace --name feature/login
 16. Import renamed nested checkouts
@@ -76,7 +78,7 @@ const globalHowTo = `WTREE HOW-TO
 var commandHowTo = map[string]string{
 	"clone": `HOW TO: clone
 
-Clone every repository declared by a committed portable manifest and register the verified checkout as the default workspace. The source may be a local file or an HTTP(S) URL. Omit destination only when the manifest project name is a safe directory name.
+Clone every repository declared by a committed portable manifest and register the verified checkout as the default workspace. The source may be a local file or an HTTP(S) URL. Dry-run reports observed remote commits; execution reports the actual commits checked out from the selected branches. Omit destination only when the manifest project name is a safe directory name.
 
 EXAMPLES
   wtree clone ./project.wtree.yml ./product

@@ -242,53 +242,77 @@ func (a *Adapter) TrackedFile(ctx context.Context, repository, commit, path stri
 	return a.runFact(ctx, repository, "show", commit+":"+path)
 }
 
-// Clone creates an exact destination with the requested remote name but does
-// not select an implicit remote branch. Call FetchCommit and
-// CheckoutTrackingBranch with immutable-plan facts afterwards.
+// Clone creates a destination with the requested remote name but does not
+// select an implicit remote branch. FetchTrackingBranch and
+// CheckoutTrackingBranch establish the manifest-selected branch afterwards.
 func (a *Adapter) Clone(ctx context.Context, url, destination, remote string) error {
 	if remote == "" || strings.HasPrefix(remote, "-") {
 		return fmt.Errorf("clone repository: invalid remote name")
 	}
-	_, err := a.runRemote(ctx, "clone", "--no-checkout", "--origin", remote, "--", url, destination)
-	return err
-}
-
-// FetchCommit obtains the exact immutable-plan object without substituting a
-// remote's current default branch.
-func (a *Adapter) FetchCommit(ctx context.Context, repository, remote, commit string) error {
-	if remote == "" || strings.HasPrefix(remote, "-") || !fullObjectID(commit) {
-		return fmt.Errorf("fetch planned commit: invalid remote or commit")
+	if _, err := a.runRemote(ctx, "init", "--quiet", "--", destination); err != nil {
+		return err
 	}
-	_, err := a.run(ctx, repository, "fetch", "--no-tags", "--", remote, commit)
+	_, err := a.run(ctx, destination, "remote", "add", "--", remote, url)
 	return err
 }
 
-// CheckoutTrackingBranch starts localBranch at commit and configures tracking
-// for the exact recorded remote merge ref. The remote ref is fetched into its
-// normal remote-tracking location only to make Git's upstream configuration
-// inspectable; localBranch remains pinned to commit.
-func (a *Adapter) CheckoutTrackingBranch(ctx context.Context, repository, localBranch, remote, merge, commit string) error {
+// FetchTrackingBranch obtains the manifest-selected remote branch at
+// execution time. It deliberately fetches the named ref rather than an
+// observed commit or the remote symbolic HEAD.
+func (a *Adapter) FetchTrackingBranch(ctx context.Context, repository, remote, merge string) error {
 	remoteBranch := strings.TrimPrefix(merge, "refs/heads/")
-	if localBranch == "" || strings.HasPrefix(localBranch, "-") || remote == "" || strings.HasPrefix(remote, "-") || remoteBranch == merge || remoteBranch == "" || !fullObjectID(commit) {
-		return fmt.Errorf("configure checkout: invalid branch, remote, merge ref, or commit")
+	if remote == "" || strings.HasPrefix(remote, "-") || remoteBranch == merge || remoteBranch == "" {
+		return fmt.Errorf("fetch selected branch: invalid remote or merge ref")
 	}
-	if _, err := a.run(ctx, repository, "fetch", "--no-tags", "--", remote, merge+":refs/remotes/"+remote+"/"+remoteBranch); err != nil {
-		return err
-	}
-	if _, err := a.run(ctx, repository, "branch", "-f", localBranch, commit); err != nil {
-		return err
-	}
-	if _, err := a.run(ctx, repository, "config", "branch."+localBranch+".remote", remote); err != nil {
-		return err
-	}
-	if _, err := a.run(ctx, repository, "config", "branch."+localBranch+".merge", merge); err != nil {
-		return err
+	_, err := a.run(ctx, repository, "fetch", "--no-tags", "--no-recurse-submodules", "--", remote, "+"+merge+":refs/remotes/"+remote+"/"+remoteBranch)
+	return err
+}
+
+// CheckoutTrackingBranch creates the one manifest-selected local branch from
+// the execution-time fetched remote-tracking ref and configures its declared
+// upstream. Remote HEAD never selects or survives as a local branch.
+func (a *Adapter) CheckoutTrackingBranch(ctx context.Context, repository, localBranch, remote, merge string) (string, error) {
+	remoteBranch := strings.TrimPrefix(merge, "refs/heads/")
+	if localBranch == "" || strings.HasPrefix(localBranch, "-") || remote == "" || strings.HasPrefix(remote, "-") || remoteBranch == merge || remoteBranch == "" {
+		return "", fmt.Errorf("configure checkout: invalid branch, remote, or merge ref")
 	}
 	// Command-scope configuration takes precedence over repository, global, and
 	// system config. os.DevNull makes hook suppression portable across POSIX and
 	// Windows without a shell or user-controlled path.
-	_, err := a.run(ctx, repository, "-c", "core.hooksPath="+os.DevNull, "checkout", "--no-recurse-submodules", localBranch)
-	return err
+	if _, err := a.run(ctx, repository, "-c", "core.hooksPath="+os.DevNull, "checkout", "--no-recurse-submodules", "--no-guess", "-B", localBranch, "refs/remotes/"+remote+"/"+remoteBranch); err != nil {
+		return "", err
+	}
+	if _, err := a.run(ctx, repository, "config", "branch."+localBranch+".remote", remote); err != nil {
+		return "", err
+	}
+	if _, err := a.run(ctx, repository, "config", "branch."+localBranch+".merge", merge); err != nil {
+		return "", err
+	}
+	selectedRef := "refs/heads/" + localBranch
+	output, err := a.runFact(ctx, repository, "for-each-ref", "--format=%(refname)", "refs/heads")
+	if err != nil {
+		return "", err
+	}
+	branches := strings.Split(strings.TrimSuffix(string(output), "\n"), "\n")
+	for _, branch := range branches {
+		if branch == "" || branch == selectedRef {
+			continue
+		}
+		if _, err := a.run(ctx, repository, "update-ref", "-d", branch); err != nil {
+			return "", err
+		}
+	}
+	if output, err = a.runFact(ctx, repository, "for-each-ref", "--format=%(refname)", "refs/heads"); err != nil || strings.TrimSpace(string(output)) != selectedRef {
+		if err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("configure checkout: expected exactly local branch %q", localBranch)
+	}
+	head, err := a.Head(ctx, repository)
+	if err != nil {
+		return "", err
+	}
+	return head, nil
 }
 
 // runRemote performs a potentially mutating remote operation such as clone.

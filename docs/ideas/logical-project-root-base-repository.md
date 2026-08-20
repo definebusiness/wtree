@@ -1,7 +1,7 @@
 # Idea: logical project roots with a designated base repository
 
 Status: specified
-Specification: [Portable manifest v2 base-repository format](../spec/portable-manifest-v2-base-repository-format.md)
+Specifications: [Portable manifest v2 base-repository format](../spec/portable-manifest-v2-base-repository-format.md); [Logical project root and repository forest](../spec/logical-project-root-base-repository.md)
 
 ## Summary
 
@@ -309,6 +309,8 @@ rules from changing Git containment or ignore behavior.
 
 ## Relationship to existing work
 
-This idea broadens the project topology described by the implemented portable
-manifest clone work. It should be specified and planned as a new change rather
-than retrofitting compatibility into that completed manifest format.
+The implemented [portable manifest v2 specification](../spec/portable-manifest-v2-base-repository-format.md)
+pulled forward only the breaking format cutover and explicit base field. The
+remaining logical-root forest behavior is defined by the
+[logical project root and repository forest specification](../spec/logical-project-root-base-repository.md)
+and awaits a separate implementation plan.

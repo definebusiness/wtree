@@ -419,14 +419,6 @@ git -C "$seed_dir/acme-shop" commit -q -m "Publish portable wtree manifest"
 git -C "$seed_dir/acme-shop" push -q origin main
 cp "$seed_dir/acme-shop/project.wtree.yml" "$manifest_path"
 
-# Keep the transport's symbolic default distinct from the manifest-selected
-# main branch. This proves that portable clone follows the explicit upstream
-# contract rather than guessing from remote HEAD.
-for origin in acme-shop java-backend web-frontend; do
-	git -C "$origins_dir/$origin.git" branch fixture/clone-bootstrap main
-	git -C "$origins_dir/$origin.git" symbolic-ref HEAD refs/heads/fixture/clone-bootstrap
-done
-
 complete=true
 printf '%s\n' \
 	"Created the Acme Shop fixture in $fixture_dir" \

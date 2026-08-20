@@ -12,7 +12,7 @@ import (
 	"github.com/definebusiness/wtree/internal/config"
 )
 
-const CloneResultVersion = 1
+const CloneResultVersion = 2
 
 type CloneResultStatus string
 
@@ -41,17 +41,17 @@ type CloneResultRequestSource struct {
 }
 
 type CloneRepositoryOutcome struct {
-	ID               string            `json:"id"`
-	Parent           string            `json:"parent"`
-	Mount            string            `json:"mount"`
-	Path             string            `json:"path"`
-	CloneRemote      string            `json:"cloneRemote"`
-	CloneURL         string            `json:"cloneUrl"`
-	LocalBranch      string            `json:"localBranch"`
-	RemoteRef        string            `json:"remoteRef"`
-	AdvertisedCommit string            `json:"advertisedCommit"`
-	Status           string            `json:"status"`
-	Verification     CloneVerification `json:"verification"`
+	ID             string            `json:"id"`
+	Parent         string            `json:"parent"`
+	Mount          string            `json:"mount"`
+	Path           string            `json:"path"`
+	CloneRemote    string            `json:"cloneRemote"`
+	CloneURL       string            `json:"cloneUrl"`
+	LocalBranch    string            `json:"localBranch"`
+	RemoteRef      string            `json:"remoteRef"`
+	ObservedCommit string            `json:"observedCommit"`
+	Status         string            `json:"status"`
+	Verification   CloneVerification `json:"verification"`
 }
 
 type CloneResultFailure struct {
@@ -60,7 +60,7 @@ type CloneResultFailure struct {
 	Message string           `json:"message"`
 }
 
-// CloneResult is the stable v1 read-only planning outcome. A planned result
+// CloneResult is the stable v2 read-only planning outcome. A planned result
 // owns a complete validated plan. A failed result owns only credential-free
 // provenance known before the failing boundary and never fabricates a plan.
 type CloneResult struct {
@@ -152,7 +152,7 @@ func cloneResultOutcomes(plan ClonePlan) []CloneRepositoryOutcome {
 		outcomes = append(outcomes, CloneRepositoryOutcome{
 			ID: repository.ID, Parent: repository.Parent, Mount: repository.Mount, Path: repository.Path,
 			CloneRemote: repository.CloneRemote, CloneURL: repository.CloneURL, LocalBranch: repository.LocalBranch,
-			RemoteRef: repository.RemoteRef, AdvertisedCommit: repository.AdvertisedCommit, Status: "planned", Verification: verification,
+			RemoteRef: repository.RemoteRef, ObservedCommit: repository.ObservedCommit, Status: "planned", Verification: verification,
 		})
 	}
 	return outcomes

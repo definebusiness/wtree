@@ -209,10 +209,9 @@ wtree clone "$WTREE_MANIFEST" "$WTREE_PROJECT" \
   --worktree-root "$WTREE_WORKTREES"
 ```
 
-The fixture's transport default branch is deliberately
-`fixture/clone-bootstrap`, while the manifest selects `main`. This confirms
-that clone follows the explicit portable upstream contract rather than
-guessing from remote `HEAD`.
+The fixture origins use their ordinary `main` heads. Clone follows the
+manifest-selected branch and records the commit fetched during execution;
+the dry run's observed commit remains diagnostic preflight evidence.
 
 ## 5. Configuration situations
 
@@ -253,6 +252,10 @@ wtree path default
 wtree repo path backend
 wtree repo get frontend --json
 ```
+
+`STATUS` reports working-tree and structural state. `UPSTREAM` reports the
+last-fetched local upstream relationship, and `wtree status` does not fetch or
+contact remotes.
 
 Context resolution also works inside a nested repository:
 

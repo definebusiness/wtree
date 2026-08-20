@@ -70,7 +70,7 @@ func TestClonePlanningResultSuccessOwnsValidatedPlanAndStableJSON(t *testing.T) 
 	}
 	mutated = decoded
 	mutated.Plan = mutated.PlanCopy()
-	mutated.Plan.Repositories[0].AdvertisedCommit = strings.Repeat("a", 40)
+	mutated.Plan.Repositories[0].ObservedCommit = strings.Repeat("a", 40)
 	if err := mutated.Validate(); err == nil {
 		t.Fatal("mutated embedded plan bypassed validation")
 	}

@@ -57,6 +57,16 @@ expect_failure() {
 	fi
 }
 
+fetch_fixture_branch() {
+	checkout=$1
+	branch=$2
+	tracking_ref=refs/remotes/origin/$branch
+	if git -C "$checkout" show-ref --verify --quiet "$tracking_ref"; then
+		fail "clone unexpectedly fetched $tracking_ref"
+	fi
+	GIT_TERMINAL_PROMPT=0 git -C "$checkout" -c core.hooksPath=/dev/null fetch --no-tags --no-recurse-submodules -- origin "+refs/heads/$branch:$tracking_ref" >/dev/null
+}
+
 export WTREE_DATA_HOME=$test_root/wtree-data
 mkdir -p "$test_root/bin"
 
@@ -135,15 +145,18 @@ cd "$project"
 step "exercise checkout success and missing-branch preflight"
 expect_failure 'does not exist' "$wtree" checkout feature/customer-search --dry-run
 for checkout in "$project" "$project/backend" "$project/frontend"; do
+	fetch_fixture_branch "$checkout" feature/customer-search
 	git -C "$checkout" branch --track feature/customer-search origin/feature/customer-search >/dev/null
 done
 run_json "$wtree" checkout feature/customer-search --dry-run --json
 run_quiet "$wtree" checkout feature/customer-search --verbose
 
 for checkout in "$project" "$project/backend"; do
+	fetch_fixture_branch "$checkout" release/2026-q3
 	git -C "$checkout" branch --track release/2026-q3 origin/release/2026-q3 >/dev/null
 done
 expect_failure 'repository "frontend"' "$wtree" checkout release/2026-q3 --dry-run
+fetch_fixture_branch "$project/frontend" experiment/dark-navigation
 git -C "$project/frontend" branch --track experiment/dark-navigation origin/experiment/dark-navigation >/dev/null
 expect_failure 'repository "root"' "$wtree" checkout experiment/dark-navigation --dry-run
 expect_failure 'does not exist' "$wtree" checkout feature/does-not-exist --dry-run

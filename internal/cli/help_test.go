@@ -88,6 +88,13 @@ func TestDetailedCommandHelpAndUnsupportedOptionMatrix(t *testing.T) {
 	}
 }
 
+func TestStatusHelpExplainsLastFetchedUpstreamFacts(t *testing.T) {
+	result := testutil.RunCommand(t, cli.Execute, "status", "--help")
+	if result.Err != nil || result.Stderr != "" || !strings.Contains(result.Stdout, "last-fetched local upstream facts") || !strings.Contains(result.Stdout, "does not fetch or contact remotes") {
+		t.Fatalf("status help = %#v", result)
+	}
+}
+
 func TestDetailedNestedHelpUsesFullCommandPathAndHidesInternalFlags(t *testing.T) {
 	for _, arguments := range [][]string{{"config", "get", "--help"}, {"config", "list", "--help"}, {"repo", "get", "--help"}} {
 		result := testutil.RunCommand(t, cli.Execute, arguments...)

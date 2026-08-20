@@ -8,21 +8,21 @@ manual/partial           <TEST_ROOT>/consumer/manual-partial
 [default-status]
 Workspace: default
 
-REPOSITORY  BRANCH  MOUNT     STATUS
-root        main    .         clean
-backend     main    backend   clean
-frontend    main    frontend  clean
+REPOSITORY  BRANCH  MOUNT     STATUS  UPSTREAM
+root        main    .         clean   up-to-date
+backend     main    backend   clean   up-to-date
+frontend    main    frontend  clean   up-to-date
 [feature-status]
 Workspace: feature/customer-search
 
-REPOSITORY  BRANCH                   MOUNT     STATUS
-root        feature/customer-search  .         clean
-backend     feature/customer-search  backend   clean
-frontend    feature/customer-search  frontend  clean
+REPOSITORY  BRANCH                   MOUNT     STATUS  UPSTREAM
+root        feature/customer-search  .         clean   up-to-date
+backend     feature/customer-search  backend   clean   up-to-date
+frontend    feature/customer-search  frontend  clean   up-to-date
 [branches]
-root:feature/customer-search,fixture/clone-bootstrap,main,manual/partial,release/2026-q3
-backend:feature/customer-search,fixture/clone-bootstrap,main,manual/partial,release/2026-q3
-frontend:experiment/dark-navigation,feature/customer-search,fixture/clone-bootstrap,main
+root:feature/customer-search,main,manual/partial,release/2026-q3
+backend:feature/customer-search,main,manual/partial,release/2026-q3
+frontend:experiment/dark-navigation,feature/customer-search,main
 [paths]
 default=present
 feature/customer-search=present

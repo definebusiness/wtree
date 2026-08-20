@@ -1,10 +1,13 @@
 package service_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -252,6 +255,184 @@ func TestStatusKeepsStagedRenameFromOutsideIntoManagedChild(t *testing.T) {
 	}
 	if root := statusFor(t, value, "root"); root.Status != "modified" || root.Clean || !root.Staged {
 		t.Fatalf("outside-to-child rename was hidden: %#v", root)
+	}
+}
+
+func TestStatusUsesOnlyLocalGitFactsAndDoesNotMutate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell wrapper fixture is POSIX-only")
+	}
+	project, _, _, data := createFixture(t)
+	target := filepath.Join(t.TempDir(), "workspace")
+	if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{
+		WorkspaceName: "feature/status", TargetPath: target, DataDir: data,
+		Mounts: []service.MountOverride{{RepositoryID: "backend", Mount: "api space"}},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := service.RequireWorkspace(project, data, "feature/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := service.WorkspaceStatePath(data, project.ID, workspace.ID)
+	registryPath := filepath.Join(data, "registry.json")
+	stateBefore, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryBefore, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backendPath, err := workspace.ResolveRepository("backend")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.GitRepository{Path: backendPath}.Run(t, "branch", "status-child-guard")
+	refsBefore := snapshotStatusWorktreeRefs(t, workspace)
+	if strings.Contains(refsBefore["root"], "refs/heads/status-child-guard") || !strings.Contains(refsBefore["backend"], "refs/heads/status-child-guard") {
+		t.Fatalf("child-only ref snapshot = %#v", refsBefore)
+	}
+	indexBefore := snapshotStatusWorktreeIndexes(t, workspace)
+	for _, repositoryID := range []string{"root", "backend"} {
+		if _, found := indexBefore[repositoryID]; !found {
+			t.Fatalf("missing index metadata for managed repository %q: %#v", repositoryID, indexBefore)
+		}
+	}
+	wrapper := newRemoteRejectingGitWrapper(t)
+	if _, err := service.NewStatusServiceWith(gitadapter.NewAdapter(wrapper)).Status(context.Background(), project, workspace); err != nil {
+		t.Fatal(err)
+	}
+	stateAfter, err := os.ReadFile(statePath)
+	if err != nil || !bytes.Equal(stateBefore, stateAfter) {
+		t.Fatalf("status mutated workspace state: before=%q after=%q error=%v", stateBefore, stateAfter, err)
+	}
+	registryAfter, err := os.ReadFile(registryPath)
+	if err != nil || !bytes.Equal(registryBefore, registryAfter) {
+		t.Fatalf("status mutated registry: before=%q after=%q error=%v", registryBefore, registryAfter, err)
+	}
+	assertStatusWorktreeRefsUnchanged(t, refsBefore, workspace)
+	assertStatusWorktreeIndexesUnchanged(t, indexBefore, workspace)
+}
+
+func TestStatusClassifiesGitFactFailure(t *testing.T) {
+	project, _, _, data := createFixture(t)
+	target := filepath.Join(t.TempDir(), "workspace")
+	if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/status", TargetPath: target, DataDir: data}, nil); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := service.RequireWorkspace(project, data, "feature/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.NewStatusServiceWith(failingCurrentBranchGit{Git: gitadapter.NewAdapter("git")}).Status(context.Background(), project, workspace)
+	var statusError *service.Error
+	if !errors.As(err, &statusError) || statusError.Kind != service.ErrorGit {
+		t.Fatalf("status error = %v, want %s", err, service.ErrorGit)
+	}
+}
+
+type failingCurrentBranchGit struct{ gitadapter.Git }
+
+func (failingCurrentBranchGit) CurrentBranch(context.Context, string) (string, bool, error) {
+	return "", false, errors.New("injected current-branch failure")
+}
+
+type statusWorktreeIndexMetadata struct {
+	path        string
+	modTimeNano int64
+	size        int64
+}
+
+func snapshotStatusWorktreeIndexes(t *testing.T, workspace domain.Workspace) map[string]statusWorktreeIndexMetadata {
+	t.Helper()
+	indexes := make(map[string]statusWorktreeIndexMetadata, len(workspace.Checkouts))
+	for _, checkout := range workspace.Checkouts {
+		path, err := workspace.ResolveRepository(checkout.RepositoryID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gitDir := runGitValue(t, path, "rev-parse", "--git-dir")
+		if !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(path, gitDir)
+		}
+		indexPath := filepath.Join(gitDir, "index")
+		info, err := os.Stat(indexPath)
+		if err != nil {
+			t.Fatalf("stat index for %q at %q: %v", checkout.RepositoryID, indexPath, err)
+		}
+		indexes[checkout.RepositoryID] = statusWorktreeIndexMetadata{path: indexPath, modTimeNano: info.ModTime().UnixNano(), size: info.Size()}
+	}
+	return indexes
+}
+
+func assertStatusWorktreeIndexesUnchanged(t *testing.T, before map[string]statusWorktreeIndexMetadata, workspace domain.Workspace) {
+	t.Helper()
+	after := snapshotStatusWorktreeIndexes(t, workspace)
+	if len(after) != len(before) {
+		t.Fatalf("status index count: before=%#v after=%#v", before, after)
+	}
+	for repositoryID, beforeMetadata := range before {
+		if afterMetadata, found := after[repositoryID]; !found || afterMetadata != beforeMetadata {
+			t.Fatalf("status mutated index metadata for %q: before=%#v after=%#v", repositoryID, beforeMetadata, afterMetadata)
+		}
+	}
+}
+
+func snapshotStatusWorktreeRefs(t *testing.T, workspace domain.Workspace) map[string]string {
+	t.Helper()
+	refs := make(map[string]string, len(workspace.Checkouts))
+	for _, checkout := range workspace.Checkouts {
+		path, err := workspace.ResolveRepository(checkout.RepositoryID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs[checkout.RepositoryID] = runGitValue(t, path, "show-ref")
+	}
+	return refs
+}
+
+func assertStatusWorktreeRefsUnchanged(t *testing.T, before map[string]string, workspace domain.Workspace) {
+	t.Helper()
+	after := snapshotStatusWorktreeRefs(t, workspace)
+	if len(after) != len(before) {
+		t.Fatalf("status ref snapshot count: before=%#v after=%#v", before, after)
+	}
+	for repositoryID, beforeRefs := range before {
+		if afterRefs, found := after[repositoryID]; !found || afterRefs != beforeRefs {
+			t.Fatalf("status mutated refs for %q: before=%q after=%q", repositoryID, beforeRefs, afterRefs)
+		}
+	}
+}
+
+func newRemoteRejectingGitWrapper(t *testing.T) string {
+	t.Helper()
+	wrapper := filepath.Join(t.TempDir(), "git-wrapper")
+	const script = `#!/bin/sh
+for argument in "$@"; do
+	case "$argument" in
+	fetch|ls-remote)
+		exit 97
+		;;
+	esac
+done
+exec git "$@"
+`
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return wrapper
+}
+
+func TestStatusRemoteRejectingGitWrapperRejectsRemoteArgumentsAnywhere(t *testing.T) {
+	wrapper := newRemoteRejectingGitWrapper(t)
+	for _, arguments := range [][]string{{"fetch"}, {"-C", t.TempDir(), "ls-remote"}} {
+		command := exec.Command(wrapper, arguments...)
+		if err := command.Run(); err == nil {
+			t.Fatalf("remote-rejecting wrapper allowed %v", arguments)
+		} else if exitError, ok := err.(*exec.ExitError); !ok || exitError.ExitCode() != 97 {
+			t.Fatalf("remote-rejecting wrapper %v error = %v, want exit 97", arguments, err)
+		}
 	}
 }
 

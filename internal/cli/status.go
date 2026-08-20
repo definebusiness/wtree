@@ -2,6 +2,7 @@ package cli
 
 import (
 	"io"
+	"strconv"
 
 	"github.com/definebusiness/wtree/internal/render"
 	"github.com/definebusiness/wtree/internal/service"
@@ -13,8 +14,10 @@ func newStatusCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 	var jsonOutput bool
 	command := &cobra.Command{
 		Use:   "status [workspace]",
-		Short: "show workspace checkout status",
-		Args:  maximumOneArgument,
+		Short: "show workspace checkout and upstream status",
+		Long: "Inspect working-tree and structural status alongside upstream drift. " +
+			"UPSTREAM comparisons use last-fetched local upstream facts; status does not fetch or contact remotes.",
+		Args: maximumOneArgument,
 		RunE: func(command *cobra.Command, arguments []string) error {
 			if dataDir == "" {
 				paths, _, err := resolveRuntimePaths()
@@ -56,13 +59,32 @@ func renderWorkspaceStatus(stdout io.Writer, value service.WorkspaceStatus) erro
 	if err := render.Line(stdout, ""); err != nil {
 		return err
 	}
-	rows := [][]string{{"REPOSITORY", "BRANCH", "MOUNT", "STATUS"}}
+	rows := [][]string{{"REPOSITORY", "BRANCH", "MOUNT", "STATUS", "UPSTREAM"}}
 	for _, repository := range value.Repositories {
 		branch := repository.Branch
 		if branch == "" {
 			branch = repository.ExpectedBranch
 		}
-		rows = append(rows, []string{repository.ID, branch, repository.Mount, repository.Status})
+		rows = append(rows, []string{repository.ID, branch, repository.Mount, repository.Status, renderUpstreamStatus(repository)})
 	}
 	return render.Table(stdout, rows)
+}
+
+func renderUpstreamStatus(repository service.RepositoryStatus) string {
+	if repository.Missing || repository.StaleState || repository.UnknownRepository || repository.Detached {
+		return "n/a"
+	}
+	if !repository.Upstream {
+		return "none"
+	}
+	switch {
+	case repository.Ahead == 0 && repository.Behind == 0:
+		return "up-to-date"
+	case repository.Behind == 0:
+		return "ahead " + strconv.Itoa(repository.Ahead)
+	case repository.Ahead == 0:
+		return "behind " + strconv.Itoa(repository.Behind)
+	default:
+		return "diverged (ahead " + strconv.Itoa(repository.Ahead) + ", behind " + strconv.Itoa(repository.Behind) + ")"
+	}
 }

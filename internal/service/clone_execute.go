@@ -214,6 +214,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 	}
 
 	paths := make(map[string]string, len(plan.Repositories))
+	heads := make(map[string]string, len(plan.Repositories))
 	checkouts := make(map[string]store.CheckoutState, len(plan.Repositories))
 	for _, repository := range plan.Repositories {
 		if err := ctx.Err(); err != nil {
@@ -226,7 +227,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 			if err := executor.before(ctx, progress, "repository-"+repository.ID+"-parent-ignore"); err != nil {
 				return CloneExecutionResult{}, cleanup(err)
 			}
-			ignored, err := executor.dependencies.Git.IsIgnoredAt(ctx, parentPath, parent.AdvertisedCommit, repository.Mount)
+			ignored, err := executor.dependencies.Git.IsIgnoredAt(ctx, parentPath, heads[parent.ID], repository.Mount)
 			if err != nil || !ignored {
 				if err == nil {
 					err = fmt.Errorf("mount %q is not ignored by committed immediate-parent content", repository.Mount)
@@ -253,8 +254,8 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		if err := executor.before(ctx, progress, "repository-"+repository.ID+"-fetch"); err != nil {
 			return CloneExecutionResult{}, cleanup(err)
 		}
-		if err := executor.dependencies.Git.FetchCommit(ctx, path, repository.CloneRemote, repository.AdvertisedCommit); err != nil {
-			return CloneExecutionResult{}, cleanup(NewError(ErrorGit, fmt.Errorf("fetch planned commit for repository %q: %w", repository.ID, err)))
+		if err := executor.dependencies.Git.FetchTrackingBranch(ctx, path, repository.CloneRemote, repository.RemoteRef); err != nil {
+			return CloneExecutionResult{}, cleanup(NewError(ErrorGit, fmt.Errorf("fetch selected branch for repository %q: %w", repository.ID, err)))
 		}
 		if err := executor.after(ctx, progress, "repository-"+repository.ID+"-fetch"); err != nil {
 			return CloneExecutionResult{}, cleanup(err)
@@ -262,7 +263,8 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		if err := executor.before(ctx, progress, "repository-"+repository.ID+"-checkout"); err != nil {
 			return CloneExecutionResult{}, cleanup(err)
 		}
-		if err := executor.dependencies.Git.CheckoutTrackingBranch(ctx, path, repository.LocalBranch, repository.CloneRemote, repository.RemoteRef, repository.AdvertisedCommit); err != nil {
+		head, err := executor.dependencies.Git.CheckoutTrackingBranch(ctx, path, repository.LocalBranch, repository.CloneRemote, repository.RemoteRef)
+		if err != nil {
 			return CloneExecutionResult{}, cleanup(NewError(ErrorGit, fmt.Errorf("checkout repository %q: %w", repository.ID, err)))
 		}
 		if err := executor.after(ctx, progress, "repository-"+repository.ID+"-checkout"); err != nil {
@@ -271,7 +273,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		if err := executor.before(ctx, progress, "repository-"+repository.ID+"-verify"); err != nil {
 			return CloneExecutionResult{}, cleanup(err)
 		}
-		common, head, err := executor.verifyRepository(ctx, plan, repository, path)
+		common, err := executor.verifyRepository(ctx, plan, repository, path, head)
 		if err != nil {
 			return CloneExecutionResult{}, cleanup(err)
 		}
@@ -283,6 +285,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		}
 		identities[common] = repository.ID
 		paths[repository.ID] = path
+		heads[repository.ID] = head
 		checkouts[repository.ID] = store.CheckoutState{Branch: repository.LocalBranch, Mount: repository.Mount, ResolvedPath: finalRepositoryPath(plan, repository.ID), Head: head}
 	}
 
@@ -312,7 +315,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 	if err != nil || !configPublished.exists || !bytes.Equal(configPublished.data, expectedConfigBytes) || configPublished.mode.Perm() != 0o600 {
 		return CloneExecutionResult{}, cleanup(NewError(ErrorInternal, errors.New("local clone config bytes, type, identity, or mode differ from plan")))
 	}
-	ignored, err := executor.dependencies.Git.IsIgnoredAt(ctx, staging, plan.Repositories[0].AdvertisedCommit, ".wtree.yml")
+	ignored, err := executor.dependencies.Git.IsIgnoredAt(ctx, staging, heads[plan.Repositories[0].ID], ".wtree.yml")
 	if err != nil || !ignored {
 		return CloneExecutionResult{}, cleanup(NewError(ErrorValidation, errors.New("committed root content does not ignore /.wtree.yml")))
 	}
@@ -428,7 +431,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 	if err := executor.before(ctx, progress, "final-identity"); err != nil {
 		return CloneExecutionResult{}, cleanup(err)
 	}
-	finalIdentities, err := executor.finalIdentities(ctx, plan)
+	finalIdentities, err := executor.finalIdentities(ctx, plan, heads)
 	if err != nil {
 		return CloneExecutionResult{}, cleanup(err)
 	}
@@ -663,62 +666,62 @@ func (executor *CloneExecutor) revalidateLocal(plan ClonePlan, exactFacts bool) 
 	return nil
 }
 
-func (executor *CloneExecutor) verifyRepository(ctx context.Context, plan ClonePlan, repository ClonePlanRepository, path string) (string, string, error) {
+func (executor *CloneExecutor) verifyRepository(ctx context.Context, plan ClonePlan, repository ClonePlanRepository, path, expectedHead string) (string, error) {
 	info, statErr := executor.dependencies.Lstat(path)
 	if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return "", "", NewError(ErrorConflict, fmt.Errorf("repository %q mount is not an owned real directory", repository.ID))
+		return "", NewError(ErrorConflict, fmt.Errorf("repository %q mount is not an owned real directory", repository.ID))
 	}
 	top, err := executor.dependencies.Git.TopLevel(ctx, path)
 	if err != nil || filepath.Clean(top) != filepath.Clean(path) {
-		return "", "", NewError(ErrorConflict, fmt.Errorf("repository %q has an unexpected checkout root", repository.ID))
+		return "", NewError(ErrorConflict, fmt.Errorf("repository %q has an unexpected checkout root", repository.ID))
 	}
 	head, err := executor.dependencies.Git.Head(ctx, path)
-	if err != nil || head != repository.AdvertisedCommit {
-		return "", "", NewError(ErrorGit, fmt.Errorf("repository %q is not at its planned commit", repository.ID))
+	if err != nil {
+		return "", NewError(ErrorGit, fmt.Errorf("read repository %q HEAD: %w", repository.ID, err))
+	}
+	if head != expectedHead {
+		return "", NewError(ErrorConflict, fmt.Errorf("repository %q HEAD changed after selected-branch checkout", repository.ID))
 	}
 	branch, detached, err := executor.dependencies.Git.CurrentBranch(ctx, path)
 	if err != nil || detached || branch != repository.LocalBranch {
-		return "", "", NewError(ErrorGit, fmt.Errorf("repository %q has unexpected branch", repository.ID))
+		return "", NewError(ErrorGit, fmt.Errorf("repository %q has unexpected branch", repository.ID))
 	}
 	upstream, err := executor.dependencies.Git.Upstream(ctx, path)
 	if err != nil || upstream.LocalBranch != repository.LocalBranch || upstream.Remote != repository.CloneRemote || upstream.Merge != repository.RemoteRef || upstream.FetchURL != repository.CloneURL {
-		return "", "", NewError(ErrorGit, fmt.Errorf("repository %q has unexpected upstream", repository.ID))
+		return "", NewError(ErrorGit, fmt.Errorf("repository %q has unexpected upstream", repository.ID))
 	}
 	contains, err := executor.dependencies.Git.ContainsCommits(ctx, path, repository.Verification.InitialCommits)
 	if err != nil || !contains {
-		return "", "", NewError(ErrorValidation, fmt.Errorf("repository %q does not contain every manifest identity root", repository.ID))
+		return "", NewError(ErrorValidation, fmt.Errorf("repository %q does not contain every manifest identity root", repository.ID))
 	}
 	clean, err := executor.dependencies.Git.IsClean(ctx, path)
 	if err != nil || !clean {
-		return "", "", NewError(ErrorDirtyWorkspace, fmt.Errorf("repository %q clone is dirty", repository.ID))
+		return "", NewError(ErrorDirtyWorkspace, fmt.Errorf("repository %q clone is dirty", repository.ID))
 	}
 	hasSubmodules, err := executor.dependencies.Git.HasSubmodules(ctx, path)
 	if err != nil || hasSubmodules {
-		return "", "", NewError(ErrorValidation, fmt.Errorf("repository %q contains submodules", repository.ID))
+		return "", NewError(ErrorValidation, fmt.Errorf("repository %q contains submodules", repository.ID))
 	}
 	if repository.Parent == "" {
 		tracked, err := executor.dependencies.Git.TrackedFile(ctx, path, head, "project.wtree.yml")
 		if err != nil || !bytes.Equal(tracked, plan.ManifestBytes()) {
-			return "", "", NewError(ErrorValidation, errors.New("root tracked manifest does not equal the fetched manifest"))
+			return "", NewError(ErrorValidation, errors.New("root tracked manifest does not equal the fetched manifest"))
 		}
 	}
 	common, err := executor.dependencies.Git.CommonGitDir(ctx, path)
 	if err != nil {
-		return "", "", NewError(ErrorGit, err)
+		return "", NewError(ErrorGit, err)
 	}
-	return common, head, nil
+	return common, nil
 }
 
-func (executor *CloneExecutor) finalIdentities(ctx context.Context, plan ClonePlan) (map[string]string, error) {
+func (executor *CloneExecutor) finalIdentities(ctx context.Context, plan ClonePlan, expectedHeads map[string]string) (map[string]string, error) {
 	identities := make(map[string]string, len(plan.Repositories))
 	for _, repository := range plan.Repositories {
 		path := finalRepositoryPath(plan, repository.ID)
-		common, head, err := executor.verifyRepository(ctx, plan, repository, path)
+		common, err := executor.verifyRepository(ctx, plan, repository, path, expectedHeads[repository.ID])
 		if err != nil {
 			return nil, err
-		}
-		if head != repository.AdvertisedCommit {
-			return nil, NewError(ErrorConflict, errors.New("final repository identity changed"))
 		}
 		if previous, exists := identities[common]; exists {
 			return nil, NewError(ErrorConflict, fmt.Errorf("repositories %q and %q share final Git identity", previous, repository.ID))

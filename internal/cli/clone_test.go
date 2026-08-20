@@ -25,7 +25,7 @@ func TestCloneDryRunAndExecutionThroughPublicCLI(t *testing.T) {
 	worktrees := filepath.Join(t.TempDir(), "worktrees")
 
 	dryRun := testutil.RunCommand(t, cli.Execute, "clone", manifest, destination, "--data-dir", data, "--worktree-root", worktrees, "--dry-run")
-	if dryRun.Err != nil || dryRun.Stderr != "" || !strings.Contains(dryRun.Stdout, "Operation: clone\n") || !strings.Contains(dryRun.Stdout, "No changes made.\n") {
+	if dryRun.Err != nil || dryRun.Stderr != "" || !strings.Contains(dryRun.Stdout, "Operation: clone\n") || !strings.Contains(dryRun.Stdout, "observed commit:") || strings.Contains(dryRun.Stdout, "exact commit:") || !strings.Contains(dryRun.Stdout, "No changes made.\n") {
 		t.Fatalf("clone dry-run = %#v err=%v", dryRun, dryRun.Err)
 	}
 	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
@@ -34,20 +34,32 @@ func TestCloneDryRunAndExecutionThroughPublicCLI(t *testing.T) {
 
 	result := testutil.RunCommand(t, cli.Execute, "clone", manifest, destination, "--data-dir", data, "--worktree-root", worktrees, "--json")
 	var output struct {
-		Version         int                       `json:"version"`
-		Operation       string                    `json:"operation"`
-		Status          string                    `json:"status"`
-		Destination     string                    `json:"destination"`
-		RepositoryCount int                       `json:"repositoryCount"`
-		ManifestSource  string                    `json:"manifestSource"`
-		Project         struct{ ID, Name string } `json:"project"`
+		Version         int    `json:"version"`
+		Operation       string `json:"operation"`
+		Status          string `json:"status"`
+		Destination     string `json:"destination"`
+		RepositoryCount int    `json:"repositoryCount"`
+		ManifestSource  string `json:"manifestSource"`
+		Repositories    []struct {
+			ID           string `json:"id"`
+			ActualCommit string `json:"actualCommit"`
+		} `json:"repositories"`
+		Project struct{ ID, Name string } `json:"project"`
 	}
 	if result.Err != nil || result.Stderr != "" || json.Unmarshal([]byte(result.Stdout), &output) != nil {
 		t.Fatalf("clone JSON = %#v", result)
 	}
 	manifestAbs, _ := filepath.Abs(manifest)
-	if output.Version != 1 || output.Operation != "clone" || output.Status != "completed" || output.Project.ID != projectID || output.Destination != destination || output.RepositoryCount != 2 || output.ManifestSource != manifestAbs {
+	if output.Version != 2 || output.Operation != "clone" || output.Status != "completed" || output.Project.ID != projectID || output.Destination != destination || output.RepositoryCount != 2 || output.ManifestSource != manifestAbs || len(output.Repositories) != 2 || output.Repositories[0].ID != "backend" || output.Repositories[1].ID != "root" || output.Repositories[0].ActualCommit == "" || output.Repositories[1].ActualCommit == "" {
 		t.Fatalf("clone JSON = %#v", output)
+	}
+	if strings.Contains(result.Stdout, `"exactCommit"`) || strings.Contains(result.Stdout, `"parentCommit"`) || !strings.Contains(result.Stdout, `"observedCommit"`) {
+		t.Fatalf("clone JSON contains stale execution claims: %s", result.Stdout)
+	}
+
+	human := testutil.RunCommand(t, cli.Execute, "clone", manifest, filepath.Join(parent, "human"), "--data-dir", t.TempDir(), "--worktree-root", worktrees)
+	if human.Err != nil || !strings.Contains(human.Stdout, "Actual checkout: backend ") || !strings.Contains(human.Stdout, "Actual checkout: root ") {
+		t.Fatalf("human clone actual checkouts = %#v", human)
 	}
 	for _, path := range []string{filepath.Join(destination, ".git"), filepath.Join(destination, "backend", ".git"), filepath.Join(destination, ".wtree.yml")} {
 		if _, err := os.Lstat(path); err != nil {

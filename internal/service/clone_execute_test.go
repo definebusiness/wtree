@@ -100,7 +100,7 @@ func TestCloneExecuteThreeLevelExactPlanPublishesConfigStateAndRegistry(t *testi
 	for _, repository := range plan.Repositories {
 		path := repository.Path
 		head, err := adapter.Head(context.Background(), path)
-		if err != nil || head != repository.AdvertisedCommit {
+		if err != nil || head != repository.ObservedCommit {
 			t.Fatalf("%s head = %q, %v", repository.ID, head, err)
 		}
 		clean, err := adapter.IsClean(context.Background(), path)
@@ -171,7 +171,7 @@ func TestCloneExecuteRenameSeamRootChtimesBeforeReturnRetainsDestination(t *test
 	}
 }
 
-func TestCloneExecuteRootOnlyLocalRemote(t *testing.T) {
+func TestCloneExecuteUsesExecutionTimeSelectedBranchTipForStateAndResult(t *testing.T) {
 	base := t.TempDir()
 	repository := testutil.NewGitRepository(t)
 	writeAndCommitCloneFiles(t, repository.Path, map[string]string{".gitignore": "/.wtree.yml\n", "README.md": "root\n"}, "identity")
@@ -191,15 +191,143 @@ func TestCloneExecuteRootOnlyLocalRemote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewCloneExecutor().Execute(context.Background(), plan, nil)
+	planned := plan.Repositories[0].ObservedCommit
+	actual := ""
+	executor := NewCloneExecutorWith(CloneExecutorDependencies{BeforeEffect: func(step string) error {
+		if step != "repository-root-fetch" {
+			return nil
+		}
+		writeAndCommitCloneFiles(t, repository.Path, map[string]string{"live.txt": "execution-time tip\n"}, "advance selected branch after planning")
+		actual = cloneGitOutput(t, repository.Path, "rev-parse", "HEAD")
+		cloneGit(t, repository.Path, "push", remote, "HEAD:refs/heads/published-main")
+		return nil
+	}})
+	result, err := executor.Execute(context.Background(), plan, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Repositories) != 1 || result.Repositories["root"].Head != plan.Repositories[0].AdvertisedCommit {
+	if len(result.Repositories) != 1 || result.Repositories["root"].Head != actual || actual == planned {
 		t.Fatalf("result = %#v", result)
+	}
+	state, err := store.ReadWorkspace(WorkspaceStatePath(dataDir, "root-only", "default"))
+	if err != nil || state.Repositories["root"].Head != actual {
+		t.Fatalf("workspace state = %#v, %v", state, err)
+	}
+	adapter := gitadapter.NewAdapter("git")
+	if head, err := adapter.Head(context.Background(), plan.Destination.Path); err != nil || head != actual {
+		t.Fatalf("checked-out head = %q, %v; want %q", head, err, actual)
+	}
+	if branch, detached, err := adapter.CurrentBranch(context.Background(), plan.Destination.Path); err != nil || detached || branch != "local-main" {
+		t.Fatalf("checked-out branch = (%q, %t, %v)", branch, detached, err)
+	}
+	if branches := strings.Fields(cloneGitOutput(t, plan.Destination.Path, "for-each-ref", "--format=%(refname:short)", "refs/heads")); !reflect.DeepEqual(branches, []string{"local-main"}) {
+		t.Fatalf("local branches = %v", branches)
 	}
 	if _, err := store.ReadWorkspace(WorkspaceStatePath(dataDir, "root-only", "default")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCloneExecuteVerifiesNonFastForwardSelectedBranchReplacement(t *testing.T) {
+	base := t.TempDir()
+	repository := testutil.NewGitRepository(t)
+	writeAndCommitCloneFiles(t, repository.Path, map[string]string{".gitignore": "/.wtree.yml\n", "README.md": "root\n"}, "identity")
+	identity := cloneGitOutput(t, repository.Path, "rev-parse", "HEAD")
+	remote := testutil.NewBareGitRemote(t)
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "replacement", Name: "replacement", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {
+		Clone: config.CloneSource{Remote: "bootstrap", URL: remote}, Upstream: config.Upstream{Branch: "local-main", Remote: "bootstrap", Merge: "refs/heads/published-main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{identity}}, Mount: ".", DefaultBranch: "local-main",
+	}}}
+	data, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAndCommitCloneFiles(t, repository.Path, map[string]string{"project.wtree.yml": string(data)}, "planned manifest")
+	cloneGit(t, repository.Path, "push", remote, "HEAD:refs/heads/published-main")
+	dataDir := filepath.Join(base, "data")
+	plan, err := NewClonePlanner().Plan(context.Background(), ClonePlanRequest{ManifestSource: filepath.Join(repository.Path, "project.wtree.yml"), Destination: filepath.Join(base, "clone"), CWD: base, DataDir: dataDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planned := plan.Repositories[0].ObservedCommit
+	actual := ""
+	executor := NewCloneExecutorWith(CloneExecutorDependencies{BeforeEffect: func(step string) error {
+		if step != "repository-root-fetch" {
+			return nil
+		}
+		repository.Run(t, "checkout", "-B", "replacement", identity)
+		writeAndCommitCloneFiles(t, repository.Path, map[string]string{"project.wtree.yml": string(data)}, "replacement manifest")
+		actual = cloneGitOutput(t, repository.Path, "rev-parse", "HEAD")
+		repository.Run(t, "push", "--force", remote, "HEAD:refs/heads/published-main")
+		repository.Run(t, "checkout", "main")
+		return nil
+	}})
+	result, err := executor.Execute(context.Background(), plan, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual == "" || actual == planned || result.Repositories["root"].Head != actual {
+		t.Fatalf("replacement result = %#v, planned %q, actual %q", result, planned, actual)
+	}
+	state, err := store.ReadWorkspace(WorkspaceStatePath(dataDir, "replacement", "default"))
+	if err != nil || state.Repositories["root"].Head != actual {
+		t.Fatalf("workspace state = %#v, %v", state, err)
+	}
+}
+
+func TestCloneExecuteRejectsUnverifiableSelectedBranchReplacement(t *testing.T) {
+	base := t.TempDir()
+	repository := testutil.NewGitRepository(t)
+	writeAndCommitCloneFiles(t, repository.Path, map[string]string{".gitignore": "/.wtree.yml\n", "README.md": "root\n"}, "identity")
+	identity := cloneGitOutput(t, repository.Path, "rev-parse", "HEAD")
+	remote := testutil.NewBareGitRemote(t)
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "replacement-rejected", Name: "replacement-rejected", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {
+		Clone: config.CloneSource{Remote: "bootstrap", URL: remote}, Upstream: config.Upstream{Branch: "local-main", Remote: "bootstrap", Merge: "refs/heads/published-main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{identity}}, Mount: ".", DefaultBranch: "local-main",
+	}}}
+	data, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAndCommitCloneFiles(t, repository.Path, map[string]string{"project.wtree.yml": string(data)}, "planned manifest")
+	cloneGit(t, repository.Path, "push", remote, "HEAD:refs/heads/published-main")
+	dataDir := filepath.Join(base, "data")
+	plan, err := NewClonePlanner().Plan(context.Background(), ClonePlanRequest{ManifestSource: filepath.Join(repository.Path, "project.wtree.yml"), Destination: filepath.Join(base, "clone"), CWD: base, DataDir: dataDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := NewCloneExecutorWith(CloneExecutorDependencies{BeforeEffect: func(step string) error {
+		if step != "repository-root-fetch" {
+			return nil
+		}
+		repository.Run(t, "checkout", "-B", "replacement", identity)
+		writeAndCommitCloneFiles(t, repository.Path, map[string]string{"project.wtree.yml": string(data) + "# replacement changed manifest\n"}, "replacement manifest")
+		repository.Run(t, "push", "--force", remote, "HEAD:refs/heads/published-main")
+		repository.Run(t, "checkout", "main")
+		return nil
+	}})
+	_, err = executor.Execute(context.Background(), plan, nil)
+	if err == nil || !strings.Contains(err.Error(), "root tracked manifest does not equal the fetched manifest") || !HasCleanRollback(err) {
+		t.Fatalf("unverifiable replacement error = %v", err)
+	}
+	assertCloneExecutionAbsent(t, plan)
+}
+
+func TestCloneExecuteThreadsActualHeadsThroughDependentVerification(t *testing.T) {
+	plan := syntheticExecutableClonePlan(t)
+	actualRoot := strings.Repeat("b", 40)
+	actualAPI := strings.Repeat("c", 40)
+	fake := &cloneExecutionGit{plan: plan, actualHeads: map[string]string{"root": actualRoot, "api": actualAPI}}
+	result, err := NewCloneExecutorWith(CloneExecutorDependencies{Git: fake}).Execute(context.Background(), plan, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Repositories["root"].Head != actualRoot || result.Repositories["api"].Head != actualAPI {
+		t.Fatalf("execution result did not retain actual heads: %#v", result)
+	}
+	if len(fake.ignoredCommits) != 2 || !reflect.DeepEqual(fake.ignoredCommits, []string{actualRoot, actualRoot}) {
+		t.Fatalf("parent/config ignore checks = %v, want actual root %q", fake.ignoredCommits, actualRoot)
+	}
+	if !reflect.DeepEqual(fake.trackedCommits, []string{actualRoot, actualRoot}) {
+		t.Fatalf("tracked manifest checks = %v, want actual root %q", fake.trackedCommits, actualRoot)
 	}
 }
 
@@ -1077,9 +1205,7 @@ func TestCloneExecuteRealRemoteBranchDeletionNeverUsesReplacementTip(t *testing.
 	if err == nil {
 		t.Fatal("deleted planned branch unexpectedly cloned")
 	}
-	if _, statErr := os.Lstat(plan.Destination.Path); !os.IsNotExist(statErr) {
-		t.Fatalf("destination residue: %v", statErr)
-	}
+	assertCloneExecutionAbsent(t, plan)
 }
 
 func TestCloneExecuteProgressIsExactOrderedAndHasNoFalseSuccess(t *testing.T) {
@@ -1172,6 +1298,8 @@ type cloneExecutionGit struct {
 	staleManifest, missingIgnore, wrongRoots, dirty, submodule, wrongBranch, wrongUpstream, cloneFailure, fetchFailure, checkoutFailure, verifyFailure bool
 	finalIdentityFailure                                                                                                                               bool
 	onClone                                                                                                                                            func()
+	actualHeads                                                                                                                                        map[string]string
+	ignoredCommits, trackedCommits                                                                                                                     []string
 }
 
 func (git *cloneExecutionGit) repository(path string) ClonePlanRepository {
@@ -1192,23 +1320,27 @@ func (git *cloneExecutionGit) Clone(_ context.Context, _ string, destination, _ 
 	}
 	return os.MkdirAll(destination, 0o700)
 }
-func (git *cloneExecutionGit) FetchCommit(_ context.Context, _ string, _ string, _ string) error {
+func (git *cloneExecutionGit) FetchTrackingBranch(_ context.Context, _ string, _ string, _ string) error {
 	if git.fetchFailure {
 		return os.ErrNotExist
 	}
 	return nil
 }
-func (git *cloneExecutionGit) CheckoutTrackingBranch(context.Context, string, string, string, string, string) error {
+func (git *cloneExecutionGit) CheckoutTrackingBranch(_ context.Context, path, _ string, _ string, _ string) (string, error) {
 	if git.checkoutFailure {
-		return os.ErrPermission
+		return "", os.ErrPermission
 	}
-	return nil
+	return git.Head(context.Background(), path)
 }
-func (git *cloneExecutionGit) IsIgnoredAt(context.Context, string, string, string) (bool, error) {
+func (git *cloneExecutionGit) IsIgnoredAt(_ context.Context, _ string, commit, _ string) (bool, error) {
+	git.ignoredCommits = append(git.ignoredCommits, commit)
 	return !git.missingIgnore, nil
 }
 func (git *cloneExecutionGit) Head(_ context.Context, path string) (string, error) {
-	return git.repository(path).AdvertisedCommit, nil
+	if actual, found := git.actualHeads[git.repository(path).ID]; found {
+		return actual, nil
+	}
+	return git.repository(path).ObservedCommit, nil
 }
 func (git *cloneExecutionGit) TopLevel(_ context.Context, path string) (string, error) {
 	if git.verifyFailure {
@@ -1238,7 +1370,8 @@ func (git *cloneExecutionGit) IsClean(context.Context, string) (bool, error) { r
 func (git *cloneExecutionGit) HasSubmodules(context.Context, string) (bool, error) {
 	return git.submodule, nil
 }
-func (git *cloneExecutionGit) TrackedFile(context.Context, string, string, string) ([]byte, error) {
+func (git *cloneExecutionGit) TrackedFile(_ context.Context, _ string, commit, _ string) ([]byte, error) {
+	git.trackedCommits = append(git.trackedCommits, commit)
 	if git.staleManifest {
 		return []byte("stale\n"), nil
 	}

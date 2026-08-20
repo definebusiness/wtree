@@ -108,13 +108,13 @@ func TestClonePlanExplicitDestinationStableParentFirstJSONAndNoMutation(t *testi
 	}
 	canonicalBase, _ := filepath.EvalSymlinks(base)
 	canonicalDestination := filepath.Join(canonicalBase, "clone space 世界")
-	if plan.Version != 1 || plan.Operation != "clone" || plan.Source.Value != manifest || plan.Destination.Path != canonicalDestination || plan.Project.ID != "project-1" {
+	if plan.Version != ClonePlanVersion || plan.Operation != "clone" || plan.Source.Value != manifest || plan.Destination.Path != canonicalDestination || plan.Project.ID != "project-1" {
 		t.Fatalf("plan header = %#v", plan)
 	}
 	if got := []string{plan.Repositories[0].ID, plan.Repositories[1].ID}; !reflect.DeepEqual(got, []string{"root", "api"}) {
 		t.Fatalf("repository order = %v", got)
 	}
-	if got := plan.Repositories[0]; got.LocalBranch != "local-main" || got.RemoteRef != "refs/heads/published-main" || got.AdvertisedCommit != clonePlanRootCommit {
+	if got := plan.Repositories[0]; got.LocalBranch != "local-main" || got.RemoteRef != "refs/heads/published-main" || got.ObservedCommit != clonePlanRootCommit {
 		t.Fatalf("root plan = %#v", got)
 	}
 	if got := plan.Repositories[1]; got.Path != filepath.Join(canonicalDestination, "backend", "API 世界") || !got.Verification.CommittedParentIgnore {
@@ -125,11 +125,11 @@ func TestClonePlanExplicitDestinationStableParentFirstJSONAndNoMutation(t *testi
 		t.Fatal(err)
 	}
 	second, _ := plan.JSON()
-	if !reflect.DeepEqual(first, second) || !json.Valid(first) || !strings.Contains(string(first), `"operation": "clone"`) {
+	if !reflect.DeepEqual(first, second) || !json.Valid(first) || !strings.Contains(string(first), `"operation": "clone"`) || !strings.Contains(string(first), `"observedCommit"`) || strings.Contains(string(first), `"exactCommit"`) || strings.Contains(string(first), `"parentCommit"`) {
 		t.Fatalf("unstable/invalid plan JSON: %s", first)
 	}
 	var decoded ClonePlan
-	if err := json.Unmarshal(first, &decoded); err != nil || decoded.Version != 1 || len(decoded.Repositories) != 2 || len(decoded.Actions) == 0 {
+	if err := json.Unmarshal(first, &decoded); err != nil || decoded.Version != ClonePlanVersion || len(decoded.Repositories) != 2 || len(decoded.Actions) == 0 {
 		t.Fatalf("decoded plan = %#v, %v", decoded, err)
 	}
 	if err := decoded.Validate(); err != nil {
@@ -558,18 +558,18 @@ func TestClonePlanThreeLevelOrderIsParentFirstAndLexicallyStable(t *testing.T) {
 		t.Fatalf("ignore actions = %#v", ignoreActions)
 	}
 	api := ignoreActions[0]
-	if api.RepositoryID != "api" || api.ParentRepositoryID != "root" || api.ParentPath != plan.Repositories[0].Path || api.ParentCommit != clonePlanRootCommit || api.ExactCommit != clonePlanChildCommit || api.ChildMount != "backend/API 世界" || api.IgnoreRuleSubject != "backend/API 世界" || !reflect.DeepEqual(api.ChildInitialCommits, []string{clonePlanChildCommit}) {
+	if api.RepositoryID != "api" || api.ParentRepositoryID != "root" || api.ParentPath != plan.Repositories[0].Path || api.ChildMount != "backend/API 世界" || api.IgnoreRuleSubject != "backend/API 世界" || !reflect.DeepEqual(api.ChildInitialCommits, []string{clonePlanChildCommit}) {
 		t.Fatalf("self-contained API ignore action = %#v", api)
 	}
 	shared := ignoreActions[1]
-	if shared.ParentRepositoryID != "api" || shared.ParentCommit != clonePlanChildCommit || shared.ChildMount != "libraries/shared" {
+	if shared.ParentRepositoryID != "api" || shared.ChildMount != "libraries/shared" {
 		t.Fatalf("self-contained shared ignore action = %#v", shared)
 	}
 	mutated := plan
 	mutated.Actions = append([]ClonePlanAction(nil), plan.Actions...)
 	for index := range mutated.Actions {
 		if mutated.Actions[index].Action == "verify_parent_ignore" {
-			mutated.Actions[index].ParentCommit = clonePlanRootCommit
+			mutated.Actions[index].ParentPath = "tampered"
 			if mutated.Actions[index].ParentRepositoryID == "api" {
 				break
 			}
@@ -663,7 +663,7 @@ func TestClonePlanUsesReadOnlyGitLsRemoteForDifferentlyNamedBranch(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Repositories[0].AdvertisedCommit != commit || plan.Repositories[0].RemoteRef != "refs/heads/release-published" {
+	if plan.Repositories[0].ObservedCommit != commit || plan.Repositories[0].RemoteRef != "refs/heads/release-published" {
 		t.Fatalf("real remote plan = %#v", plan.Repositories[0])
 	}
 	afterCommand := exec.Command("git", "-C", repository.Path, "rev-parse", "HEAD")
