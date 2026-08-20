@@ -1,87 +1,197 @@
-# Minimal Harness for Processing the Orchestration State Machine
+# Archon-Based Harness for Deterministic Milestone Orchestration
 
-Status: initial
+Status: specified
+Specification: [Archon deterministic milestone harness specification](../../spec/archon-milestone-harness.md)
 
-Yes. **That would likely be one of the most effective ways to prevent the orchestrator from “falling asleep” prematurely**—provided the loop enforces it outside the model.
+## Decision
 
-The key change is:
+Use [Archon](https://github.com/coleam00/Archon) as the portable workflow
+runtime instead of building a new general-purpose harness executable.
 
-> The model no longer decides whether the run is finished.
-> The state machine decides.
+The deliverable should be a packaged Archon workflow containing reusable
+commands and deterministic scripts. Archon should provide workflow execution,
+agent-provider integration, isolation, persistence, resumption, and streaming
+output. The packaged workflow should provide the milestone state machine,
+transition validation, remediation policy, completion predicate, progress
+messages, and commit policy.
 
-I would actually go one step further than “the orchestrator should call the script after every action”: **the harness should invoke the script automatically after every relevant action.** If the model itself has to remember to call it, you are only moving the same probabilistic failure somewhere else.
+The central invariant remains unchanged:
 
-The control flow should look roughly like this:
+> The model decides how to perform one bounded action. Persisted facts and
+> deterministic code select that action and decide whether the run may advance
+> or end.
+
+Adopting Archon must not weaken this invariant by replacing it with a prompt or
+an AI-emitted completion signal.
+
+## Why Archon
+
+Archon already supplies much of the repository-independent infrastructure that
+the original harness would otherwise have to implement:
+
+* YAML workflows with dependency ordering, conditions, and loops;
+* Codex, Claude, and other agent-provider integrations;
+* model and provider selection per workflow node;
+* structured node output;
+* deterministic Bash and script nodes;
+* persistent workflow runs, events, artifacts, and resumption;
+* isolated Git worktrees by default;
+* foreground terminal streaming and other user interfaces; and
+* packaged and global workflows that can be installed once and used from many
+  repositories.
+
+Using Archon changes the scope from building an orchestration platform to
+building one strict workflow package on top of an existing platform.
+
+## Archon compatibility gate
+
+Archon v0.9.0 cannot satisfy this idea as released. It requires every loop to
+declare an `until` string emitted by the model. When both `until` and
+`until_bash` are configured, either one completes the loop. A model can
+therefore end a v0.9.0 loop even while the deterministic check remains false.
+
+The package must require the first released Archon version containing the
+deterministic-only loop change introduced by
+[Archon commit `d6c102b4`](https://github.com/coleam00/Archon/commit/d6c102b417238803ec8582d4e49b932fdc732621),
+or an equivalent later implementation. That change permits `until_bash` to be
+the only completion channel, with no `until` value for the model to emit.
+
+Do not depend on a moving development branch. Pin a released Archon version and
+run a compatibility suite before accepting an upgrade.
+
+The decisive compatibility test is:
 
 ```text
-MODEL ACTION
-    │
-    ▼
-tool / worker / edit / review / validation
-    │
-    ▼
-STATE TRANSITION SCRIPT
-    │
-    ├── CONTINUE
-    │      │
-    │      └──► next orchestrator turn
-    │
-    ├── COMPLETE
-    │      │
-    │      └──► successful termination allowed
-    │
-    └── BLOCKED / ERROR
-           │
-           └──► recovery / escalation logic
+Given an incomplete persisted state,
+when any agent emits COMPLETE, DONE, APPROVED, or a final-looking response,
+then Archon continues the workflow and does not mark the run complete.
 ```
 
-Most importantly:
+## Portable workflow package
+
+The workflow should be distributed as a self-contained Archon package with a
+shape similar to:
 
 ```text
-Orchestrator emits "final answer"
+deterministic-milestones/
+├── deterministic-milestones.yaml
+├── commands/
+│   ├── implement.md
+│   ├── review.md
+│   ├── remediate.md
+│   └── escalate-remediation.md
+└── scripts/
+    ├── initialize-state.ts
+    ├── select-action.ts
+    ├── apply-result.ts
+    ├── check-completion.ts
+    ├── print-progress.ts
+    └── apply-commit-policy.ts
+```
+
+The package may be installed globally so that it is available in every
+repository. A target repository should supply only repository-specific inputs
+or configuration, such as its plan path, validation commands, documentation
+rules, and model choices.
+
+The workflow package must not import code from `wtree` or assume that the
+target repository is written in Go. Repository-specific commands should be
+configuration, not workflow-engine logic.
+
+## Authoritative structured run state
+
+The workflow should persist its authoritative state as versioned structured
+data scoped to the current Archon run, for example:
+
+```text
+$ARTIFACTS_DIR/run-state.json
+```
+
+The state should not be a Markdown document and the workflow should not infer
+its current phase by parsing terminal output or agent prose.
+
+An initial state could contain:
+
+```json
+{
+  "version": 1,
+  "run_id": "<archon-workflow-id>",
+  "run_state": "EXECUTING",
+  "current_milestone": "M4",
+  "phase": "IMPLEMENTING",
+  "remaining_milestones": ["M4"],
+  "remaining_acceptance_criteria": ["AC7"],
+  "open_review_findings": ["RF3"],
+  "remediation_cycles": 0,
+  "rejected_complete_submissions": 0,
+  "implementation_tier": "normal",
+  "commit_policy": "none",
+  "commit_state": "NOT_REQUIRED",
+  "created_commits": [],
+  "required_action": "IMPLEMENT",
+  "story_complete": false
+}
+```
+
+Every state update should use atomic replacement or an equivalent
+crash-consistent mechanism. The workflow should reject unsupported state
+versions and preserve enough evidence to explain every transition.
+
+Archon's own run database remains Archon's responsibility. The workflow should
+use documented Archon inputs, artifacts, events, and resumption behavior rather
+than query or modify Archon's database schema directly.
+
+## Workflow control loop
+
+The Archon workflow should use a `loop_group` whose only completion channel is
+a deterministic `until_bash` check. One iteration should perform at most one
+state-machine action:
+
+```text
+READ PERSISTED STATE
         │
         ▼
-Harness checks state machine
+SELECT NEXT PERMITTED ACTION
         │
-        ├── COMPLETE=true
-        │      └── accept final answer
+        ▼
+PRINT HUMAN-READABLE PROGRESS
         │
-        └── COMPLETE=false
-               └── reject termination
-                   inject next turn
+        ▼
+RUN ONE CONDITIONAL ACTION NODE
+        │
+        ├── implement
+        ├── validate
+        ├── review
+        ├── remediate
+        ├── escalate remediation
+        ├── commit
+        └── advance milestone
+        │
+        ▼
+VALIDATE AND PERSIST THE RESULTING TRANSITION
+        │
+        ▼
+DETERMINISTIC COMPLETION CHECK
+        │
+        ├── incomplete ──► next iteration
+        ├── complete   ──► successful termination
+        └── halt       ──► blocked, fatal, or cancelled path
 ```
 
-### `final` should no longer be a stop signal
+The action selector and transition reducer must be deterministic scripts. AI
+nodes provide implementation or review evidence; they do not write the state
+or choose their successor directly.
 
-Right now the implicit behavior is probably something like:
+## A final-looking model response is only node output
 
-```text
-assistant tool_call → continue
-assistant normal_message → stop
-```
+Archon should treat a normal assistant response as the result of the current
+node, not as a request to terminate the workflow.
 
-That is fragile for long-running autonomous agents.
-
-A better model is:
-
-```text
-assistant tool_call
-    → execute
-    → state transition
-    → continue
-
-assistant normal_message
-    → state transition
-    → if COMPLETE: accept
-    → otherwise: message is NOT terminal
-                 → continue
-```
-
-So Terra could suddenly say after M3:
+For example, an implementation agent may say:
 
 > Everything looks good. The implementation is complete.
 
-The harness checks:
+The transition script may still observe:
 
 ```text
 M1 DONE
@@ -94,295 +204,206 @@ RF3 OPEN
 STORY_COMPLETE=false
 ```
 
-and simply feeds back something like:
+It should then persist `required_action=CONTINUE` or a more specific next action.
+Because the Archon loop has no model completion channel, the prose cannot end
+the run.
 
-```text
-RUN_NOT_COMPLETE
+## Validate transitions, not only current status
 
-Remaining obligations:
-- M4
-- AC7
-- RF3
-
-Continue execution.
-```
-
-The model is allowed to make the mistake. **The mistake simply no longer terminates the run.**
-
-That is much more robust than repeatedly strengthening the prompt with more “DO NOT STOP” instructions.
-
-## Give the state machine as much authority as possible
-
-Ideally, the script should not merely print a status. It should calculate the actual run state from persisted facts.
-
-For example:
-
-```json
-{
-  "story_complete": false,
-  "run_state": "EXECUTING",
-  "current_milestone": "M4",
-  "remaining_milestones": ["M4"],
-  "remaining_acceptance_criteria": ["AC7"],
-  "open_review_findings": ["RF3"],
-  "required_action": "CONTINUE",
-  "reason": "Story completion predicate is false"
-}
-```
-
-The parent probably only needs a compact version:
-
-```text
-CONTINUE
-Current: M4
-Remaining: M4, AC7, RF3
-```
-
-There is no reason to spend expensive orchestrator tokens on a long explanation every time.
-
-## Print human-readable progress to the terminal
-
-The persisted run state should remain authoritative, but a person running the
-harness should also be able to follow its progress without inspecting that
-state directly. The harness should print a concise human-readable message for
-every significant state transition.
-
-At minimum, it should print when it:
-
-* starts implementing a new milestone;
-* starts reviewing a milestone;
-* starts remediating review findings;
-* sends remediated work back for review;
-* approves or blocks a milestone; and
-* completes or otherwise halts the run.
-
-Every progress message should include the current milestone, the current
-phase, and the number of remediation cycles entered for that milestone. The
-remediation count starts at zero for each new milestone and increments whenever
-the harness enters remediation. It should remain visible in every later
-message for that milestone, not only while remediation is active.
-
-For example:
-
-```text
-[M4 | IMPLEMENTING | remediations=0] Starting milestone implementation
-[M4 | REVIEWING    | remediations=0] Starting independent review
-[M4 | REMEDIATING  | remediations=1] Addressing findings R1, R2
-[M4 | REVIEWING    | remediations=1] Reviewing remediated work
-[M4 | REMEDIATING  | remediations=2] Addressing unresolved finding R2
-[M4 | APPROVED     | remediations=2] Milestone approved
-[M5 | IMPLEMENTING | remediations=0] Starting milestone implementation
-```
-
-The displayed values should be derived from the same persisted facts that
-drive state transitions. Console output is observational only: it must not
-authorize, perform, or substitute for a transition.
-
-If standard output is part of a machine-readable harness protocol, these
-human-readable progress messages should be written to standard error so they
-remain visible in the terminal without corrupting structured output.
-
-## Validate transitions, not just the current status
-
-I would make the state machine prevent invalid transitions as well.
-
-For example:
+The transition reducer should implement an explicit state graph. For example:
 
 ```text
 IMPLEMENTING
-    ↓ implementation result
+    ↓ complete implementation evidence
 VALIDATING
-    ↓ validation evidence
+    ↓ required validation passed
 REVIEWING
-    ↓ no blocking findings
-DONE
+    ├── approved ──► COMMITTING or DONE
+    └── findings ──► REMEDIATING
+
+REMEDIATING
+    ↓ complete remediation evidence
+REVIEWING
 ```
 
-A milestone should not be able to jump directly from:
+It should reject invalid transitions such as:
 
 ```text
 IMPLEMENTING → DONE
 ```
 
-if required validation is still missing.
+when validation or review evidence is absent. A rejected transition should
+leave the prior persisted state authoritative and produce a structured error
+identifying the requested transition and missing evidence.
 
-The script could reject such a transition:
+## Implementation, review, and remediation nodes
+
+Implementation and remediation nodes may edit the isolated worktree. Review
+nodes must start with fresh context and inspect the current filesystem rather
+than rely on an implementer's summary.
+
+Review output should use a validated structured schema containing at least:
 
 ```json
 {
-  "transition": "REJECTED",
-  "requested": "M4 -> DONE",
-  "actual_state": "VALIDATING",
-  "missing": [
-    "integration_tests",
-    "review"
-  ],
-  "required_action": "CONTINUE"
+  "decision": "APPROVED",
+  "findings": [],
+  "validation_evidence": []
 }
 ```
 
-That removes even more state-management responsibility from the LLM.
+Findings should receive stable identities when first persisted. A remediation
+node should receive the complete unresolved finding set rather than one finding
+at a time.
 
-## Let the caller choose the milestone commit policy
+The workflow should distinguish two counters:
 
-The harness should accept an explicit commit policy from the caller. The policy
-controls only changes owned by the current milestone implementation and must be
-persisted in the run state so that resumed execution uses the same behavior.
+* `remediation_cycles` counts how many times the milestone has entered
+  remediation; and
+* `rejected_complete_submissions` counts complete remediation submissions that
+  a reviewer rejected.
 
-The supported modes should be:
+The escalation implementer should be selected only after two rejected complete
+submissions. A rejection of the escalation implementer's complete submission
+sets the rejected-submission count to three and blocks the milestone. Partial
+work, intermediate test failures, and incomplete submissions increment neither
+counter.
+
+## Reviewer isolation compatibility
+
+A prompt telling a reviewer to remain read-only is insufficient.
+
+Archon does not currently enforce `allowed_tools` or `denied_tools` for Codex
+workflow nodes. Before using Codex as the reviewer, the workflow must provide an
+independent read-only execution boundary, such as a provider capability,
+read-only filesystem sandbox, or external reviewer adapter that Archon cannot
+bypass.
+
+Until that exists, the workflow may use a provider for which Archon enforces
+read-only tool restrictions. Deterministic validation commands should run in
+separate non-AI nodes so that a read-only reviewer does not need a writable
+shell.
+
+This is an adoption gate, not a prompt-writing problem.
+
+## Human-readable terminal progress
+
+Archon already streams foreground workflow output, but the package should add
+deterministic progress nodes so that required progress does not depend on agent
+narration.
+
+The workflow should print immediately before it:
+
+* starts implementing a new milestone;
+* starts reviewing a milestone;
+* starts remediating review findings;
+* sends remediated work back for review;
+* starts escalation remediation;
+* commits or advances a milestone;
+* approves or blocks a milestone; and
+* completes or otherwise halts the run.
+
+Every progress message should include the current milestone, phase,
+remediation-cycle count, and rejected-complete-submission count, including when
+the values are zero:
+
+```text
+[M4 | IMPLEMENTING | remediations=0 | rejected-submissions=0/3] Starting milestone implementation
+[M4 | REVIEWING    | remediations=0 | rejected-submissions=0/3] Starting independent review
+[M4 | REMEDIATING  | remediations=1 | rejected-submissions=0/3] Addressing findings R1, R2
+[M4 | REVIEWING    | remediations=1 | rejected-submissions=0/3] Reviewing remediated work
+[M4 | REMEDIATING  | remediations=2 | rejected-submissions=1/3] Addressing unresolved finding R2
+[M4 | ESCALATING   | remediations=3 | rejected-submissions=2/3] Starting escalation remediation
+[M4 | APPROVED     | remediations=3 | rejected-submissions=2/3] Milestone approved
+[M5 | IMPLEMENTING | remediations=0 | rejected-submissions=0/3] Starting milestone implementation
+```
+
+The values must be read from the persisted state. Console output is
+observational only and must not authorize, perform, or substitute for a state
+transition.
+
+Archon's foreground CLI may use standard output for human streaming. When a
+machine-readable invocation is selected, structured command output and live
+human progress must remain separable according to Archon's supported interface.
+
+## Resume and idempotency
+
+Archon persists workflow runs, but a failed `loop_group` can restart its current
+iteration rather than resume at an individual body node. Every action must
+therefore be safe to reconcile and retry.
+
+Before performing an action, a deterministic node should compare the persisted
+state with repository and artifact evidence. It should skip an already-applied
+action, finish an interrupted publication when safe, or halt with a precise
+external blocker when it cannot determine the correct result.
+
+No agent message alone may establish that an implementation, review,
+remediation, validation, or commit completed.
+
+Archon's required `max_iterations` value should be a high operational safety
+ceiling, not the remediation limit and not a substitute for the completion
+predicate. Reaching it should produce a fatal diagnostic containing the current
+state and remaining obligations.
+
+## Caller-selected commit policy
+
+The workflow should declare a `commit_policy` input and accept:
 
 ```text
 none
     Do not stage or commit changes automatically.
 
 milestone
-    After implementation, remediation, validation, and review have all
-    succeeded, create one commit containing all changes owned by the milestone.
+    Create one commit after implementation, remediation, validation, and review
+    have all succeeded for the milestone.
 
 incremental
-    Create smaller commits at coherent implementation boundaries. Each commit
-    must represent a validated slice of the milestone; review remediation may
-    produce additional focused commits.
+    Create smaller commits at validated implementation boundaries, with focused
+    commits for later remediation where needed.
 ```
 
-For example, the harness could expose:
+The package should expose a typed launcher that converts validated flags into
+Archon's positional workflow input. For example:
 
 ```text
-harness run --commit-policy=none
-harness run --commit-policy=milestone
-harness run --commit-policy=incremental
+archon-milestones run \
+  --repo /path/to/repository \
+  --plan docs/plans/example.md \
+  --branch archon/example \
+  --commit-policy none
 ```
 
-`none` should be the default when the caller does not choose a policy. This
-preserves the existing rule that commits require explicit authorization.
-
-The caller's choice is authoritative. The orchestrator and workers must not
-silently change it during a run. If a different policy is needed for a later
-milestone, the caller may override it explicitly at that milestone boundary,
-and the harness must record the new value before implementation begins.
+`none` should be the default. The input should be validated before any agent or
+repository mutation and then persisted in the run state so resumption cannot
+silently change it.
 
 ### Commit safety rules
 
-Automatic committing must remain a deterministic harness responsibility, not
-an optional instruction that the model has to remember. In every mode, the
-harness should:
+Do not reuse an Archon workflow that instructs an AI node to stage, commit,
+push, or open a pull request. Commit behavior in this package must be a
+deterministic workflow responsibility.
 
-* capture the repository and worktree baseline before milestone implementation;
-* distinguish milestone-owned changes from pre-existing or concurrent user
-  changes;
-* never stage or commit changes that are not owned by the milestone;
+In every mode, the workflow should:
+
+* capture the repository and worktree baseline before implementation;
+* use Archon's isolated worktree by default for mutating runs;
+* distinguish run-owned changes from pre-existing or concurrent changes;
+* stage only explicitly verified paths or hunks owned by the current milestone;
 * refuse an automatic commit when ownership cannot be determined safely;
-* never push, publish, rewrite history, squash existing commits, or use
-  destructive cleanup as part of this policy;
-* record every created commit SHA and its milestone or slice in persistent run
-  state; and
-* include the effective policy and commit results in the milestone completion
-  evidence.
+* never push, publish, rewrite history, squash existing commits, or perform
+  destructive cleanup as part of the commit policy;
+* record every created commit SHA and its milestone or slice in the structured
+  run state; and
+* verify that no milestone-owned residual changes remain when a committing
+  policy finishes.
 
-In `milestone` mode, `DONE` is not valid until the single milestone commit has
-been created successfully. The commit must include implementation changes and
-all review remediation for that milestone. A commit failure leaves the
-milestone incomplete and enters normal recovery or escalation handling.
+Running a mutating workflow without Archon's worktree isolation should require
+an explicit override. Automatic commit modes should refuse that override unless
+the ownership checks can still prove safety.
 
-In `incremental` mode, the implementation packet should define the intended
-slice boundaries where they are known. A worker may propose an additional
-boundary, but the harness creates a commit only after the slice's required
-validation succeeds. The final milestone transition must verify that every
-milestone-owned change is either included in a recorded slice or remediation
-commit, with no residual milestone-owned changes left uncommitted.
+## Halt states and completion predicate
 
-In `none` mode, the harness leaves all milestone changes uncommitted and reports
-the changed paths at completion. An uncommitted milestone is still allowed to
-reach `DONE` when its implementation, validation, and review requirements are
-satisfied.
-
-The state machine can represent the decision and its evidence compactly:
-
-```json
-{
-  "milestone": "M4",
-  "commit_policy": "milestone",
-  "commit_state": "PENDING",
-  "created_commits": [],
-  "required_action": "COMMIT_MILESTONE"
-}
-```
-
-After a successful automatic commit:
-
-```json
-{
-  "milestone": "M4",
-  "commit_policy": "milestone",
-  "commit_state": "COMPLETE",
-  "created_commits": ["<full-commit-sha>"],
-  "required_action": "ADVANCE"
-}
-```
-
-This keeps commit behavior caller-controlled while allowing the harness to
-enforce it consistently across implementation, review, remediation, resume,
-and completion.
-
-## Do not rely on the model to invoke the script
-
-I would **not** make this the primary mechanism:
-
-```text
-AGENTS.md:
-"After every action you MUST run update-state.sh."
-```
-
-You can still include that instruction, but the actual guarantee should live in the harness:
-
-```text
-after_action() {
-    execute_action
-    run_state_machine
-}
-```
-
-Otherwise the same orchestrator that forgets to continue can also forget to call `update-state.sh`.
-
-**Deterministic behavior belongs in the deterministic part of the system.**
-
-## This could make cheaper parent models viable again
-
-This is especially interesting for your Terra experiment.
-
-Right now the parent has to do all of this:
-
-```text
-1. Understand the story.
-2. Plan the work.
-3. Delegate intelligently.
-4. Evaluate worker results.
-5. Track global obligations.
-6. Reliably decide whether execution must continue.
-7. Terminate exactly once, at the correct point.
-```
-
-With a state-machine-controlled loop, you remove a critical part:
-
-```text
-6 + 7 → deterministic harness
-```
-
-Then Terra xhigh no longer has to guarantee the liveness of the whole run. It mainly has to produce the **next sensible action**.
-
-That could significantly reduce the capability gap between Terra and Sol for this particular job.
-
-It might even make Terra high usable again—not because it suddenly becomes smarter, but because its most damaging failure:
-
-> “I think we're done.”
-
-no longer has any authority.
-
-## Do not make `COMPLETE` the only possible halt state
-
-I would make it the only **successful termination state**, but not the only possible halt.
-
-You still want exceptional states such as:
+The domain state should distinguish:
 
 ```text
 COMPLETE
@@ -391,34 +412,11 @@ FATAL_ERROR
 CANCELLED
 ```
 
-Otherwise a genuinely unsolvable situation could become:
+These domain states are independent of Archon's own run lifecycle states. The
+structured state must preserve the exact domain outcome even when Archon maps it
+to a broader completed, failed, paused, or cancelled status.
 
-```text
-CONTINUE
-→ fail
-→ CONTINUE
-→ fail
-→ CONTINUE
-→ ...
-```
-
-and burn money forever.
-
-So preferably:
-
-```text
-SUCCESS TERMINATION:
-    only STATE == COMPLETE
-
-NON-SUCCESS HALT:
-    BLOCKED_REQUIRES_HUMAN
-    FATAL_ERROR
-    CANCELLED
-```
-
-`BLOCKED` should also be defined strictly enough that the model cannot use it as a new convenient way to stop working.
-
-### Recommended completion predicate
+Successful completion should require:
 
 ```text
 COMPLETE =
@@ -426,11 +424,81 @@ COMPLETE =
 AND all acceptance criteria SATISFIED
 AND all blocking review findings RESOLVED
 AND all mandatory validation PASSED
+AND the selected commit policy SATISFIED
 AND no required follow-up work exists
 ```
 
-And **only the script/state machine should be allowed to set `COMPLETE=true`.**
+Only the deterministic completion script may establish this predicate. An
+agent's structured or prose output is evidence for a transition, never the
+completion decision itself.
 
-That gives you a much stronger autonomous architecture:
+`BLOCKED_REQUIRES_HUMAN` should be available only for the defined rejected
+remediation limit or a concrete external blocker that deterministic recovery
+cannot resolve safely. `FATAL_ERROR` covers invalid state, corrupted evidence,
+an exhausted operational iteration ceiling, or an unrecoverable workflow
+failure. `CANCELLED` records an explicit operator cancellation.
 
-> **The model decides what to do next. The state machine decides whether the work is allowed to end.**
+## Model-cost implications
+
+Archon's per-node provider and model selection allows cheaper models to perform
+bounded implementation work while stronger models handle review or escalation.
+The state machine removes global liveness and termination decisions from those
+models.
+
+The expected responsibility split is:
+
+```text
+AI nodes:
+    understand one bounded packet
+    implement or review it
+    return schema-valid evidence
+
+Deterministic workflow nodes:
+    track global obligations
+    select the next permitted action
+    enforce remediation limits
+    validate transitions
+    apply commit policy
+    decide whether execution may end
+```
+
+This may make less expensive implementation models viable without allowing
+their mistaken completion claims to stop the run.
+
+## Portability boundaries
+
+The package should support ordinary Git repositories on Linux, macOS, and
+Windows where the pinned Archon version and selected agent provider are
+supported.
+
+Additional repository shapes require explicit handling:
+
+* a single Git repository should use Archon's default isolated worktree;
+* a non-Git folder or multi-repository root must not assume that Archon provides
+  per-repository branch, commit, or rollback isolation;
+* repository-specific validation commands must be declared rather than guessed;
+* plan parsing must use a defined format or repository adapter instead of
+  attempting to understand arbitrary Markdown heuristically; and
+* provider-specific capabilities, especially read-only enforcement, must be
+  validated before the first paid agent invocation.
+
+## Acceptance conditions for a future specification
+
+A specification derived from this idea should define and test at least:
+
+1. the structured state schema and migration policy;
+2. the legal transition table and event schemas;
+3. the Archon workflow package and declared inputs;
+4. the minimum compatible Archon version;
+5. deterministic-only completion with adversarial model output;
+6. implementation, review, remediation, and escalation routing;
+7. read-only reviewer enforcement for every supported provider;
+8. console progress and both remediation counters;
+9. interruption reconciliation and idempotency;
+10. commit-policy behavior and ownership checks;
+11. domain-to-Archon halt-state mapping; and
+12. portability and compatibility tests for every supported operating system
+    and repository shape.
+
+The implementation should not begin until the deterministic-only completion
+and reviewer-isolation adoption gates have verified solutions.

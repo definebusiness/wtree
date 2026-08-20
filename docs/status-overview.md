@@ -12,12 +12,12 @@ ledgers do not use this lifecycle.
 | Status | Count |
 |---|---:|
 | `initial` | 6 |
-| `specified` | 3 |
-| `planned` | 0 |
+| `specified` | 4 |
+| `planned` | 1 |
 | `implemented` | 12 |
 | `superseded` | 2 |
 | `abandoned` | 0 |
-| **Total** | **23** |
+| **Total** | **25** |
 
 ## Ideas
 
@@ -29,7 +29,7 @@ ledgers do not use this lifecycle.
 | [Final reviewer](ideas/workflow/final-reviewer.md) | `initial` | None |
 | [Immutable release lock manifests](ideas/release-lock-manifests.md) | `initial` | None |
 | [Logical project roots with a designated base repository](ideas/logical-project-root-base-repository.md) | `specified` | [Portable manifest v2 base-repository format specification](spec/portable-manifest-v2-base-repository-format.md); [logical project root and repository forest specification](spec/logical-project-root-base-repository.md) |
-| [Minimal harness for processing the orchestration state machine](ideas/workflow/creating-a-minimal-harness-to-process-the-statemachine.md) | `initial` | None |
+| [Archon-based harness for deterministic milestone orchestration](ideas/workflow/creating-a-minimal-harness-to-process-the-statemachine.md) | `specified` | [Archon deterministic milestone harness specification](spec/archon-milestone-harness.md) |
 
 ## Specifications
 
@@ -39,6 +39,7 @@ ledgers do not use this lifecycle.
 | [`wtree` specification traceability](spec/wtree.traceability.md) | `implemented` | [`wtree` specification](spec/wtree.spec.md) | [`wtree` incremental implementation plan](plans/wtree-implementation-plan.md) |
 | [Nested mount ignore management specification](spec/nested-mount-ignore-management.md) | `superseded` | Created directly; superseded by the [automatic protection story](ideas/automatic-nested-mount-ignore-protection.md) | [Nested mount ignore management implementation plan](plans/nested-mount-ignore-management.md), also superseded |
 | [Automatic nested mount ignore protection specification](spec/automatic-nested-mount-ignore-protection.md) | `implemented` | [Automatically protect nested repository mounts](ideas/automatic-nested-mount-ignore-protection.md) | [Automatic nested mount ignore protection implementation plan](plans/automatic-nested-mount-ignore-protection.md) |
+| [Archon deterministic milestone harness specification](spec/archon-milestone-harness.md) | `planned` | [Archon-based harness for deterministic milestone orchestration](ideas/workflow/creating-a-minimal-harness-to-process-the-statemachine.md) | [Archon deterministic milestone harness implementation plan](plans/archon-milestone-harness.md) |
 | [Full multi-repository experience capability specification](spec/full-multi-repository-experience.md) | `initial` | Created directly from preserved source material | None |
 | [Live-branch clone and upstream-aware human status specification](spec/clone-live-branch-and-upstream-status.md) | `implemented` | Created directly | [Live-branch clone and upstream-aware human status implementation plan](plans/clone-live-branch-and-upstream-status.md) |
 | [Logical project root and repository forest specification](spec/logical-project-root-base-repository.md) | `initial` | [Logical project roots with a designated base repository](ideas/logical-project-root-base-repository.md) | None |
@@ -53,6 +54,7 @@ ledgers do not use this lifecycle.
 | [Project registry inspection and lifecycle implementation plan](plans/project-registry-management.md) | `implemented` | [`wtree` specification](spec/wtree.spec.md) | All milestones approved; [run ledger](ai/runs/project-registry-management.md) is complete; project registry commands and tests are present |
 | [Nested mount ignore management implementation plan](plans/nested-mount-ignore-management.md) | `superseded` | [Nested mount ignore management specification](spec/nested-mount-ignore-management.md) | Superseded by the [automatic protection story](ideas/automatic-nested-mount-ignore-protection.md); no milestones were authorized or completed |
 | [Automatic nested mount ignore protection implementation plan](plans/automatic-nested-mount-ignore-protection.md) | `implemented` | [Automatic nested mount ignore protection specification](spec/automatic-nested-mount-ignore-protection.md) | All milestones M00–M05 are approved; exact Ubuntu/macOS/Windows run `32289428176` passed; the [durable run ledger](ai/runs/automatic-nested-mount-ignore-protection.md) is complete |
+| [Archon deterministic milestone harness implementation plan](plans/archon-milestone-harness.md) | `initial` | [Archon deterministic milestone harness specification](spec/archon-milestone-harness.md) | Not started; milestones M00–M05 are unchecked |
 | [Live-branch clone and upstream-aware human status implementation plan](plans/clone-live-branch-and-upstream-status.md) | `implemented` | [Live-branch clone and upstream-aware human status specification](spec/clone-live-branch-and-upstream-status.md) | All milestones M00–M02 approved; [durable run ledger](ai/runs/clone-live-branch-and-upstream-status.md) is complete; live selected-branch clone, v2 observed/actual output, and upstream-aware human status are implemented and verified |
 | [Portable manifest clone implementation plan](plans/portable-manifest-clone.md) | `implemented` | [Portable manifest clone specification](spec/portable-manifest-clone.md) | All milestones M00–M06 are approved; portable manifest clone is implemented and verified, with the current format supplied by the implemented v2 specification and plan. |
 | [Portable manifest v2 base-repository format implementation plan](plans/portable-manifest-v2-base-repository-format.md) | `implemented` | [Portable manifest v2 base-repository format specification](spec/portable-manifest-v2-base-repository-format.md) | All milestones M00–M02 approved; [durable run ledger](ai/runs/portable-manifest-v2-base-repository-format.md) is complete; strict v2 config, init authoring, and clone verification are implemented and verified. |
