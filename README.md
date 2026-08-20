@@ -68,10 +68,11 @@ See [docs/INSTALL.md](docs/INSTALL.md) for local release builds and checksums.
 ## Usage
 
 To publish an existing project, first push every repository and connect its
-current branch to the intended upstream. `wtree init` then discovers the
-independent nested repositories, automatically protects every nested mount in
-its immediate parent `.gitignore`, writes ignored local `.wtree.yml`, and
-writes portable `project.wtree.yml`.
+current branch to the intended upstream. `wtree init` writes ignored
+machine-local`.wtree.yml`, writes tracked portable `project.wtree.yml`, and
+updates the `.gitignore` of every repository that directly contains another
+repository. Review, commit, and push the manifest and every changed
+`.gitignore`.
 
 ```sh
 cd ~/code/product
