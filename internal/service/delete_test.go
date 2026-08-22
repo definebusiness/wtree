@@ -79,7 +79,7 @@ func TestWorkspaceDeleterRefusesUnmergedBranchUnlessForcedAndReportsOverride(t *
 	}
 }
 
-func TestWorkspaceDeleterFailureAfterBranchDeletionWritesRecoveryAndPreservesState(t *testing.T) {
+func TestWorkspaceDeleterFailureAfterBranchDeletionRestoresOwnedEffectsAndState(t *testing.T) {
 	project, _, _, data := createFixture(t)
 	target := filepath.Join(t.TempDir(), "workspace")
 	if _, err := createFixtureWorkspace(t, project, "feature/delete", target, data); err != nil {
@@ -95,22 +95,27 @@ func TestWorkspaceDeleterFailureAfterBranchDeletionWritesRecoveryAndPreservesSta
 		t.Fatal(err)
 	}
 	failing := &failingDeleteGit{Git: gitadapter.NewAdapter("git"), failDeleteAt: 2}
-	_, err = service.NewWorkspaceDeleterWith(failing, lock.Manager{}, store.WriteRecovery, os.Remove, store.WriteRawAtomic, os.ReadFile).Delete(context.Background(), project, workspace, data, false, nil)
-	if !cliExitKind(t, err, service.ErrorRollbackIncomplete) {
-		t.Fatalf("delete branch failure = %v, want rollback incomplete", err)
+	_, err = service.NewWorkspaceDeleterWith(failing, lock.Manager{}, store.WriteRecovery, os.Remove, store.WriteRawCAS, os.ReadFile).Delete(context.Background(), project, workspace, data, false, nil)
+	if err == nil || !service.HasCleanRollback(err) || cliExitKind(t, err, service.ErrorRollbackIncomplete) {
+		t.Fatalf("delete branch failure = %v, want clean rollback", err)
 	}
 	recoveryPath := filepath.Join(data, "projects", project.ID, "recovery", workspace.ID+".json")
-	record, readErr := store.ReadRecovery(recoveryPath)
-	if readErr != nil || record.Operation != "delete" || !containsStep(record.UnrevertedSteps, "delete_branch:backend") || record.FailedStep != "delete_branch:root" {
-		t.Fatalf("delete recovery = %#v, %v", record, readErr)
+	if _, statErr := os.Lstat(recoveryPath); !os.IsNotExist(statErr) {
+		t.Fatalf("clean branch rollback wrote recovery: %v", statErr)
 	}
 	stateAfter, err := os.ReadFile(statePath)
 	if err != nil || !bytes.Equal(stateBefore, stateAfter) {
 		t.Fatalf("branch failure changed state: before=%q after=%q error=%v", stateBefore, stateAfter, err)
 	}
+	for _, repository := range project.Repositories {
+		exists, branchErr := gitadapter.NewAdapter("git").BranchExists(context.Background(), repository.SourcePath, "feature/delete")
+		if branchErr != nil || !exists {
+			t.Fatalf("branch %q was not restored: exists=%t err=%v", repository.ID, exists, branchErr)
+		}
+	}
 }
 
-func TestWorkspaceDeleterStateDeleteFailureWritesRecovery(t *testing.T) {
+func TestWorkspaceDeleterStateDeleteFailureRollsBackCleanly(t *testing.T) {
 	project, _, _, data := createFixture(t)
 	target := filepath.Join(t.TempDir(), "workspace")
 	if _, err := createFixtureWorkspace(t, project, "feature/delete", target, data); err != nil {
@@ -120,15 +125,14 @@ func TestWorkspaceDeleterStateDeleteFailureWritesRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deleter := service.NewWorkspaceDeleterWith(gitadapter.NewAdapter("git"), lock.Manager{}, store.WriteRecovery, func(string) error { return errors.New("injected state delete failure") }, store.WriteRawAtomic, os.ReadFile)
+	deleter := service.NewWorkspaceDeleterWith(gitadapter.NewAdapter("git"), lock.Manager{}, store.WriteRecovery, func(string) error { return errors.New("injected state delete failure") }, store.WriteRawCAS, os.ReadFile)
 	_, err = deleter.Delete(context.Background(), project, workspace, data, false, nil)
-	if !cliExitKind(t, err, service.ErrorRollbackIncomplete) {
-		t.Fatalf("state delete failure = %v, want rollback incomplete", err)
+	if err == nil || !service.HasCleanRollback(err) || cliExitKind(t, err, service.ErrorRollbackIncomplete) {
+		t.Fatalf("state delete failure = %v, want clean rollback", err)
 	}
 	recoveryPath := filepath.Join(data, "projects", project.ID, "recovery", workspace.ID+".json")
-	record, readErr := store.ReadRecovery(recoveryPath)
-	if readErr != nil || record.Operation != "delete" || !containsStep(record.UnrevertedSteps, "delete_branch:root") || record.FailedStep != "delete_state" {
-		t.Fatalf("state delete recovery = %#v, %v", record, readErr)
+	if _, statErr := os.Lstat(recoveryPath); !os.IsNotExist(statErr) {
+		t.Fatalf("clean state rollback wrote recovery: %v", statErr)
 	}
 }
 
@@ -143,7 +147,7 @@ func TestWorkspaceDeleterRemovalFailureRollsBackBeforeBranchDeletion(t *testing.
 		t.Fatal(err)
 	}
 	failing := &failingDeleteGit{Git: gitadapter.NewAdapter("git"), failRemoveAt: 2}
-	_, err = service.NewWorkspaceDeleterWith(failing, lock.Manager{}, store.WriteRecovery, os.Remove, store.WriteRawAtomic, os.ReadFile).Delete(context.Background(), project, workspace, data, false, nil)
+	_, err = service.NewWorkspaceDeleterWith(failing, lock.Manager{}, store.WriteRecovery, os.Remove, store.WriteRawCAS, os.ReadFile).Delete(context.Background(), project, workspace, data, false, nil)
 	if err == nil || !service.HasCleanRollback(err) {
 		t.Fatalf("delete remove failure = %v, want clean rollback", err)
 	}
@@ -199,7 +203,7 @@ func TestWorkspaceDeleterScopesForceFlagsPerDirtyAndUnmergedAllowance(t *testing
 				t.Fatalf("typed plan allowances = %#v branches=%#v", plan.Repositories, plan.Branches)
 			}
 			flags := &forceRecordingGit{Git: gitadapter.NewAdapter("git"), sourceIDs: sourceIDMap(project)}
-			if _, err := service.NewWorkspaceDeleterWith(flags, lock.Manager{}, store.WriteRecovery, os.Remove, store.WriteRawAtomic, os.ReadFile).Delete(context.Background(), project, workspace, data, true, nil); err != nil {
+			if _, err := service.NewWorkspaceDeleterWith(flags, lock.Manager{}, store.WriteRecovery, os.Remove, store.WriteRawCAS, os.ReadFile).Delete(context.Background(), project, workspace, data, true, nil); err != nil {
 				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(flags.removeForce, scenario.wantRemove) {
@@ -228,7 +232,7 @@ func TestWorkspaceDeleterCleanUnmergedDescendantRollsBackAfterLaterRemovalFailur
 	}
 	testutil.GitRepository{Path: backendPath}.CommitFile("unmerged.txt", "unmerged\n", "unmerged")
 	failing := &failingDeleteGit{Git: gitadapter.NewAdapter("git"), failRemoveAt: 2}
-	_, err = service.NewWorkspaceDeleterWith(failing, lock.Manager{}, store.WriteRecovery, os.Remove, store.WriteRawAtomic, os.ReadFile).Delete(context.Background(), project, workspace, data, true, nil)
+	_, err = service.NewWorkspaceDeleterWith(failing, lock.Manager{}, store.WriteRecovery, os.Remove, store.WriteRawCAS, os.ReadFile).Delete(context.Background(), project, workspace, data, true, nil)
 	if err == nil || !service.HasCleanRollback(err) || cliExitKind(t, err, service.ErrorRollbackIncomplete) {
 		t.Fatalf("clean unmerged descendant failure = %v, want clean rollback", err)
 	}

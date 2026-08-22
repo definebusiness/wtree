@@ -1,9 +1,11 @@
 # Logical project root and repository forest specification
 
-Status: initial
+Status: implemented
 Source idea: [Logical project roots with a designated base repository](../ideas/logical-project-root-base-repository.md)
-Implementation plan: none
+Implementation plan: [Logical project root and repository forest implementation plan](../plans/logical-project-root-base-repository.md)
+Implementation evidence: [Completed durable run ledger](../ai/runs/logical-project-root-base-repository.md)
 Implemented prerequisite: [Portable manifest v2 base-repository format specification](portable-manifest-v2-base-repository-format.md) and its [implementation plan](../plans/portable-manifest-v2-base-repository-format.md)
+Related implemented contract: [Live-branch clone and upstream-aware human status specification](clone-live-branch-and-upstream-status.md)
 
 ## 1. Purpose and scope
 
@@ -191,6 +193,20 @@ effectivePath(top-level) = logicalRoot + top-level.mount
 effectivePath(nested) = effectivePath(parent) + nested.mount
 ```
 
+Mounts may contain multiple path components. Components between the logical
+root or parent checkout and a repository checkout are ordinary grouping
+directories, not implicit repositories. For example, two top-level
+repositories may use `services/serviceA` and `services/serviceB`, making
+`services/` a plain directory under the logical root. A root repository
+mounted at `.` may instead declare two direct children at those same mounts,
+making `services/` an ordinary directory inside the parent working tree where
+unrelated files may still be tracked.
+
+If a grouping path is itself a declared Git repository, repositories below it
+must declare the corresponding parent relationship. Filesystem containment
+must never silently turn a top-level repository into a child or permit a path
+overlap that contradicts declared parentage.
+
 Validation and deterministic ordering operate on repository IDs and declared
 parent links, never on map iteration or discovery order.
 
@@ -213,13 +229,14 @@ logical root or in the base repository. The base repository owns only its
 
 ## 5. Local configuration v2
 
-Logical-root support replaces the machine-local `.wtree.yml` schema with
-version 2. Version 1 local configuration is rejected with a direct diagnostic
-that reinitialization is required; it is not translated or rewritten while
-being read.
+Logical-root support replaces the machine-local project `.wtree.yml` schema
+with version 2. Version 1 local project configuration is rejected with a
+direct diagnostic that reinitialization is required; it is not translated or
+rewritten while being read. Global configuration remains at its existing
+version and is not changed by this specification.
 
-The base checkout contains the only project `.wtree.yml`. Its relevant shape
-is:
+The base checkout contains the only project `.wtree.yml`. Its complete
+forest-relevant shape is:
 
 ```yaml
 version: 2
@@ -244,10 +261,20 @@ repositories:
     parent: ""
     mount: web
     default_branch: main
+worktrees:
+  root: /worktrees
+discovery:
+  ignore:
+    - vendor
 manifest:
   path: project.wtree.yml
   source: /srv/manifests/acme/project.wtree.yml
 ```
+
+`project.base_repository`, `logical_root`, `repositories`, `worktrees`, and
+`manifest` are required in local version 2. `discovery` remains optional.
+Unknown fields remain invalid. The `worktrees` precedence and value rules and
+the `discovery.ignore` meaning remain unchanged from local version 1.
 
 `project.base_repository` must agree with the portable manifest.
 `logical_root` is a required clean relative path resolved from the directory
@@ -258,19 +285,27 @@ canonicalize to the directory containing `.wtree.yml`. Absolute values,
 symlink aliases, and values that do not invert the base checkout's placement
 are invalid.
 
-Every `repositories[*].source` is logical-root-relative. Nested `mount` values
-remain immediate-parent-relative. `manifest.path` remains exactly
-`project.wtree.yml`, but it is base-checkout-relative. A local
+Every `repositories[*].source` is a clean, slash-separated,
+logical-root-relative path. Nested `mount` values remain
+immediate-parent-relative. The required `manifest.path` remains exactly
+`project.wtree.yml`, but it is base-checkout-relative. The required local
 `manifest.source` retains the existing absolute local-path or normalized
 HTTP(S) rules.
 
-The project ID remains derived from canonical portable repository facts with
-constant placeholder project ID and name values. The identity input includes
-the selected base and every repository's identity, clone/upstream facts,
-parent, and mount. It excludes the logical-root path, common Git directories,
-display name, local configuration, and other machine-local state. Therefore
-two definitions with the same base repository but different sibling sets or
-topology receive different deterministic project IDs.
+For `init`, the candidate project ID remains derived from canonical portable
+repository facts with constant placeholder project ID and name values. The
+identity input includes the selected base and every repository's identity,
+clone/upstream facts, parent, and mount. It excludes the logical-root path,
+common Git directories, display name, local configuration, and other
+machine-local state. Therefore two definitions with the same base repository
+but different sibling sets or topology receive different deterministic
+candidate IDs.
+
+Final ID allocation preserves the existing retained-artifact non-reuse rule.
+A live registration remains a conflict; unregistered retained project or
+workspace-state storage causes the existing deterministic collision-suffixed
+allocation. Clone accepts the project ID declared by the validated portable
+manifest and does not recompute it from local paths or repository facts.
 
 ## 6. Initialization and discovery
 
@@ -284,9 +319,12 @@ wtree init [logical-root] [--base-repository <repository-id>]
 
 The positional path, or the current directory when omitted, is the logical
 project root. `init` does not guess an unmarked plain ancestor above that path.
-It discovers candidate Git worktrees below the logical root using the existing
-bounded traversal and ignore controls, identifies their canonical roots and
-common Git directories, and derives parent links by actual path containment.
+It discovers candidate Git worktrees below the logical root using
+deterministic traversal confined to that explicitly selected root and the
+existing default and user-configured ignore controls. It identifies candidate
+canonical roots and common Git directories and derives parent links by actual
+path containment. This specification introduces no traversal depth or entry
+limit; any future resource bound requires an explicit contract and diagnostic.
 
 Repositories with no discovered Git ancestor inside the logical root are
 top-level. A repository nested inside another discovered repository is a
@@ -341,24 +379,36 @@ The existing `wtree clone <manifest-source> [destination]` command and source
 types remain unchanged. The destination denotes the logical project root and
 must satisfy the existing non-existent-destination and canonical-parent rules.
 
-Planning must validate the complete forest, resolve every remote branch and
-exact commit, compute every effective path, reject path conflicts before
-mutation, and produce a deterministic parent-first plan. Among otherwise
-unordered top-level repositories, the base repository is first and remaining
-IDs are lexical; descendants use the same stable topological tie-break.
+Planning must validate the complete forest, verify every selected remote
+branch, record its advertised commit as an observation, compute every
+effective path, reject path conflicts before mutation, and produce a
+deterministic parent-first plan. Among otherwise unordered top-level
+repositories, the base repository is first and remaining IDs are lexical;
+descendants use the same stable topological tie-break.
 
 Execution creates a unique staging logical root in the destination's existing
 parent. It clones top-level repositories at their logical-root-relative mounts
-and descendants at their immediate-parent-relative mounts. Before a nested
-clone, the selected parent commit must contain an effective committed ignore
-rule. No such check applies between top-level siblings.
+and descendants at their immediate-parent-relative mounts. It creates any
+ordinary intermediate grouping directories required by multi-component
+mounts only inside that private staging root, after complete path preflight.
+Those directories are not repositories or implicit parents. Before a nested
+clone, the actual checked-out parent commit must contain an effective committed
+ignore rule. No such check applies between top-level siblings.
 
-The base checkout's selected commit must track `project.wtree.yml` with bytes
-identical to the bytes used for planning. The base checkout must also contain
-an effective committed `/.wtree.yml` ignore rule. These checks occur in the
-base checkout, not at the logical root. After every checkout passes identity,
-upstream, exact-commit, cleanliness, submodule, path, and topology verification,
-clone writes local configuration v2 into the staged base checkout.
+Execution fetches each manifest-selected branch and checks out the tip obtained
+by that execution-time fetch. The actual checkout may differ from the commit
+observed during planning. Ordinary clone provides no cross-repository atomic
+snapshot or compatibility guarantee for independently moving branches; a
+locked release snapshot remains separate scope.
+
+The base repository's actual checked-out commit must track
+`project.wtree.yml` with bytes identical to the bytes used for planning. The
+base checkout must also contain an effective committed `/.wtree.yml` ignore
+rule. These checks occur in the base checkout, not at the logical root. After
+every checkout passes identity, upstream, actual-HEAD, cleanliness, submodule,
+path, and topology verification, clone writes local configuration v2 into the
+staged base checkout. Workspace state and completed clone output record every
+actual checked-out HEAD.
 
 Publication atomically renames the complete staged logical root when the
 existing same-filesystem contract permits it, then publishes default workspace
@@ -367,12 +417,13 @@ the logical root as the workspace path and records every actual checkout path.
 The registry points to the base-owned `.wtree.yml` and maps every canonical
 common Git directory to its repository ID.
 
-The ownership inventory covers the staging logical root, every repository
-checkout, the final logical root created by publication, local configuration,
-workspace state, registry generation, and recovery evidence. Cleanup and
-rollback may remove only invocation-created, identity-revalidated artifacts.
-A failure in any tree rolls back the complete forest or reports the existing
-rollback-incomplete contract.
+The ownership inventory covers the staging logical root, every created
+intermediate grouping directory, every repository checkout, the final logical
+root created by publication, local configuration, workspace state, registry
+generation, and recovery evidence. Cleanup and rollback may remove only
+invocation-created, identity-revalidated artifacts. A failure in any tree
+rolls back the complete forest or reports the existing rollback-incomplete
+contract.
 
 ## 8. Forest-aware workspaces
 
@@ -381,6 +432,15 @@ and `checkout` first create or validate the logical workspace directory, then
 materialize every top-level repository and each descendant in deterministic
 parent-first order. A root-Git project mounted at `.` retains its existing
 layout.
+
+After complete path preflight, workspace operations create ordinary
+intermediate grouping directories needed by multi-component mounts only
+inside the selected logical workspace root. They reject symlinks and
+incompatible existing entries, record every directory they create in
+transaction and recovery ownership, and remove it during rollback only when
+the operation still owns the directory and the applicable removal contract
+permits it. `wtree` does not place metadata or a generated `.gitignore` in a
+plain grouping directory.
 
 Mount overrides are interpreted relative to the same owner as their defaults:
 top-level overrides are logical-workspace-root-relative and nested overrides
@@ -407,9 +467,10 @@ transaction, and recovery rules remain unchanged.
 ## 9. Forest-aware import and resolution
 
 Import treats its target as a logical workspace root, whether or not that path
-is a Git worktree. It discovers Git worktrees below that root with the bounded
-discovery rules, resolves each repository exclusively through common Git
-directory identity, and derives actual containment.
+is a Git worktree. It discovers Git worktrees below that root with the same
+deterministic, logical-root-confined traversal and ignore rules used by init,
+resolves each repository exclusively through common Git directory identity,
+and derives actual containment.
 
 The imported set must match the declared forest:
 
@@ -437,18 +498,40 @@ duplicated in the registry. Project registration and conflict checks must
 additionally compare canonical logical roots and every top-level checkout path
 so aliases cannot register the same checkout or logical root twice.
 
-Registry, workspace state, workspace plan, clone plan, and recovery records
-remain at their existing schema versions because their current root path,
-repository map or list, resolved path, and ordered-step fields can represent a
-forest. This specification does not authorize adding fields or silently
-reinterpreting an existing field. A later need for an incompatible wire change
+The registry, workspace state, workspace plan, and recovery record remain at
+version 1. The clone plan, clone planning result, and completed clone JSON
+envelope remain at version 2. Their current project, root path, repository map
+or list, resolved path, observed-commit, actual-HEAD, and ordered-step fields
+can represent a forest. `project.base_repository` remains the established
+portable wire field inside clone project data. This specification does not
+silently reinterpret an existing field; a later incompatible wire change
 requires a separate versioned specification.
 
+JSON objects for commands that report project topology add the explicit
+camel-case fields `logicalRoot` and `baseRepository`. The topology-bearing
+results are init and its dry-run; clone planning and completion; create,
+checkout, import, remove, and delete plans and results; status; doctor; and
+healthy project-list entries. A stale project-list entry omits facts that
+cannot be established and reports its existing diagnostic instead. `path` and
+`repo path` remain scalar commands, and `repo get` retains its focused
+single-checkout object, so they do not gain unrelated topology fields.
+Existing portable-manifest objects retain their established `base_repository`
+wire name. These additions are additive, must be documented per command, and
+must have compatibility tests proving that existing fields retain their
+meanings.
+
+For init, clone, and healthy project-list entries, `logicalRoot` is the
+logical project root. For workspace operations, status, and doctor, it is the
+logical workspace root represented by that result. `baseRepository` is always
+the declared repository ID. A failure result produced before validated
+topology is available omits both fields rather than fabricating project facts.
+
 `status`, `path`, `repo path`, `doctor`, project inspection, prune, and
-recovery must enumerate every top-level repository before descendants using
-the stable ordering rules. They must report the logical root, base repository,
-each repository's declared parent, effective mount, resolved checkout path,
-and identity or drift where relevant.
+recovery must enumerate every applicable top-level repository before
+descendants using the stable ordering rules. Topology-reporting commands must
+report the logical root, base repository, each repository's declared parent,
+effective mount, resolved checkout path, and identity or drift where relevant.
+Scalar path commands retain their focused output contract.
 
 Recovery records and rollback reports must identify actions by repository ID,
 resolved path, and operation-owned identity. Recovery may never assume one
@@ -494,11 +577,13 @@ coverage for at least:
 5. local configuration v2 root/base/path resolution and rejection of v1;
 6. missing parents, cycles, duplicate/equal/overlapping mounts, `.` combined
    with another top-level root, escapes, reserved Git paths, symlink aliases,
-   and containment that lacks the declared ancestry;
+   containment that lacks the declared ancestry, and multi-component grouping
+   mounts both under a plain logical root and inside a root repository;
 7. init writing metadata only in the base and ignore rules only in their
    owning Git repositories;
 8. clone planning and execution across multiple roots, including base-first
-   deterministic order and exact planned commits;
+   deterministic order, observed preflight commits, actual execution-time
+   HEADs, and a selected branch advancing between planning and execution;
 9. rejection and full cleanup when the base checkout lacks the tracked
    manifest, contains different manifest bytes, or does not ignore
    `/.wtree.yml`;
@@ -507,9 +592,12 @@ coverage for at least:
 11. import from the logical root and from inside each top-level tree, including
     identity mismatch, topology mismatch, and ambiguous-root rejection;
 12. registry collision, concurrent publication, cancellation, rollback, and
-    recovery after partial work in different top-level trees; and
+    recovery after partial work in different top-level trees;
 13. deterministic project identity differing when sibling membership,
-    parentage, mount, or selected base differs.
+    parentage, mount, or selected base differs while logical-root relocation
+    does not, plus preservation of retained-artifact collision allocation; and
+14. additive `logicalRoot` and `baseRepository` JSON fields on every
+    topology-reporting command without changing existing field meanings.
 
 All mutating tests must prove complete preflight or exact owned rollback. Tests
 must use temporary repositories and local remotes and must not require network

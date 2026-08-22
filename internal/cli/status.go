@@ -15,7 +15,7 @@ func newStatusCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "status [workspace]",
 		Short: "show workspace checkout and upstream status",
-		Long: "Inspect working-tree and structural status alongside upstream drift. " +
+		Long: "Inspect every declared forest checkout in deterministic parent-first order, including working-tree and structural status alongside upstream drift. " +
 			"UPSTREAM comparisons use last-fetched local upstream facts; status does not fetch or contact remotes.",
 		Args: maximumOneArgument,
 		RunE: func(command *cobra.Command, arguments []string) error {

@@ -12,7 +12,11 @@ func FuzzResolveMount(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, mount string) {
-		_, _ = pathutil.ResolveMount("/workspace", "/workspace", mount, mount == ".")
+		kind := pathutil.ChildMount
+		if mount == "." {
+			kind = pathutil.TopLevelMount
+		}
+		_, _ = pathutil.ResolveMount("/workspace", "/workspace", mount, kind)
 	})
 }
 
@@ -21,14 +25,14 @@ func FuzzNormalizeMount(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, mount string) {
-		normalized, err := pathutil.NormalizeMount(mount, false)
+		normalized, err := pathutil.NormalizeMount(mount, pathutil.ChildMount)
 		if err != nil {
 			return
 		}
 		if normalized == "" || strings.ContainsAny(normalized, "\\\r\n\x00") {
 			t.Fatalf("NormalizeMount(%q) returned unsafe %q", mount, normalized)
 		}
-		again, err := pathutil.NormalizeMount(normalized, false)
+		again, err := pathutil.NormalizeMount(normalized, pathutil.ChildMount)
 		if err != nil || again != normalized {
 			t.Fatalf("NormalizeMount(%q) is not idempotent: %q, %v", normalized, again, err)
 		}

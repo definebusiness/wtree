@@ -47,7 +47,7 @@ func Fuzz(f *testing.F) {
 			}
 			_ = config.ValidateBranchName(input)
 			_ = config.ValidateMergeRef(input)
-			_ = pathutil.ValidateMount(input, false)
+			_ = pathutil.ValidateMount(input, pathutil.ChildMount)
 		}
 	})
 }

@@ -16,6 +16,7 @@ const maxStderr = 8192
 // Git is the complete Git boundary used by application code.
 type Git interface {
 	CommonGitDir(context.Context, string) (string, error)
+	GitDir(context.Context, string) (string, error)
 	TopLevel(context.Context, string) (string, error)
 	Head(context.Context, string) (string, error)
 	ValidBranchName(context.Context, string, string) (bool, error)
@@ -96,6 +97,17 @@ func (a *Adapter) CommonGitDir(ctx context.Context, repository string) (string, 
 		return "", fmt.Errorf("canonicalize common Git directory: %w", err)
 	}
 	return canonical, nil
+}
+func (a *Adapter) GitDir(ctx context.Context, repository string) (string, error) {
+	value, err := a.valueFact(ctx, repository, "rev-parse", "--path-format=absolute", "--git-dir")
+	if err != nil {
+		return "", err
+	}
+	absolute, err := filepath.Abs(value)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(absolute)
 }
 func (a *Adapter) TopLevel(ctx context.Context, repository string) (string, error) {
 	return a.valueFact(ctx, repository, "rev-parse", "--show-toplevel")

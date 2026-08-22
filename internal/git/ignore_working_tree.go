@@ -49,7 +49,7 @@ type WorkingTreeIgnoreInspector interface {
 // Git's ignored-directory walk, because a later directory negation can depend
 // on the mount's actual presence.
 func (a *Adapter) InspectWorkingTreeIgnore(ctx context.Context, repository, mount string) (WorkingTreeIgnoreEvidence, error) {
-	normalized, err := pathutil.NormalizeMount(mount, false)
+	normalized, err := pathutil.NormalizeMount(mount, pathutil.ChildMount)
 	if err != nil {
 		return WorkingTreeIgnoreEvidence{}, err
 	}
@@ -195,7 +195,7 @@ func (e WorkingTreeIgnoreEvidence) Qualifies(parent string) bool {
 	if filepath.Base(resolved) != ".gitignore" {
 		return false
 	}
-	query, err := pathutil.NormalizeMount(strings.TrimSuffix(e.Path, "/"), false)
+	query, err := pathutil.NormalizeMount(strings.TrimSuffix(e.Path, "/"), pathutil.ChildMount)
 	if err != nil {
 		return false
 	}

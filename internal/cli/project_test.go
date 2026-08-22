@@ -30,10 +30,36 @@ func TestProjectListJSONEmptyAndOutsideProject(t *testing.T) {
 	}
 }
 
+func TestProjectListHealthyJSONIncludesAdditiveTopology(t *testing.T) {
+	repository := testutil.NewPushedGitRepository(t)
+	repository.CommitFile("root.txt", "root\n", "root")
+	data := t.TempDir()
+	if initialized := testutil.RunCommand(t, cli.Execute, "init", repository.Path, "--data-dir", data); initialized.Err != nil {
+		t.Fatalf("init = %#v", initialized)
+	}
+	result := testutil.RunCommand(t, cli.Execute, "project", "list", "--data-dir", data, "--json")
+	canonicalRepository, err := filepath.EvalSymlinks(repository.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		Projects []struct {
+			LogicalRoot    string `json:"logicalRoot"`
+			BaseRepository string `json:"baseRepository"`
+			Repositories   []struct {
+				ID, Mount, ResolvedPath string
+			} `json:"repositories"`
+		} `json:"projects"`
+	}
+	if result.Err != nil || json.Unmarshal([]byte(result.Stdout), &report) != nil || len(report.Projects) != 1 || report.Projects[0].LogicalRoot != canonicalRepository || report.Projects[0].BaseRepository != "root" || len(report.Projects[0].Repositories) != 1 || report.Projects[0].Repositories[0].ID != "root" || report.Projects[0].Repositories[0].Mount != "." || report.Projects[0].Repositories[0].ResolvedPath != canonicalRepository {
+		t.Fatalf("healthy project JSON = %#v, output=%q", report, result.Stdout)
+	}
+}
+
 func TestProjectListHumanJSONAndUnsupportedOptions(t *testing.T) {
 	data := t.TempDir()
 	configPath := filepath.Join(data, "path with spaces", ".wtree.yml")
-	if err := config.WriteProjectFile(configPath, config.ProjectConfig{Version: 1, Project: config.Project{ID: "project-a", Name: "A"}, Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: "."}}}); err != nil {
+	if err := config.WriteProjectFile(configPath, strictLocalProjectConfig("project-a", "A")); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.WriteRegistry(filepath.Join(data, "registry.json"), store.Registry{Projects: map[string]store.RegistryProject{"project-a": {Name: "A", ConfigPath: configPath}}}); err != nil {
@@ -58,7 +84,7 @@ func TestProjectListHumanFindingsFollowTheirProjectRows(t *testing.T) {
 	data := t.TempDir()
 	alphaConfig := filepath.Join(data, "alpha", ".wtree.yml")
 	bravoConfig := filepath.Join(data, "bravo", ".wtree.yml")
-	if err := config.WriteProjectFile(bravoConfig, config.ProjectConfig{Version: 1, Project: config.Project{ID: "bravo", Name: "Bravo"}, Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: "."}}}); err != nil {
+	if err := config.WriteProjectFile(bravoConfig, strictLocalProjectConfig("bravo", "Bravo")); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.WriteWorkspace(filepath.Join(data, "state", "alpha", "default.json"), store.WorkspaceState{ID: "default", Name: "default", Repositories: map[string]store.CheckoutState{}}); err != nil {
@@ -396,7 +422,7 @@ func projectPruneCLIData(t *testing.T) string {
 	t.Helper()
 	data := t.TempDir()
 	configPath := filepath.Join(data, "path with spaces", ".wtree.yml")
-	if err := config.WriteProjectFile(configPath, config.ProjectConfig{Version: 1, Project: config.Project{ID: "keeper", Name: "Keeper"}, Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: "."}}}); err != nil {
+	if err := config.WriteProjectFile(configPath, strictLocalProjectConfig("keeper", "Keeper")); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"keeper", "stale"} {
@@ -518,7 +544,7 @@ func TestProjectListRegistryErrorTaxonomyAndJSONCollections(t *testing.T) {
 
 	data := t.TempDir()
 	configPath := filepath.Join(data, "space path", ".wtree.yml")
-	if err := config.WriteProjectFile(configPath, config.ProjectConfig{Version: 1, Project: config.Project{ID: "keeper"}, Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: "."}}}); err != nil {
+	if err := config.WriteProjectFile(configPath, strictLocalProjectConfig("keeper", "keeper")); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.WriteRegistry(filepath.Join(data, "registry.json"), store.Registry{Projects: map[string]store.RegistryProject{"keeper": {ConfigPath: configPath}, "stale": {ConfigPath: configPath}}}); err != nil {
@@ -561,4 +587,14 @@ func contains(value, item string) bool {
 		}
 	}
 	return false
+}
+
+func strictLocalProjectConfig(id, name string) config.ProjectConfig {
+	return config.ProjectConfig{
+		Version:      config.ProjectConfigVersion,
+		Project:      config.Project{ID: id, Name: name, BaseRepository: "root"},
+		LogicalRoot:  ".",
+		Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: ".", DefaultBranch: "main"}},
+		Manifest:     config.ManifestMetadata{Path: "project.wtree.yml", Source: "/manifests/project.wtree.yml"},
+	}
 }

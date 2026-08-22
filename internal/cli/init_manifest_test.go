@@ -2,6 +2,8 @@ package cli_test
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,6 +21,8 @@ func TestInitManifestFlagsRenderDryRunWithoutMutation(t *testing.T) {
 	var value struct {
 		DryRun         bool   `json:"dryRun"`
 		ManifestSource string `json:"manifestSource"`
+		LogicalRoot    string `json:"logicalRoot"`
+		BaseRepository string `json:"baseRepository"`
 		Portable       struct {
 			Repositories map[string]struct {
 				Clone struct {
@@ -30,8 +34,45 @@ func TestInitManifestFlagsRenderDryRunWithoutMutation(t *testing.T) {
 	if err := json.Unmarshal([]byte(result.Stdout), &value); err != nil {
 		t.Fatal(err)
 	}
-	if !value.DryRun || value.ManifestSource != "https://example.invalid/acme/project.wtree.yml" || value.Portable.Repositories["root"].Clone.URL != "file:///tmp/root.git" {
+	canonicalRoot, err := filepath.EvalSymlinks(repository.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !value.DryRun || value.LogicalRoot != canonicalRoot || value.BaseRepository != "root" || value.ManifestSource != "https://example.invalid/acme/project.wtree.yml" || value.Portable.Repositories["root"].Clone.URL != "file:///tmp/root.git" {
 		t.Fatalf("dry-run JSON = %s", result.Stdout)
+	}
+}
+
+func TestInitBaseRepositoryFlagSelectsTopLevelForestBase(t *testing.T) {
+	logicalRoot := t.TempDir()
+	api, web := testutil.NewPushedGitRepository(t), testutil.NewPushedGitRepository(t)
+	api.CommitFile("api.txt", "api\n", "api")
+	web.CommitFile("web.txt", "web\n", "web")
+	apiPath := filepath.Join(logicalRoot, "api")
+	if err := os.Rename(api.Path, apiPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(web.Path, filepath.Join(logicalRoot, "web")); err != nil {
+		t.Fatal(err)
+	}
+
+	result := testutil.RunCommand(t, cli.Execute, "init", logicalRoot, "--base-repository", "api", "--data-dir", t.TempDir(), "--dry-run", "--json")
+	if result.Err != nil || result.Stderr != "" {
+		t.Fatalf("forest init dry-run = %#v", result)
+	}
+	var value struct {
+		BaseRepository string `json:"baseRepository"`
+		ConfigPath     string `json:"configPath"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &value); err != nil {
+		t.Fatal(err)
+	}
+	canonicalAPI, err := filepath.EvalSymlinks(apiPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.BaseRepository != "api" || value.ConfigPath != filepath.Join(canonicalAPI, ".wtree.yml") {
+		t.Fatalf("forest init JSON = %s", result.Stdout)
 	}
 }
 

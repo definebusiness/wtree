@@ -44,9 +44,23 @@ func TestClonePlanningResultSuccessOwnsValidatedPlanAndStableJSON(t *testing.T) 
 	if strings.Index(jsonText, `"plan"`) > strings.Index(jsonText, `"repositories"`) || strings.Contains(jsonText, `"failure"`) || strings.Contains(jsonText, `"requestSource"`) {
 		t.Fatalf("unexpected success JSON schema/order: %s", jsonText)
 	}
+	var directTopology map[string]json.RawMessage
+	if err := json.Unmarshal(first, &directTopology); err != nil || string(directTopology["logicalRoot"]) != `"`+result.LogicalRoot+`"` || string(directTopology["baseRepository"]) != `"root"` {
+		t.Fatalf("planned result direct topology = %s, decode=%v", first, err)
+	}
 	var decoded CloneResult
 	if err := json.Unmarshal(first, &decoded); err != nil || decoded.Validate() != nil {
 		t.Fatalf("decoded clone result validation: decode=%v validate=%v", err, decoded.Validate())
+	}
+	mutatedTopology := decoded
+	mutatedTopology.LogicalRoot = filepath.Join(base, "other-root")
+	if err := mutatedTopology.Validate(); err == nil {
+		t.Fatal("tampered direct topology bypassed result validation")
+	}
+	mutatedTopology = decoded
+	mutatedTopology.BaseRepository = "other-base"
+	if err := mutatedTopology.Validate(); err == nil {
+		t.Fatal("tampered direct base repository bypassed result validation")
 	}
 
 	planCopy := result.PlanCopy()
@@ -167,7 +181,7 @@ func TestClonePlanningResultRepresentsEveryRealPrePlanFailureBoundary(t *testing
 				t.Fatal(err)
 			}
 			second, _ := result.JSON()
-			if !reflect.DeepEqual(first, second) || strings.Contains(string(first), "registry-secret") || strings.Contains(string(first), "remote-secret") || strings.Contains(string(first), `"plan"`) || strings.Contains(string(first), `"repositories"`) {
+			if !reflect.DeepEqual(first, second) || strings.Contains(string(first), "registry-secret") || strings.Contains(string(first), "remote-secret") || strings.Contains(string(first), `"plan"`) || strings.Contains(string(first), `"repositories"`) || strings.Contains(string(first), `"logicalRoot"`) || strings.Contains(string(first), `"baseRepository"`) {
 				t.Fatalf("unstable, mixed, or leaking failure JSON: %s", first)
 			}
 			var decoded CloneResult

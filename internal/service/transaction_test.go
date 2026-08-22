@@ -420,7 +420,7 @@ func TestWorkspaceTransactionCancellationAfterFinalEffectRollsBackBeforeStateCom
 func transactionRequest(dataDir string, steps []transaction.Step) WorkspaceTransactionRequest {
 	return WorkspaceTransactionRequest{
 		Plan: plan.WorkspacePlan{
-			Version: 1, Operation: plan.Create, ProjectID: "project-id", WorkspaceName: "feature/login", WorkspaceID: "workspace-id", RootPath: "/workspace",
+			Version: 1, Operation: plan.Create, ProjectID: "project-id", WorkspaceName: "feature/login", WorkspaceID: "workspace-id", RootPath: "/workspace", LogicalRoot: "/workspace", BaseRepository: "root",
 			Repositories: []plan.RepositoryPlan{{ID: "root", Base: "base", Branch: "feature/login", Mount: ".", Path: "/workspace/root"}},
 			Steps:        []plan.Step{{Action: plan.CreateBranch, RepositoryID: "root", Inverse: plan.DeleteBranch}, {Action: plan.AddWorktree, RepositoryID: "root", Inverse: plan.RemoveWorktree}},
 		},

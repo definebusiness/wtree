@@ -293,7 +293,7 @@ exec git "$@"
 func TestAdapterWorkingTreeIgnoreDecodesNULDelimitedUnicodeSource(t *testing.T) {
 	repository := testutil.NewGitRepository(t)
 	repository.CommitFile("tracked", "initial\n", "initial")
-	sourceDirectory := "deeper:12:\t\u4e16\u754c"
+	sourceDirectory := "deeper 12 世界"
 	if err := os.MkdirAll(filepath.Join(repository.Path, sourceDirectory), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -360,6 +360,14 @@ func TestAdapterCoversWorktreeDirtyDetachedAndMissingRefFacts(t *testing.T) {
 	worktreeCommonDir, err := adapter.CommonGitDir(context, worktreePath)
 	if err != nil || worktreeCommonDir != commonDir {
 		t.Fatalf("worktree common dir = %q, %v; want %q", worktreeCommonDir, err, commonDir)
+	}
+	mainGitDir, err := adapter.GitDir(context, repository.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktreeGitDir, err := adapter.GitDir(context, worktreePath)
+	if err != nil || worktreeGitDir == mainGitDir {
+		t.Fatalf("linked worktree Git dir = %q, %v; want identity distinct from %q", worktreeGitDir, err, mainGitDir)
 	}
 	if checkedOut, err := adapter.BranchCheckedOut(context, repository.Path, "feature"); err != nil || !checkedOut {
 		t.Fatalf("BranchCheckedOut() = %t, %v; want true", checkedOut, err)

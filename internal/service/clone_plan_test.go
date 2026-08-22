@@ -580,6 +580,35 @@ func TestClonePlanThreeLevelOrderIsParentFirstAndLexicallyStable(t *testing.T) {
 	}
 }
 
+func TestPortableRepositoryOrderIsIndependentOfForestMapInsertionOrder(t *testing.T) {
+	values := []struct {
+		id     string
+		parent string
+	}{
+		{"deep", "child"},
+		{"z-base", ""},
+		{"a-top", ""},
+		{"child", "z-base"},
+	}
+	for _, reverse := range []bool{false, true} {
+		repositories := make(map[string]config.PortableRepository, len(values))
+		for index := range values {
+			at := index
+			if reverse {
+				at = len(values) - 1 - index
+			}
+			repositories[values[at].id] = config.PortableRepository{Parent: values[at].parent}
+		}
+		order, err := portableRepositoryOrder(config.PortableManifest{Repositories: repositories})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"a-top", "z-base", "child", "deep"}; !reflect.DeepEqual(order, want) {
+			t.Fatalf("reverse=%t order = %v, want %v", reverse, order, want)
+		}
+	}
+}
+
 func TestClonePlanCapturesFactsForLaterRevalidationDuringConcurrentChange(t *testing.T) {
 	base := t.TempDir()
 	rootURL := filepath.Join(base, "root.git")

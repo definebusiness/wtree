@@ -1,51 +1,68 @@
 # wtree
 
-`wtree` manages synchronized Git workspaces across a project containing
-independent, nested Git repositories.
+`wtree` manages synchronized Git workspaces across a project containing a
+forest of independent Git repositories. The project has one logical root,
+which may be an ordinary directory, and one designated top-level base
+repository that owns its portable and machine-local metadata.
 
-It was created because existing worktree tools did not support the combination
-of nested repositories and synchronized branch management: creating a
+It was created because existing worktree tools did not support synchronized
+branch management across sibling and nested repositories: creating a
 `feature/login` workspace should create matching branches and Git worktrees for
-the parent repository and each nested repository, as one logical operation.
+every declared repository tree as one logical operation.
 
 ## What it does
 
-`wtree` discovers the root repository and independent Git repositories nested
-inside it, records their Git identities, and treats them as one project. It
-then creates, imports, restores, inspects, and safely removes complete
-workspaces.
+`wtree` discovers independent Git repositories below an explicit logical-root
+boundary, records their Git identities and parent relationships, and treats
+the resulting forest as one project. It then creates, imports, restores,
+inspects, and safely removes complete workspaces.
 
 Repository identity is based on Git's common directory, not the checkout
-directory name. A nested repository can therefore be mounted under a different
-name in a workspace without losing its identity.
+directory name. A repository can therefore be mounted under a different name
+in a workspace without losing its identity.
 
 For example, a project like this:
 
 ```text
-product/
-├── .git/
-└── backend/
-    └── .git/
+product/                       # logical project root, not a Git checkout
+├── services/
+│   └── api/                   # base repository
+│       ├── .git/
+│       └── components/
+│           └── shared/       # child repository of api
+│               └── .git/
+└── clients/
+    └── web/                   # sibling top-level repository
+        └── .git/
 ```
 
 can have a synchronized `feature/login` workspace whose nested checkout is
 mounted as `api/` instead of `backend/`:
 
 ```text
-feature-login/
-├── .git
-└── api/
+feature-login/                 # logical workspace root
+├── services/
+│   └── api/
+│       ├── .git
+│       └── components/shared/
+│           └── .git
+└── clients/web/
     └── .git
 ```
 
-Both the parent repository and `backend` use the `feature/login` branch.
+All three repositories use the `feature/login` branch. Top-level mounts are
+relative to the logical root; a child mount is relative to its immediate Git
+parent. The base repository owns `.wtree.yml` and `project.wtree.yml`, but it
+does not become the parent of sibling repositories.
 
 ## Why it exists
 
 Common IDEs and Git worktree tools generally do not support a project made of
-an outer repository plus independent repositories nested inside it. In
-particular, they cannot create and manage one synchronized worktree across all
-of those repositories. `wtree` was built to fill that gap. Easy, reliable
+several independent repository trees beneath one ordinary directory. In
+particular, they cannot create and manage one synchronized workspace across
+all of those repositories. The traditional outer-repository layout remains
+supported as the one top-level repository mounted at `.`. `wtree` was built
+to fill that gap. Easy, reliable
 worktree management is especially crucial for modern AI-assisted development,
 where parallel agents and experiments need isolated workspaces without losing
 the coherence of a multi-repository project.
@@ -69,15 +86,16 @@ See [docs/INSTALL.md](docs/INSTALL.md) for local release builds and checksums.
 
 To publish an existing project, first push every repository and connect its
 current branch to the intended upstream. `wtree init` writes ignored
-machine-local`.wtree.yml`, writes tracked portable `project.wtree.yml`, and
-updates the `.gitignore` of every repository that directly contains another
-repository. Review, commit, and push the manifest and every changed
+machine-local `.wtree.yml` and tracked `project.wtree.yml` in the selected base
+repository. It updates each Git parent's `.gitignore` for its direct child
+mounts; ordinary grouping directories and the logical root own no metadata or
+ignore rules. Review, commit, and push the manifest and every changed
 `.gitignore`.
 
 ```sh
 cd ~/code/product
-wtree init
-git add .gitignore project.wtree.yml
+wtree init --base-repository api
+git -C services/api add .gitignore project.wtree.yml
 ```
 
 `project.wtree.yml` is a portable, reviewable authoring artifact. `init` never
@@ -85,19 +103,27 @@ stages, commits, or pushes; review and commit the portable manifest and any
 automatic `.gitignore` changes yourself.
 
 Portable manifests use schema version 2. The `project.base_repository` field
-names the sole root checkout, which continues to contain the tracked manifest
-and local `.wtree.yml` metadata:
+names exactly one top-level metadata owner. It may be mounted below grouping
+directories and need not be the only top-level repository:
 
 ```yaml
 version: 2
 project:
   id: product
   name: product
-  base_repository: root
+  base_repository: api
 repositories:
-  root:
+  api:
     parent: ""
-    mount: .
+    mount: services/api
+    # clone, upstream, identity, and default_branch are written by `wtree init`
+  shared:
+    parent: api
+    mount: components/shared
+    # clone, upstream, identity, and default_branch are written by `wtree init`
+  web:
+    parent: ""
+    mount: clients/web
     # clone, upstream, identity, and default_branch are written by `wtree init`
 ```
 
@@ -123,7 +149,8 @@ platform default is used):
 wtree config set worktrees.root ~/code/worktrees
 ```
 
-Create matching branches and worktrees for the parent and nested repositories:
+Create matching branches and worktrees for every repository in deterministic
+parent-first order:
 
 ```sh
 wtree create feature/login
@@ -159,6 +186,13 @@ contact remotes:
 wtree status feature/login
 wtree status feature/login --json
 ```
+
+Topology-bearing JSON results expose `logicalRoot`, `baseRepository`, and an
+ordered `repositories` list. Each repository entry carries its declared
+`parentId`, effective `mount`, and `resolvedPath` where applicable. Scalar
+commands stay scalar: `wtree path` and `wtree repo path` print only one path.
+When a project is stale or a failure happens before topology is validated,
+those unproven topology fields are omitted rather than guessed.
 
 Inspect the global project registry from any directory. This is read-only and
 reports inconsistent registrations without pruning repositories, worktrees, or
@@ -225,6 +259,19 @@ Use `--dry-run` on mutating commands to validate and preview an operation, and
 use `--force` only when you explicitly intend to override the reported safety
 checks. `wtree doctor feature/login` diagnoses drift; `--fix` applies only its
 listed safe repairs.
+
+If rollback cannot prove that a path still belongs to the failed operation,
+`wtree` preserves the path instead of risking data loss, reports
+`rollback_incomplete`, and writes a recovery record. The failure is immediate
+and later mutations remain blocked until the retained work is inspected and
+reconciled. Start with `wtree doctor <workspace>` and follow the
+[incomplete-rollback guidance](docs/TROUBLESHOOTING.md#an-operation-reports-an-incomplete-rollback).
+
+Local project configuration is strictly schema version 2. A version 1
+`.wtree.yml` is rejected with reinitialization guidance; it is never silently
+rewritten. Portable manifests remain version 2, while global configuration,
+workspace state/plans, registry, and recovery records retain their established
+versions.
 
 Run `wtree --how-to` for the installed workflow guide, or
 `wtree <command> --help` for the full command reference.

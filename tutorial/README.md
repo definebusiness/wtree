@@ -1,10 +1,11 @@
 # `wtree` hands-on tutorial
 
-This tutorial uses three local bare Git repositories and a portable manifest
-to explore the core `wtree` workflow without contacting a real remote server. The
-fixture represents an Acme Shop project with a parent repository and two
-independent repositories nested inside it. The fixture does not create the
-project checkout: `wtree clone` reconstructs it from `project.wtree.yml`.
+This tutorial uses local bare Git repositories and portable manifests to
+explore the core `wtree` workflow without contacting a real remote server. The
+main fixture represents the root-Git-compatible Acme Shop layout. The
+executable all-command runner additionally initializes and clones a plain
+logical-root forest with a grouped non-dot base, a sibling top-level tree, and
+a nested child.
 
 For every command, registry cleanup, partial imports, and additional safety
 paths, continue with the [all-commands tutorial](ALL-COMMANDS.md).
@@ -560,7 +561,35 @@ wtree delete manual/import-demo --dry-run
 wtree delete manual/import-demo
 ```
 
-## 15. Review the final state
+## 15. Plain logical roots and repository forests
+
+The root-Git project above is the compatible one-top-level-repository form of
+the general model. A logical root may instead be an ordinary directory:
+
+```text
+workspace/
+├── services/api/                 base repository
+│   └── components/shared/        child of api
+└── clients/web/                  sibling top-level repository
+```
+
+Top-level mounts are relative to `workspace/`; `components/shared` is relative
+to its immediate parent, `api`. Only the base owns `.wtree.yml` and
+`project.wtree.yml`. The logical root and grouping directories own neither.
+When more than one top-level repository is discovered, initialization requires
+an explicit top-level base:
+
+```sh
+wtree init /path/to/workspace --base-repository api --dry-run --json
+wtree init /path/to/workspace --base-repository api
+```
+
+Run `./tutorial/run-all-commands.sh` for an executable local-remote example
+that publishes this layout, clones it, creates and restores a workspace,
+imports a manual forest, inspects topology from nested and sibling contexts,
+and deletes only managed worktrees.
+
+## 16. Review the final state
 
 The cloned default checkout and the checked-out `feature/customer-search` workspace
 remain. The failed partial and missing-branch checkouts did not leave any

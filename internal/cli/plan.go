@@ -198,7 +198,7 @@ func effectivePlannerWorktreeRoot(cliRoot, projectPath, globalPath, fallback, ho
 	}
 	global, err := configuration.ReadGlobalFile(globalPath)
 	if os.IsNotExist(err) {
-		global = configuration.GlobalConfig{Version: configuration.Version}
+		global = configuration.GlobalConfig{Version: configuration.GlobalConfigVersion}
 	} else if err != nil {
 		return "", fmt.Errorf("read global configuration: %w", err)
 	}

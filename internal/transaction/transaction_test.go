@@ -34,6 +34,45 @@ func TestRunnerRollsBackCompletedStepsInReverseOrder(t *testing.T) {
 	}
 }
 
+func TestRunnerRollsBackFailedExecutePartialEffectBeforeCompletedSteps(t *testing.T) {
+	var calls []string
+	failure := errors.New("execute failure")
+	result := (Runner{Progress: func(event Event) { calls = append(calls, string(event.Kind)+":"+event.Step) }}).Run(context.Background(), []Step{
+		{Name: "one", Execute: func(context.Context) error { return nil }, Rollback: func(context.Context) error { calls = append(calls, "undo:one"); return nil }},
+		{Name: "two", Execute: func(context.Context) error { return failure }, RollbackFailedExecute: func(context.Context) error { calls = append(calls, "undo:two"); return nil }},
+	})
+	if result.FailedStep != "two" || !errors.Is(result.Failure, failure) || !result.FailedExecuteRolledBack || result.RollbackFailure != nil || len(result.UnrevertedSteps) != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+	if got, want := calls, []string{"execute_started:one", "execute_succeeded:one", "execute_started:two", "execute_failed:two", "rollback_started:two", "undo:two", "rollback_succeeded:two", "rollback_started:one", "undo:one", "rollback_succeeded:one"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls = %v, want %v", got, want)
+	}
+}
+
+func TestRunnerRecordsFailedExecuteCleanupFailure(t *testing.T) {
+	failure, cleanupFailure, priorFailure := errors.New("execute"), errors.New("cleanup"), errors.New("prior")
+	result := (Runner{}).Run(context.Background(), []Step{
+		{Name: "one", Execute: func(context.Context) error { return nil }, Rollback: func(context.Context) error { return priorFailure }},
+		{Name: "two", Execute: func(context.Context) error { return failure }, RollbackFailedExecute: func(context.Context) error { return cleanupFailure }},
+	})
+	if result.FailedStep != "two" || !errors.Is(result.Failure, failure) || result.FailedExecuteRolledBack || !errors.Is(result.RollbackFailure, cleanupFailure) || !errors.Is(result.RollbackFailure, priorFailure) {
+		t.Fatalf("result = %#v", result)
+	}
+	if got, want := result.UnrevertedSteps, []string{"two", "one"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unreverted = %v", got)
+	}
+	if got, want := result.RollbackFailures, []RollbackIssue{{Step: "two", Error: "cleanup"}, {Step: "one", Error: "prior"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("failures = %#v", got)
+	}
+}
+
+func TestRunnerNilFailedExecuteCleanupPreservesLegacyResult(t *testing.T) {
+	result := (Runner{}).Run(context.Background(), []Step{{Name: "failed", Execute: func(context.Context) error { return errors.New("failure") }}})
+	if result.RollbackFailure != nil || result.FailedExecuteRolledBack || len(result.UnrevertedSteps) != 0 || result.FailedStep != "failed" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestRunnerInjectedFailureAtEveryStepBoundary(t *testing.T) {
 	for failAt := 0; failAt < 3; failAt++ {
 		t.Run(string(rune('1'+failAt)), func(t *testing.T) {

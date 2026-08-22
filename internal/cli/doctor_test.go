@@ -28,12 +28,22 @@ func TestExecuteDoctorJSONIsReadOnlyAndSupportsFixDryRun(t *testing.T) {
 		t.Fatalf("doctor = %#v", result)
 	}
 	var report struct {
-		Workspace string `json:"workspace"`
-		Findings  []struct {
+		Workspace      string `json:"workspace"`
+		LogicalRoot    string `json:"logicalRoot"`
+		BaseRepository string `json:"baseRepository"`
+		Repositories   []struct {
+			ID, Mount, ResolvedPath, Status                                        string
+			IdentityMismatch, Missing, MountMismatch, BranchMismatch, HeadMismatch bool
+		} `json:"repositories"`
+		Findings []struct {
 			Severity string `json:"severity"`
 		} `json:"findings"`
 	}
-	if err := json.Unmarshal([]byte(result.Stdout), &report); err != nil || report.Workspace != "default" {
+	canonicalProject, err := filepath.EvalSymlinks(project.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &report); err != nil || report.Workspace != "default" || report.LogicalRoot != canonicalProject || report.BaseRepository != "root" || len(report.Repositories) != 1 || report.Repositories[0].ID != "root" || report.Repositories[0].Mount != "." || report.Repositories[0].ResolvedPath != canonicalProject || report.Repositories[0].Status != "known" {
 		t.Fatalf("doctor JSON = %q, report=%#v err=%v", result.Stdout, report, err)
 	}
 	after, err := os.ReadFile(filepath.Join(statePath, mustSingleDirectory(t, statePath), "default.json"))

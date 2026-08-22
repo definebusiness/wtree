@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"github.com/definebusiness/wtree/internal/config"
+	"github.com/definebusiness/wtree/internal/domain"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
+	"github.com/definebusiness/wtree/internal/pathutil"
 )
 
 const ClonePlanVersion = 2
@@ -89,16 +91,18 @@ type ClonePlanAction struct {
 // ClonePlan is a complete read-only observation for a later executor. Private
 // manifest bytes are copied on access and deliberately excluded from JSON.
 type ClonePlan struct {
-	Version      int                    `json:"version"`
-	Operation    string                 `json:"operation"`
-	Source       ClonePlanSource        `json:"source"`
-	Destination  CloneDestinationFacts  `json:"destination"`
-	Project      config.PortableProject `json:"project"`
-	Repositories []ClonePlanRepository  `json:"repositories"`
-	Actions      []ClonePlanAction      `json:"actions"`
-	WorktreeRoot string                 `json:"worktreeRoot,omitempty"`
-	DataDir      string                 `json:"dataDir"`
-	manifestData []byte
+	Version        int                    `json:"version"`
+	Operation      string                 `json:"operation"`
+	Source         ClonePlanSource        `json:"source"`
+	Destination    CloneDestinationFacts  `json:"destination"`
+	Project        config.PortableProject `json:"project"`
+	LogicalRoot    string                 `json:"logicalRoot"`
+	BaseRepository string                 `json:"baseRepository"`
+	Repositories   []ClonePlanRepository  `json:"repositories"`
+	Actions        []ClonePlanAction      `json:"actions"`
+	WorktreeRoot   string                 `json:"worktreeRoot,omitempty"`
+	DataDir        string                 `json:"dataDir"`
+	manifestData   []byte
 }
 
 func (plan ClonePlan) ManifestBytes() []byte { return append([]byte(nil), plan.manifestData...) }
@@ -118,7 +122,7 @@ func (plan ClonePlan) Validate() error {
 	if plan.Version != ClonePlanVersion || plan.Operation != "clone" {
 		return errors.New("invalid clone plan version or operation")
 	}
-	if plan.Source.Value == "" || plan.Source.SHA256 == "" || plan.Destination.Path == "" || plan.DataDir == "" || !plan.Destination.DestinationDidNotExist {
+	if plan.Source.Value == "" || plan.Source.SHA256 == "" || plan.Destination.Path == "" || plan.DataDir == "" || !plan.Destination.DestinationDidNotExist || plan.LogicalRoot != plan.Destination.Path || plan.BaseRepository != plan.Project.BaseRepository {
 		return errors.New("incomplete clone plan provenance or destination facts")
 	}
 	if _, err := hex.DecodeString(plan.Source.SHA256); err != nil || len(plan.Source.SHA256) != sha256.Size*2 {
@@ -169,11 +173,7 @@ func (plan ClonePlan) Validate() error {
 		if repository.ID == "" || !validClonePlanObjectID(repository.ObservedCommit) || seen[repository.ID] || (repository.Parent != "" && !seen[repository.Parent]) {
 			return fmt.Errorf("invalid parent-first clone repository %q", repository.ID)
 		}
-		expectedPath := plan.Destination.Path
-		if repository.Parent != "" {
-			expectedPath = filepath.Join(paths[repository.Parent], filepath.FromSlash(repository.Mount))
-		}
-		if repository.Path != expectedPath || repository.Verification.TrackedManifestExact != (repository.Parent == "") || repository.Verification.CommittedParentIgnore != (repository.Parent != "") || !repository.Verification.CleanWorktree || !repository.Verification.NoSubmodules {
+		if repository.Verification.TrackedManifestExact != (repository.ID == plan.BaseRepository) || repository.Verification.CommittedParentIgnore != (repository.Parent != "") || !repository.Verification.CleanWorktree || !repository.Verification.NoSubmodules {
 			return fmt.Errorf("invalid clone verification or path for repository %q", repository.ID)
 		}
 		manifest.Repositories[repository.ID] = config.PortableRepository{Clone: config.CloneSource{Remote: repository.CloneRemote, URL: repository.CloneURL}, Upstream: config.Upstream{Branch: repository.LocalBranch, Remote: repository.CloneRemote, Merge: repository.RemoteRef}, Identity: config.RepositoryIdentity{InitialCommits: append([]string(nil), repository.Verification.InitialCommits...)}, Parent: repository.Parent, Mount: repository.Mount, DefaultBranch: repository.LocalBranch}
@@ -183,7 +183,17 @@ func (plan ClonePlan) Validate() error {
 	if err := manifest.Validate(); err != nil {
 		return fmt.Errorf("invalid clone plan repository contract: %w", err)
 	}
-	if expected := clonePlanActions(plan.Repositories, plan.Destination.Path); !reflect.DeepEqual(plan.Actions, expected) {
+	project := cloneDomainProject(manifest)
+	effectivePaths, err := project.EffectivePaths(plan.Destination.Path, nil)
+	if err != nil {
+		return fmt.Errorf("invalid clone plan effective paths: %w", err)
+	}
+	for id, path := range effectivePaths {
+		if paths[id] != path {
+			return fmt.Errorf("invalid clone path for repository %q", id)
+		}
+	}
+	if expected := clonePlanActions(plan.Repositories, plan.Destination.Path, plan.BaseRepository); !reflect.DeepEqual(plan.Actions, expected) {
 		return errors.New("invalid clone action ordering or contract")
 	}
 	if plan.manifestData != nil {
@@ -334,15 +344,15 @@ func (planner *ClonePlanner) planAttempt(ctx context.Context, request ClonePlanR
 	}
 	attempt.stage = CloneResultStageRemote
 	repositories := make([]ClonePlanRepository, 0, len(order))
-	paths := make(map[string]string, len(order))
+	project := cloneDomainProject(manifest)
+	paths, err := project.EffectivePaths(destination.Path, nil)
+	if err != nil {
+		return ClonePlan{}, attempt, NewError(ErrorValidation, fmt.Errorf("resolve clone forest paths: %w", err))
+	}
 	var remoteErrors []cloneRemoteFailure
 	for _, id := range order {
 		repository := manifest.Repositories[id]
-		path := destination.Path
-		if repository.Parent != "" {
-			path = filepath.Join(paths[repository.Parent], filepath.FromSlash(repository.Mount))
-		}
-		paths[id] = path
+		path := paths[id]
 		if planner.beforeRemoteRead != nil {
 			planner.beforeRemoteRead(id)
 		}
@@ -355,18 +365,18 @@ func (planner *ClonePlanner) planAttempt(ctx context.Context, request ClonePlanR
 			CloneRemote: repository.Clone.Remote, CloneURL: repository.Clone.URL,
 			LocalBranch: repository.DefaultBranch, RemoteRef: repository.Upstream.Merge,
 			ObservedCommit: commit,
-			Verification:   CloneVerification{TrackedManifestExact: repository.Parent == "", InitialCommits: append([]string(nil), repository.Identity.InitialCommits...), CleanWorktree: true, NoSubmodules: true, CommittedParentIgnore: repository.Parent != ""},
+			Verification:   CloneVerification{TrackedManifestExact: id == manifest.Project.BaseRepository, InitialCommits: append([]string(nil), repository.Identity.InitialCommits...), CleanWorktree: true, NoSubmodules: true, CommittedParentIgnore: repository.Parent != ""},
 		})
 	}
 	if len(remoteErrors) != 0 {
 		return ClonePlan{}, attempt, NewError(ErrorGit, errors.New(formatCloneRemoteFailures(remoteErrors, len(order))))
 	}
-	actions := clonePlanActions(repositories, destination.Path)
+	actions := clonePlanActions(repositories, destination.Path, manifest.Project.BaseRepository)
 	digest := sha256.Sum256(loaded.Bytes())
 	plan := ClonePlan{
 		Version: ClonePlanVersion, Operation: "clone",
 		Source:      ClonePlanSource{Kind: loaded.Kind, Value: loaded.Source, SHA256: hex.EncodeToString(digest[:])},
-		Destination: destination, Project: manifest.Project, Repositories: repositories,
+		Destination: destination, Project: manifest.Project, LogicalRoot: destination.Path, BaseRepository: manifest.Project.BaseRepository, Repositories: repositories,
 		Actions: actions, WorktreeRoot: request.WorktreeRoot, DataDir: dataDir, manifestData: loaded.Bytes(),
 	}
 	if err := plan.Validate(); err != nil {
@@ -465,7 +475,7 @@ func inspectCloneDestination(request ClonePlanRequest, projectName string, files
 	}
 	value := request.Destination
 	if value == "" {
-		if err := config.ValidatePortableMount(projectName, false); err != nil || filepath.Base(projectName) != projectName {
+		if err := config.ValidatePortableMount(projectName, pathutil.ChildMount); err != nil || filepath.Base(projectName) != projectName {
 			return CloneDestinationFacts{}, errors.New("manifest project name is not a safe destination component; provide an explicit destination")
 		}
 		value = projectName
@@ -649,7 +659,15 @@ func portableRepositoryOrder(manifest config.PortableManifest) ([]string, error)
 		if len(ready) == 0 {
 			return nil, errors.New("portable repository hierarchy cannot be ordered")
 		}
-		sort.Strings(ready)
+		sort.Slice(ready, func(left, right int) bool {
+			if manifest.Repositories[ready[left]].Parent == "" && ready[left] == manifest.Project.BaseRepository {
+				return true
+			}
+			if manifest.Repositories[ready[right]].Parent == "" && ready[right] == manifest.Project.BaseRepository {
+				return false
+			}
+			return ready[left] < ready[right]
+		})
 		for _, id := range ready {
 			order = append(order, id)
 			seen[id] = true
@@ -659,7 +677,15 @@ func portableRepositoryOrder(manifest config.PortableManifest) ([]string, error)
 	return order, nil
 }
 
-func clonePlanActions(repositories []ClonePlanRepository, destination string) []ClonePlanAction {
+func cloneDomainProject(manifest config.PortableManifest) domain.Project {
+	repositories := make([]domain.Repository, 0, len(manifest.Repositories))
+	for id, repository := range manifest.Repositories {
+		repositories = append(repositories, domain.Repository{ID: id, ParentID: repository.Parent, DefaultMount: repository.Mount, DefaultBranch: repository.DefaultBranch})
+	}
+	return domain.Project{Version: domain.CurrentVersion, ID: manifest.Project.ID, Name: manifest.Project.Name, BaseRepository: manifest.Project.BaseRepository, Repositories: repositories}
+}
+
+func clonePlanActions(repositories []ClonePlanRepository, destination, baseRepository string) []ClonePlanAction {
 	var actions []ClonePlanAction
 	byID := make(map[string]ClonePlanRepository, len(repositories))
 	for _, repository := range repositories {
@@ -668,7 +694,24 @@ func clonePlanActions(repositories []ClonePlanRepository, destination string) []
 	add := func(action, id, path string) {
 		actions = append(actions, ClonePlanAction{Sequence: len(actions) + 1, Action: action, RepositoryID: id, Path: path})
 	}
+	createdGrouping := map[string]bool{}
 	for _, repository := range repositories {
+		parentPath := destination
+		if repository.Parent != "" {
+			parentPath = byID[repository.Parent].Path
+		}
+		mountPath := filepath.FromSlash(repository.Mount)
+		directories := []string{}
+		for directory := filepath.Dir(mountPath); directory != "." && directory != string(filepath.Separator); directory = filepath.Dir(directory) {
+			directories = append(directories, directory)
+		}
+		for index := len(directories) - 1; index >= 0; index-- {
+			path := filepath.Join(parentPath, directories[index])
+			if !createdGrouping[path] {
+				add("create_grouping_directory", "", path)
+				createdGrouping[path] = true
+			}
+		}
 		if repository.Parent != "" {
 			parent := byID[repository.Parent]
 			actions = append(actions, ClonePlanAction{
@@ -683,11 +726,12 @@ func clonePlanActions(repositories []ClonePlanRepository, destination string) []
 		add("fetch_selected_branch", repository.ID, repository.Path)
 		add("checkout_selected_branch", repository.ID, repository.Path)
 		add("verify_repository", repository.ID, repository.Path)
-		if repository.Parent == "" {
+		if repository.ID == baseRepository {
 			add("verify_tracked_manifest", repository.ID, repository.Path)
+			add("verify_base_metadata_ignore", repository.ID, repository.Path)
 		}
 	}
-	add("write_local_configuration", "", filepath.Join(destination, ".wtree.yml"))
+	add("write_local_configuration", "", filepath.Join(byID[baseRepository].Path, ".wtree.yml"))
 	add("publish_destination", "", destination)
 	add("publish_workspace_state", "", destination)
 	add("register_project", "", destination)

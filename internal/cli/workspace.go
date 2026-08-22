@@ -21,7 +21,7 @@ func newCheckoutCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Co
 	command := &cobra.Command{
 		Use:   "checkout <workspace-or-branch>",
 		Short: "checkout an existing synchronized workspace branch",
-		Long:  "Restore retained workspace mounts when state exists, or add worktrees for an existing branch. Checkout never creates branches.",
+		Long:  "Restore retained mounts across the complete repository forest when state exists, or add worktrees for an existing branch. Top-level mounts are logical-root-relative and children are immediate-parent-relative. Checkout never creates branches.",
 		Args:  exactArguments(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
 			if force {

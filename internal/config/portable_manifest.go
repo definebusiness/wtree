@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/definebusiness/wtree/internal/pathutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -81,7 +82,7 @@ func MarshalPortableManifest(manifest PortableManifest) ([]byte, error) {
 // MarshalProject is the in-memory counterpart of WriteProjectFile. It exists
 // for callers that need an encoded local config without writing it.
 func MarshalProject(value ProjectConfig) ([]byte, error) {
-	if value.Version != Version {
+	if value.Version != ProjectConfigVersion {
 		return nil, fmt.Errorf("unsupported project config version %d", value.Version)
 	}
 	if err := ValidateManifestMetadata(value.Manifest); err != nil {
@@ -106,31 +107,36 @@ func (manifest PortableManifest) Validate() error {
 		return fmt.Errorf("project base repository: %w", err)
 	}
 	if len(manifest.Repositories) == 0 {
-		return fmt.Errorf("portable manifest must contain a root repository")
+		return fmt.Errorf("portable manifest must contain at least one top-level repository")
 	}
 
-	rootCount := 0
-	rootID := ""
+	topLevelCount := 0
 	for id, repository := range manifest.Repositories {
 		if err := ValidatePortableID(id); err != nil {
 			return fmt.Errorf("repository ID %q: %w", id, err)
 		}
 		if repository.Parent == "" {
-			rootCount++
-			rootID = id
+			topLevelCount++
 		}
 		if err := repository.validate(id); err != nil {
 			return err
 		}
 	}
-	if rootCount != 1 {
-		return fmt.Errorf("portable manifest must contain exactly one root repository, got %d", rootCount)
+	if topLevelCount == 0 {
+		return fmt.Errorf("portable manifest must contain at least one top-level repository")
+	}
+	if topLevelCount > 1 {
+		for _, repository := range manifest.Repositories {
+			if repository.Parent == "" && repository.Mount == "." {
+				return fmt.Errorf("top-level mount %q is valid only as the sole top-level repository", ".")
+			}
+		}
 	}
 	if _, exists := manifest.Repositories[manifest.Project.BaseRepository]; !exists {
 		return fmt.Errorf("project base repository %q is not declared", manifest.Project.BaseRepository)
 	}
-	if manifest.Project.BaseRepository != rootID {
-		return fmt.Errorf("project base repository %q must name the sole root repository %q", manifest.Project.BaseRepository, rootID)
+	if manifest.Repositories[manifest.Project.BaseRepository].Parent != "" {
+		return fmt.Errorf("project base repository %q must be top-level", manifest.Project.BaseRepository)
 	}
 	for id, repository := range manifest.Repositories {
 		if repository.Parent != "" {
@@ -154,7 +160,7 @@ func (manifest PortableManifest) Validate() error {
 		repository := manifest.Repositories[id]
 		var resolved string
 		if repository.Parent == "" {
-			resolved = "."
+			resolved = repository.Mount
 		} else {
 			parentPath, err := resolve(repository.Parent)
 			if err != nil {
@@ -185,7 +191,11 @@ func (manifest PortableManifest) Validate() error {
 }
 
 func (repository PortableRepository) validate(id string) error {
-	if err := ValidatePortableMount(repository.Mount, repository.Parent == ""); err != nil {
+	kind := pathutil.ChildMount
+	if repository.Parent == "" {
+		kind = pathutil.TopLevelMount
+	}
+	if err := ValidatePortableMount(repository.Mount, kind); err != nil {
 		return fmt.Errorf("repository %q mount: %w", id, err)
 	}
 	if err := ValidateRemoteName(repository.Clone.Remote); err != nil {
@@ -274,11 +284,8 @@ func ValidateBranchName(value string) error {
 
 // ValidatePortableMount validates the manifest's cross-platform literal
 // format without changing the more permissive runtime mount behavior.
-func ValidatePortableMount(mount string, root bool) error {
-	if root {
-		if mount != "." {
-			return fmt.Errorf("root repository mount must be %q", ".")
-		}
+func ValidatePortableMount(mount string, kind pathutil.MountKind) error {
+	if kind == pathutil.TopLevelMount && mount == "." {
 		return nil
 	}
 	if mount == "" {
@@ -287,15 +294,19 @@ func ValidatePortableMount(mount string, root bool) error {
 	if strings.HasPrefix(mount, "/") || hasWindowsPathVolume(mount) {
 		return fmt.Errorf("repository mount %q must be relative", mount)
 	}
-	if strings.Contains(mount, `\`) || strings.Contains(mount, "//") || strings.HasSuffix(mount, "/") {
+	if strings.Contains(mount, `\`) || strings.Contains(mount, "//") || strings.HasSuffix(mount, "/") || path.Clean(mount) != mount {
 		return fmt.Errorf("repository mount %q must use canonical slash-separated components", mount)
 	}
-	for _, component := range strings.Split(mount, "/") {
+	components := strings.Split(mount, "/")
+	for _, component := range components {
 		if component == ".." {
 			return fmt.Errorf("repository mount %q escapes its parent", mount)
 		}
 		if component == "" || component == "." {
 			return fmt.Errorf("repository mount %q must not contain dot or empty components", mount)
+		}
+		if strings.EqualFold(component, ".git") {
+			return fmt.Errorf("repository mount %q enters forbidden Git administration path", mount)
 		}
 		if strings.HasSuffix(component, ".") || strings.HasSuffix(component, " ") || strings.ContainsAny(component, `<>:"|?*`) || strings.IndexFunc(component, unicode.IsControl) >= 0 || reservedPortableDeviceComponent(component) {
 			return fmt.Errorf("repository mount %q has a platform-unsafe component", mount)
@@ -562,5 +573,5 @@ func portableAncestor(repositories map[string]PortableRepository, ancestor, desc
 }
 
 func portablePathsOverlap(left, right string) bool {
-	return left == right || strings.HasPrefix(left, right+"/") || strings.HasPrefix(right, left+"/")
+	return pathutil.CaseFoldedPathOverlap(left, right)
 }

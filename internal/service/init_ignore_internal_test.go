@@ -4,12 +4,12 @@ import (
 	"testing"
 )
 
-func TestInitIgnoreRuleEscapesLiteralGitMetacharacters(t *testing.T) {
-	got, err := NestedDirectoryRule("space #bang! [bracket] star* question? slash")
+func TestInitIgnoreRuleEscapesSupportedLiteralGitMetacharacters(t *testing.T) {
+	got, err := NestedDirectoryRule("space #bang! [bracket] slash")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "/space\\ \\#bang\\!\\ \\[bracket\\]\\ star\\*\\ question\\?\\ slash/"
+	want := "/space\\ \\#bang\\!\\ \\[bracket\\]\\ slash/"
 	if got != want {
 		t.Fatalf("NestedDirectoryRule() = %q, want %q", got, want)
 	}

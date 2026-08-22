@@ -23,16 +23,27 @@ type WorkspaceCreator struct {
 	git         gitadapter.Git
 	planner     *WorkspacePlanner
 	transaction *WorkspaceTransaction
+	filesystem  workspaceFilesystem
 }
 
 // CreateResult keeps execution-only evidence out of the version-one workspace
 // plan while allowing the human create renderer to report actual file updates.
 type CreateResult struct {
 	Plan                plan.WorkspacePlan
+	LogicalRoot         string
+	BaseRepository      string
 	IgnoreUpdates       []IgnoreFileUpdate
 	RetainedIgnoreFiles []IgnoreFileUpdate
 	RemovedIgnoreFiles  []IgnoreFileUpdate
 	UnverifiedMounts    []UnverifiedMount
+}
+
+type createdWorktreeReceipt struct {
+	info      os.FileInfo
+	commonGit string
+	gitDir    string
+	branch    string
+	head      string
 }
 
 // UnverifiedMount identifies a child that was not added because its parent
@@ -51,7 +62,7 @@ func NewWorkspaceCreator() *WorkspaceCreator {
 }
 
 func NewWorkspaceCreatorWith(git gitadapter.Git, transaction *WorkspaceTransaction) *WorkspaceCreator {
-	return &WorkspaceCreator{git: git, planner: NewWorkspacePlannerWithGit(git), transaction: transaction}
+	return &WorkspaceCreator{git: git, planner: NewWorkspacePlannerWithGit(git), transaction: transaction, filesystem: newWorkspaceFilesystem()}
 }
 
 // Create plans before mutation, then revalidates under the project lock,
@@ -231,7 +242,7 @@ func (e *createIgnoreEvidence) updates() []IgnoreFileUpdate {
 }
 
 func (e *createIgnoreEvidence) result(value plan.WorkspacePlan) CreateResult {
-	result := CreateResult{Plan: value}
+	result := CreateResult{Plan: value, LogicalRoot: value.LogicalRoot, BaseRepository: value.BaseRepository}
 	for _, parentID := range e.order {
 		update := e.updatesByParent[parentID]
 		result.IgnoreUpdates = append(result.IgnoreUpdates, update)
@@ -267,6 +278,7 @@ func (c *WorkspaceCreator) createSteps(project domain.Project, value plan.Worksp
 		}
 	}
 	evidence := newCreateIgnoreEvidence()
+	grouping := newWorkspaceGrouping(value.RootPath, c.filesystem)
 	for _, directChildren := range requirements {
 		for _, requirement := range directChildren {
 			evidence.addUnverified(requirement, planned[requirement.ChildRepositoryID].Path)
@@ -300,26 +312,58 @@ func (c *WorkspaceCreator) createSteps(project domain.Project, value plan.Worksp
 				},
 			})
 		case plan.AddWorktree:
+			parentPath := value.RootPath
+			if item.ParentID != "" {
+				parentPath = planned[item.ParentID].Path
+			}
+			if groupingStep, needed, err := grouping.step(item, parentPath); err != nil {
+				return nil, nil, NewError(ErrorValidation, fmt.Errorf("prepare grouping for repository %q: %w", repository.ID, err))
+			} else if needed {
+				steps = append(steps, groupingStep)
+			}
+			worktreeAdded := false
+			var worktreeReceipt *createdWorktreeReceipt
+			rollbackWorktree := func(ctx context.Context) error {
+				if !worktreeAdded {
+					return nil
+				}
+				if worktreeReceipt == nil {
+					return fmt.Errorf("preserve created worktree at %q because its ownership receipt was not captured", item.Path)
+				}
+				var err error
+				if value.Operation == plan.Create {
+					err = c.safeRemoveCreatedWorktree(ctx, repository.ID, repository.SourcePath, item.Path, worktreeReceipt, evidence)
+				} else {
+					_, err = c.removeOwnedCreatedWorktree(ctx, repository.SourcePath, item.Path, worktreeReceipt, nil)
+				}
+				if err != nil {
+					return NewError(ErrorGit, fmt.Errorf("remove created worktree for repository %q at %q: %w", repository.ID, item.Path, err))
+				}
+				worktreeAdded = false
+				return nil
+			}
 			steps = append(steps, transaction.Step{
 				Name: string(step.Action) + ":" + repository.ID,
 				Execute: func(ctx context.Context) error {
+					if err := grouping.revalidate(item, parentPath); err != nil {
+						return NewError(ErrorValidation, fmt.Errorf("revalidate grouping for repository %q: %w", repository.ID, err))
+					}
 					if err := c.git.AddWorktree(ctx, repository.SourcePath, item.Path, item.Branch); err != nil {
 						return NewError(ErrorGit, fmt.Errorf("add worktree for repository %q at %q: %w", repository.ID, item.Path, err))
 					}
-					return nil
-				},
-				Rollback: func(ctx context.Context) error {
-					var err error
-					if value.Operation == plan.Create {
-						err = c.safeRemoveCreatedWorktree(ctx, repository.ID, repository.SourcePath, item.Path, evidence)
-					} else {
-						err = c.git.RemoveWorktree(ctx, repository.SourcePath, item.Path, true)
+					worktreeAdded = true
+					captured, captureErr := c.captureWorktreeReceipt(context.WithoutCancel(ctx), item.Path, repository.CommonGitDir, item.Branch, item.Base)
+					if captureErr != nil {
+						return NewError(ErrorValidation, fmt.Errorf("capture created worktree %q ownership: %w", item.Path, captureErr))
 					}
-					if err != nil {
-						return NewError(ErrorGit, fmt.Errorf("remove created worktree for repository %q at %q: %w", repository.ID, item.Path, err))
+					worktreeReceipt = captured
+					if err := grouping.recordWorktree(item.Path); err != nil {
+						return NewError(ErrorValidation, err)
 					}
 					return nil
 				},
+				Rollback:              rollbackWorktree,
+				RollbackFailedExecute: rollbackWorktree,
 			})
 			if directChildren := requirements[repository.ID]; len(directChildren) != 0 {
 				parentID, parentPath := repository.ID, item.Path
@@ -412,7 +456,7 @@ func (c *WorkspaceCreator) ensureWorktreeIgnores(ctx context.Context, parentID, 
 	return nil
 }
 
-func (c *WorkspaceCreator) safeRemoveCreatedWorktree(ctx context.Context, repositoryID, sourcePath, worktreePath string, evidence *createIgnoreEvidence) error {
+func (c *WorkspaceCreator) safeRemoveCreatedWorktree(ctx context.Context, repositoryID, sourcePath, worktreePath string, receipt *createdWorktreeReceipt, evidence *createIgnoreEvidence) error {
 	status, err := c.git.StatusIncludingIgnored(ctx, worktreePath)
 	if err != nil {
 		return fmt.Errorf("inspect created worktree dirt: %w", err)
@@ -432,7 +476,7 @@ func (c *WorkspaceCreator) safeRemoveCreatedWorktree(ctx context.Context, reposi
 		}
 		expected = &file
 	}
-	publicPathRecreated, err := c.removeOwnedCreatedWorktree(ctx, sourcePath, worktreePath, expected)
+	publicPathRecreated, err := c.removeOwnedCreatedWorktree(ctx, sourcePath, worktreePath, receipt, expected)
 	if err != nil {
 		evidence.preserveBranch(repositoryID)
 		return err
@@ -452,13 +496,16 @@ func (c *WorkspaceCreator) safeRemoveCreatedWorktree(ctx context.Context, reposi
 // is atomically detached into a fresh private directory and revalidated there.
 // Git is then asked to unregister a missing intermediate name, so Git never
 // receives a path whose ignored contents it could recursively delete.
-func (c *WorkspaceCreator) removeOwnedCreatedWorktree(ctx context.Context, sourcePath, worktreePath string, expected *IgnoreFilePlan) (publicPathRecreated bool, result error) {
+func (c *WorkspaceCreator) removeOwnedCreatedWorktree(ctx context.Context, sourcePath, worktreePath string, receipt *createdWorktreeReceipt, expected *IgnoreFilePlan) (publicPathRecreated bool, result error) {
 	ownedInfo, err := os.Lstat(worktreePath)
 	if err != nil {
 		return false, fmt.Errorf("inspect created worktree ownership: %w", err)
 	}
 	if !ownedInfo.IsDir() || ownedInfo.Mode()&os.ModeSymlink != 0 {
 		return false, fmt.Errorf("preserve created worktree because %q is no longer the planned directory", worktreePath)
+	}
+	if receipt == nil || !os.SameFile(receipt.info, ownedInfo) || c.worktreeReceiptMatches(ctx, worktreePath, receipt) != nil {
+		return false, fmt.Errorf("preserve created worktree because %q no longer has the transaction ownership receipt", worktreePath)
 	}
 	quarantineRoot, err := os.MkdirTemp(filepath.Dir(worktreePath), ".wtree-worktree-rollback-*")
 	if err != nil {
@@ -488,9 +535,15 @@ func (c *WorkspaceCreator) removeOwnedCreatedWorktree(ctx context.Context, sourc
 	if err := c.git.WorktreeRepair(ctx, ownedPath); err != nil {
 		return false, restoreCapturedWorktree(ctx, c.git, ownedPath, worktreePath, fmt.Errorf("repair captured worktree registration: %w", err), &cleanupRoot)
 	}
+	if err := c.validateWorktreeReceipt(ctx, ownedPath, receipt); err != nil {
+		return false, restoreCapturedWorktree(ctx, c.git, ownedPath, worktreePath, fmt.Errorf("preserve created worktree because its ownership changed after quarantine: %w", err), &cleanupRoot)
+	}
 	status, err := c.git.StatusIncludingIgnored(ctx, ownedPath)
 	if err != nil {
 		return false, restoreCapturedWorktree(ctx, c.git, ownedPath, worktreePath, fmt.Errorf("revalidate captured worktree dirt: %w", err), &cleanupRoot)
+	}
+	if err := c.validateWorktreeReceipt(ctx, ownedPath, receipt); err != nil {
+		return false, restoreCapturedWorktree(ctx, c.git, ownedPath, worktreePath, fmt.Errorf("preserve created worktree because its ownership changed during quarantine validation: %w", err), &cleanupRoot)
 	}
 	if !capturedWorktreeStillOwned(ownedPath, status, expected) {
 		return false, restoreCapturedWorktree(ctx, c.git, ownedPath, worktreePath, fmt.Errorf("preserve created worktree because unrelated dirt appeared at the ownership boundary"), &cleanupRoot)
@@ -520,6 +573,76 @@ func (c *WorkspaceCreator) removeOwnedCreatedWorktree(ctx context.Context, sourc
 		return false, fmt.Errorf("remove transaction-owned worktree %q: %w", destroyPath, err)
 	}
 	return false, nil
+}
+
+func (c *WorkspaceCreator) captureWorktreeReceipt(ctx context.Context, path, expectedCommonGit, expectedBranch, expectedHead string) (*createdWorktreeReceipt, error) {
+	info, err := c.filesystem.lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("created worktree is not a real directory")
+	}
+	common, err := c.git.CommonGitDir(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if common != expectedCommonGit {
+		return nil, fmt.Errorf("worktree common Git identity %q does not match planned %q", common, expectedCommonGit)
+	}
+	gitDir, err := c.git.GitDir(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	branch, detached, err := c.git.CurrentBranch(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if detached {
+		return nil, fmt.Errorf("created worktree is detached")
+	}
+	if branch != expectedBranch {
+		return nil, fmt.Errorf("worktree branch %q does not match planned %q", branch, expectedBranch)
+	}
+	head, err := c.git.Head(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if head != expectedHead {
+		return nil, fmt.Errorf("worktree HEAD %q does not match planned %q", head, expectedHead)
+	}
+	return &createdWorktreeReceipt{info: info, commonGit: common, gitDir: gitDir, branch: branch, head: head}, nil
+}
+
+func (c *WorkspaceCreator) worktreeReceiptMatches(ctx context.Context, path string, receipt *createdWorktreeReceipt) error {
+	common, err := c.git.CommonGitDir(ctx, path)
+	if err != nil || common != receipt.commonGit {
+		return fmt.Errorf("worktree common Git identity changed")
+	}
+	gitDir, err := c.git.GitDir(ctx, path)
+	if err != nil || gitDir != receipt.gitDir {
+		return fmt.Errorf("worktree Git directory identity changed")
+	}
+	branch, detached, err := c.git.CurrentBranch(ctx, path)
+	if err != nil || detached || branch != receipt.branch {
+		return fmt.Errorf("worktree branch changed")
+	}
+	head, err := c.git.Head(ctx, path)
+	if err != nil || head != receipt.head {
+		return fmt.Errorf("worktree HEAD changed")
+	}
+	return nil
+}
+
+func (c *WorkspaceCreator) validateWorktreeReceipt(ctx context.Context, path string, receipt *createdWorktreeReceipt) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect worktree directory identity: %w", err)
+	}
+	if receipt == nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !os.SameFile(receipt.info, info) {
+		return fmt.Errorf("worktree directory identity changed")
+	}
+	return c.worktreeReceiptMatches(ctx, path, receipt)
 }
 
 func capturedWorktreeStillOwned(ownedPath string, status gitadapter.Status, expected *IgnoreFilePlan) bool {

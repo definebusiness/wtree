@@ -19,20 +19,26 @@ import (
 // RemovalPlan is the immutable, read-only result of remove preflight. Its
 // repository order is the execution order: descendants before parents.
 type RemovalPlan struct {
-	ProjectID     string              `json:"projectId"`
-	WorkspaceID   string              `json:"workspaceId"`
-	WorkspaceName string              `json:"workspaceName"`
-	RootPath      string              `json:"rootPath"`
-	Force         bool                `json:"force"`
-	Repositories  []RemovalRepository `json:"repositories"`
-	Overrides     []RemovalOverride   `json:"overrides,omitempty"`
+	ProjectID      string              `json:"projectId"`
+	WorkspaceID    string              `json:"workspaceId"`
+	WorkspaceName  string              `json:"workspaceName"`
+	RootPath       string              `json:"rootPath"`
+	LogicalRoot    string              `json:"logicalRoot"`
+	BaseRepository string              `json:"baseRepository"`
+	Force          bool                `json:"force"`
+	Repositories   []RemovalRepository `json:"repositories"`
+	Overrides      []RemovalOverride   `json:"overrides,omitempty"`
+	groupingPaths  []string
 }
 
 type RemovalRepository struct {
 	ID            string `json:"id"`
+	ParentID      string `json:"parentId,omitempty"`
 	Branch        string `json:"branch"`
 	Mount         string `json:"mount"`
 	Path          string `json:"path"`
+	ResolvedPath  string `json:"resolvedPath"`
+	Head          string `json:"head"`
 	ForceWorktree bool   `json:"forceWorktree,omitempty"`
 }
 
@@ -80,7 +86,7 @@ func (r *WorkspaceRemover) PlanRemove(ctx context.Context, project domain.Projec
 	for _, checkout := range workspace.Checkouts {
 		checkouts[checkout.RepositoryID] = checkout
 	}
-	value := RemovalPlan{ProjectID: project.ID, WorkspaceID: workspace.ID, WorkspaceName: workspace.Name, RootPath: workspace.RootPath, Force: force, Repositories: make([]RemovalRepository, 0, len(project.Repositories))}
+	value := RemovalPlan{ProjectID: project.ID, WorkspaceID: workspace.ID, WorkspaceName: workspace.Name, RootPath: workspace.RootPath, LogicalRoot: workspace.RootPath, BaseRepository: project.BaseRepository, Force: force, Repositories: make([]RemovalRepository, 0, len(project.Repositories))}
 	ordered := project.ParentFirst()
 	for index := len(ordered) - 1; index >= 0; index-- {
 		repository := ordered[index]
@@ -93,9 +99,18 @@ func (r *WorkspaceRemover) PlanRemove(ctx context.Context, project domain.Projec
 		if err != nil {
 			return RemovalPlan{}, err
 		}
-		value.Repositories = append(value.Repositories, RemovalRepository{ID: repository.ID, Branch: checkout.Branch, Mount: checkout.Mount, Path: checkout.ResolvedPath, ForceWorktree: len(overrides) != 0})
+		head, err := r.git.Head(ctx, checkout.ResolvedPath)
+		if err != nil {
+			return RemovalPlan{}, NewError(ErrorGit, fmt.Errorf("read checkout HEAD for repository %q: %w", repository.ID, err))
+		}
+		value.Repositories = append(value.Repositories, RemovalRepository{ID: repository.ID, ParentID: repository.ParentID, Branch: checkout.Branch, Mount: checkout.Mount, Path: checkout.ResolvedPath, ResolvedPath: checkout.ResolvedPath, Head: head, ForceWorktree: len(overrides) != 0})
 		value.Overrides = append(value.Overrides, overrides...)
 	}
+	groupingPaths, err := validateRemovalGroupingPaths(value)
+	if err != nil {
+		return RemovalPlan{}, NewError(ErrorConflict, err)
+	}
+	value.groupingPaths = groupingPaths
 	return value, nil
 }
 
@@ -209,14 +224,22 @@ func (r *WorkspaceRemover) Remove(ctx context.Context, project domain.Project, w
 	} else if !os.IsNotExist(err) {
 		return RemovalPlan{}, NewError(ErrorInternal, fmt.Errorf("inspect removal recovery metadata: %w", err))
 	}
-	steps := r.removalSteps(project, value)
+	grouping, err := captureRemovalGroupingInventory(value)
+	if err != nil {
+		return RemovalPlan{}, NewError(ErrorConflict, err)
+	}
+	worktreeReceipts, err := r.captureRemovalWorktreeReceipts(context.WithoutCancel(ctx), project, value)
+	if err != nil {
+		return RemovalPlan{}, NewError(ErrorConflict, fmt.Errorf("capture workspace removal ownership: %w", err))
+	}
+	steps := r.removalSteps(project, value, grouping, worktreeReceipts)
 	result := (transaction.Runner{Progress: progress}).Run(ctx, steps)
 	if result.Succeeded() {
 		return value, nil
 	}
 	if result.RollbackFailure == nil {
 		err := classifyTransactionError("remove workspace", result.Failure)
-		if len(result.Completed) > 0 {
+		if len(result.Completed) > 0 || result.FailedExecuteRolledBack {
 			err = withCleanRollback(err)
 		}
 		return RemovalPlan{}, err
@@ -228,7 +251,25 @@ func (r *WorkspaceRemover) Remove(ctx context.Context, project domain.Project, w
 	return RemovalPlan{}, NewError(ErrorRollbackIncomplete, fmt.Errorf("workspace removal rollback is incomplete after %q; recovery metadata: %q: %w", result.FailedStep, recoveryPath, result.RollbackFailure))
 }
 
-func (r *WorkspaceRemover) removalSteps(project domain.Project, value RemovalPlan) []transaction.Step {
+func (r *WorkspaceRemover) captureRemovalWorktreeReceipts(ctx context.Context, project domain.Project, value RemovalPlan) (map[string]*createdWorktreeReceipt, error) {
+	repositories := make(map[string]domain.Repository, len(project.Repositories))
+	for _, repository := range project.Repositories {
+		repositories[repository.ID] = repository
+	}
+	creator := &WorkspaceCreator{git: r.git, filesystem: newWorkspaceFilesystem()}
+	receipts := make(map[string]*createdWorktreeReceipt, len(value.Repositories))
+	for _, item := range value.Repositories {
+		repository := repositories[item.ID]
+		receipt, err := creator.captureWorktreeReceipt(ctx, item.Path, repository.CommonGitDir, item.Branch, item.Head)
+		if err != nil {
+			return nil, fmt.Errorf("repository %q: %w", item.ID, err)
+		}
+		receipts[item.ID] = receipt
+	}
+	return receipts, nil
+}
+
+func (r *WorkspaceRemover) removalSteps(project domain.Project, value RemovalPlan, grouping *removalGroupingInventory, worktreeReceipts map[string]*createdWorktreeReceipt) []transaction.Step {
 	repositories := make(map[string]domain.Repository, len(project.Repositories))
 	for _, repository := range project.Repositories {
 		repositories[repository.ID] = repository
@@ -237,25 +278,83 @@ func (r *WorkspaceRemover) removalSteps(project domain.Project, value RemovalPla
 	for _, item := range value.Repositories {
 		repository := repositories[item.ID]
 		item := item
+		rollback := func(ctx context.Context) error {
+			return r.restoreRemovedWorktree(ctx, repository, item, grouping, worktreeReceipts)
+		}
 		step := transaction.Step{Name: "remove_worktree:" + item.ID,
 			Execute: func(ctx context.Context) error {
+				if err := grouping.validateForWorktree(item); err != nil {
+					return NewError(ErrorConflict, fmt.Errorf("validate grouping ownership for repository %q: %w", item.ID, err))
+				}
+				creator := &WorkspaceCreator{git: r.git, filesystem: newWorkspaceFilesystem()}
+				if err := creator.validateWorktreeReceipt(ctx, item.Path, worktreeReceipts[item.ID]); err != nil {
+					return NewError(ErrorConflict, fmt.Errorf("validate worktree ownership for repository %q: %w", item.ID, err))
+				}
 				if err := r.git.RemoveWorktree(ctx, repository.SourcePath, item.Path, item.ForceWorktree); err != nil {
 					return NewError(ErrorGit, fmt.Errorf("remove worktree for repository %q at %q: %w", item.ID, item.Path, err))
 				}
+				grouping.invalidateBelow(item.Path)
 				return nil
 			},
+			RollbackFailedExecute: rollback,
 		}
 		if !item.ForceWorktree {
-			step.Rollback = func(ctx context.Context) error {
-				if err := r.git.AddWorktree(ctx, repository.SourcePath, item.Path, item.Branch); err != nil {
-					return NewError(ErrorGit, fmt.Errorf("restore removed worktree for repository %q at %q: %w", item.ID, item.Path, err))
-				}
-				return nil
-			}
+			step.Rollback = rollback
 		}
 		steps = append(steps, step)
 	}
 	return steps
+}
+
+func (r *WorkspaceRemover) restoreRemovedWorktree(ctx context.Context, repository domain.Repository, item RemovalRepository, grouping *removalGroupingInventory, worktreeReceipts map[string]*createdWorktreeReceipt) error {
+	creator := &WorkspaceCreator{git: r.git, filesystem: newWorkspaceFilesystem()}
+	if err := creator.validateWorktreeReceipt(ctx, item.Path, worktreeReceipts[item.ID]); err == nil {
+		return nil
+	}
+	_, err := os.Lstat(item.Path)
+	if err == nil {
+		return NewError(ErrorConflict, fmt.Errorf("refuse to replace changed worktree path for repository %q", item.ID))
+	}
+	if !os.IsNotExist(err) {
+		return NewError(ErrorConflict, fmt.Errorf("inspect removed worktree path for repository %q: %w", item.ID, err))
+	}
+	worktrees, err := r.git.ListWorktrees(ctx, repository.SourcePath)
+	if err != nil {
+		return NewError(ErrorGit, fmt.Errorf("inspect removed worktree registration for repository %q: %w", item.ID, err))
+	}
+	for _, worktree := range worktrees {
+		if sameCheckoutPath(worktree.Path, item.Path) {
+			return NewError(ErrorConflict, fmt.Errorf("worktree registration for repository %q remains after its path disappeared", item.ID))
+		}
+	}
+	if item.ForceWorktree {
+		return NewError(ErrorConflict, fmt.Errorf("forced worktree removal for repository %q may have discarded dirty content and cannot be restored automatically", item.ID))
+	}
+	if item.ParentID != "" {
+		parent := grouping.repositories[item.ParentID]
+		if err := creator.validateWorktreeReceipt(ctx, parent.Path, worktreeReceipts[item.ParentID]); err != nil {
+			return NewError(ErrorConflict, fmt.Errorf("validate rollback parent for repository %q: %w", item.ID, err))
+		}
+	}
+	if err := grouping.ensureForWorktree(item); err != nil {
+		return NewError(ErrorConflict, fmt.Errorf("prepare rollback path for repository %q: %w", item.ID, err))
+	}
+	branchHead, err := r.git.ResolveRef(ctx, repository.SourcePath, "refs/heads/"+item.Branch)
+	if err != nil {
+		return NewError(ErrorGit, fmt.Errorf("resolve rollback branch for repository %q: %w", item.ID, err))
+	}
+	if branchHead != item.Head {
+		return NewError(ErrorConflict, fmt.Errorf("refuse to restore repository %q from branch %q at an unexpected commit", item.ID, item.Branch))
+	}
+	if err := r.git.AddWorktree(ctx, repository.SourcePath, item.Path, item.Branch); err != nil {
+		return NewError(ErrorGit, fmt.Errorf("restore removed worktree for repository %q at %q: %w", item.ID, item.Path, err))
+	}
+	receipt, err := creator.captureWorktreeReceipt(context.WithoutCancel(ctx), item.Path, repository.CommonGitDir, item.Branch, item.Head)
+	if err != nil {
+		return NewError(ErrorConflict, fmt.Errorf("capture restored worktree for repository %q: %w", item.ID, err))
+	}
+	worktreeReceipts[item.ID] = receipt
+	return nil
 }
 
 func removalRecoveryPath(dataDir string, value RemovalPlan) string {

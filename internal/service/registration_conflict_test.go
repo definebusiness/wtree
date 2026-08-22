@@ -39,6 +39,25 @@ func TestRegistrationConflictIDsCanonicalizePathsAndKeepIdentityCaseExact(t *tes
 	}
 }
 
+func TestRegistrationConflictIDsCompareCanonicalLogicalRootsAndTopLevelPaths(t *testing.T) {
+	directory := t.TempDir()
+	target := service.RegistrationConflictCandidate{
+		ConfigPath:           filepath.Join(directory, "target", ".wtree.yml"),
+		RepositoryIdentities: []string{"target-identity"},
+		LogicalRoot:          filepath.Join(directory, "workspace"),
+		TopLevelPaths:        []string{filepath.Join(directory, "workspace", "api"), filepath.Join(directory, "workspace", "web")},
+	}
+	candidates := []service.RegistrationConflictCandidate{
+		{ID: "logical-root", ConfigPath: filepath.Join(directory, "logical", ".wtree.yml"), RepositoryIdentities: []string{"logical-identity"}, LogicalRoot: filepath.Join(directory, "WORKSPACE"), TopLevelPaths: []string{filepath.Join(directory, "WORKSPACE", "other")}},
+		{ID: "top-level", ConfigPath: filepath.Join(directory, "top", ".wtree.yml"), RepositoryIdentities: []string{"top-identity"}, LogicalRoot: filepath.Join(directory, "other-root"), TopLevelPaths: []string{filepath.Join(directory, "workspace", "API")}},
+		{ID: "stale-without-topology", ConfigPath: filepath.Join(directory, "stale", ".wtree.yml"), RepositoryIdentities: []string{"stale-identity"}},
+		{ID: "unrelated", ConfigPath: filepath.Join(directory, "unrelated", ".wtree.yml"), RepositoryIdentities: []string{"unrelated-identity"}, LogicalRoot: filepath.Join(directory, "elsewhere"), TopLevelPaths: []string{filepath.Join(directory, "elsewhere", "api")}},
+	}
+	if got, want := service.RegistrationConflictIDsForTarget(target, candidates), []string{"logical-root", "top-level"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("topology conflicts = %v, want %v", got, want)
+	}
+}
+
 func TestInitializerRejectsExistingRegistrationBeforePublishing(t *testing.T) {
 	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
@@ -86,7 +105,7 @@ func TestInitializerReportsSortedPathAndIdentityConflictsWithoutArtifacts(t *tes
 	}
 	configPath := filepath.Join(canonicalRoot, ".wtree.yml")
 	unrelatedConfig := filepath.Join(data, "unrelated", ".wtree.yml")
-	if err := config.WriteProjectFile(unrelatedConfig, config.ProjectConfig{Version: config.Version, Project: config.Project{ID: "unrelated", Name: "healthy"}, Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: "."}}}); err != nil {
+	if err := config.WriteProjectFile(unrelatedConfig, config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{ID: "unrelated", Name: "healthy", BaseRepository: "root"}, LogicalRoot: ".", Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: ".", DefaultBranch: "main"}}, Worktrees: config.Worktrees{}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: "/manifests/project.wtree.yml"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.WriteWorkspace(filepath.Join(data, "state", "unrelated", "default.json"), store.WorkspaceState{Version: store.Version, ID: "default", Name: "default", Repositories: map[string]store.CheckoutState{}}); err != nil {

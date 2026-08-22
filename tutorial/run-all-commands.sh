@@ -90,7 +90,7 @@ run_json "$wtree" init "$init_project" --worktree-root "$test_root/init-worktree
 run_quiet "$wtree" init "$init_project" --worktree-root "$test_root/init-worktrees"
 [ -f "$init_project/.wtree.yml" ] || fail "init did not write .wtree.yml"
 [ -f "$init_project/project.wtree.yml" ] || fail "init did not write the portable manifest"
-grep -Fx '/library/' "$init_project/.gitignore" >/dev/null || fail "init did not protect the nested mount"
+grep -Fx '/components/library/' "$init_project/.gitignore" >/dev/null || fail "init did not protect the grouped nested mount"
 init_id=$(awk '$1 == "id:" { print $2; exit }' "$init_project/.wtree.yml")
 [ -n "$init_id" ] || fail "could not read initialized project ID"
 run_json "$wtree" project list --data-dir "$WTREE_DATA_HOME" --json
@@ -229,6 +229,115 @@ run_quiet "$wtree" import "$manual_partial" --project "$project" --name manual/p
 run_json "$wtree" status manual/partial --json
 run_quiet "$wtree" doctor manual/partial
 expect_failure 'is partial' "$wtree" delete manual/partial
+
+step "exercise a plain logical-root forest with a grouped non-dot base"
+publisher_data=$test_root/forest-publisher-data
+consumer_data=$test_root/forest-consumer-data
+forest_fixture=$test_root/forest
+forest_source=$("$script_dir/setup-forest-fixture.sh" "$forest_fixture")
+forest_api=$forest_source/services/api
+forest_shared=$forest_api/components/shared
+forest_web=$forest_source/clients/web
+original_data=$WTREE_DATA_HOME
+export WTREE_DATA_HOME=$publisher_data
+
+run_json "$wtree" init "$forest_source" --base-repository api --worktree-root "$forest_fixture/publisher-worktrees" --dry-run --json
+grep -F '"baseRepository":"api"' "$test_root/last.stdout" >/dev/null || fail "forest init omitted baseRepository"
+grep -F '"logicalRoot":' "$test_root/last.stdout" >/dev/null || fail "forest init omitted logicalRoot"
+run_quiet "$wtree" init "$forest_source" --base-repository api --worktree-root "$forest_fixture/publisher-worktrees"
+[ -f "$forest_api/.wtree.yml" ] || fail "forest base does not own .wtree.yml"
+[ -f "$forest_api/project.wtree.yml" ] || fail "forest base does not own project.wtree.yml"
+[ ! -e "$forest_source/.wtree.yml" ] || fail "plain logical root owns unexpected metadata"
+[ ! -e "$forest_web/.wtree.yml" ] || fail "sibling owns unexpected metadata"
+[ ! -e "$forest_shared/.wtree.yml" ] || fail "child owns unexpected metadata"
+grep -Fx '/.wtree.yml' "$forest_api/.gitignore" >/dev/null || fail "base does not ignore local config"
+grep -Fx '/components/shared/' "$forest_api/.gitignore" >/dev/null || fail "base does not protect its direct child mount"
+run_json "$wtree" project list --json
+
+git -C "$forest_api" add .gitignore project.wtree.yml
+git -C "$forest_api" commit -q -m "Publish forest manifest"
+git -C "$forest_api" push -q origin main
+
+export WTREE_DATA_HOME=$consumer_data
+forest_clone=$forest_fixture/consumer-forest
+forest_worktrees=$forest_fixture/consumer-worktrees
+run_json "$wtree" clone "$forest_api/project.wtree.yml" "$forest_clone" --worktree-root "$forest_worktrees" --dry-run --json
+grep -F '"baseRepository":"api"' "$test_root/last.stdout" >/dev/null || fail "forest clone plan omitted baseRepository"
+run_quiet "$wtree" clone "$forest_api/project.wtree.yml" "$forest_clone" --worktree-root "$forest_worktrees"
+for checkout in \
+	"$forest_clone/services/api" \
+	"$forest_clone/services/api/components/shared" \
+	"$forest_clone/clients/web"; do
+	[ -e "$checkout/.git" ] || fail "forest clone missed checkout $checkout"
+done
+for pair in \
+	"$forest_api|$forest_clone/services/api" \
+	"$forest_shared|$forest_clone/services/api/components/shared" \
+	"$forest_web|$forest_clone/clients/web"; do
+	source_checkout=${pair%%|*}
+	cloned_checkout=${pair#*|}
+	[ "$(git -C "$source_checkout" rev-parse HEAD)" = "$(git -C "$cloned_checkout" rev-parse HEAD)" ] || fail "forest clone recorded the wrong execution-time HEAD for $cloned_checkout"
+done
+[ -f "$forest_clone/services/api/.wtree.yml" ] || fail "cloned forest base does not own local config"
+[ ! -e "$forest_clone/.wtree.yml" ] || fail "cloned plain logical root owns unexpected metadata"
+
+cd "$forest_clone/services/api/components/shared"
+run_json "$wtree" status default --json
+grep -F '"baseRepository":"api"' "$test_root/last.stdout" >/dev/null || fail "nested status omitted forest base"
+forest_status=$(tr -d '\n' < "$test_root/last.stdout")
+case "$forest_status" in
+	*'"id":"api"'*'"id":"web"'*'"id":"shared"'*) ;;
+	*) fail "forest status repository order is not stable parent-first" ;;
+esac
+run_quiet "$wtree" path default
+[ "$(wc -l < "$test_root/last.stdout" | tr -d ' ')" -eq 1 ] || fail "workspace path output is not scalar"
+run_quiet "$wtree" repo path web
+[ "$(wc -l < "$test_root/last.stdout" | tr -d ' ')" -eq 1 ] || fail "repository path output is not scalar"
+cd "$forest_clone/clients/web"
+run_quiet "$wtree" status default
+run_json "$wtree" project list --json
+cd "$forest_clone"
+
+run_json "$wtree" create tutorial/forest --from main --dry-run --json
+run_quiet "$wtree" create tutorial/forest --from main
+forest_created=$("$wtree" path tutorial/forest)
+for checkout in \
+	"$forest_created/services/api" \
+	"$forest_created/services/api/components/shared" \
+	"$forest_created/clients/web"; do
+	[ -e "$checkout/.git" ] || fail "forest create missed checkout $checkout"
+done
+run_json "$wtree" remove tutorial/forest --dry-run --json
+run_quiet "$wtree" remove tutorial/forest
+run_quiet "$wtree" doctor tutorial/forest
+run_quiet "$wtree" checkout tutorial/forest
+run_quiet "$wtree" delete tutorial/forest
+[ ! -e "$forest_created/services/api" ] || fail "forest delete retained a managed checkout"
+
+for checkout in \
+	"$forest_clone/services/api" \
+	"$forest_clone/services/api/components/shared" \
+	"$forest_clone/clients/web"; do
+	git -C "$checkout" branch tutorial/import main
+done
+forest_import=$forest_fixture/manual-forest
+mkdir -p "$forest_import/services" "$forest_import/clients"
+git -C "$forest_clone/services/api" worktree add -q "$forest_import/services/api" tutorial/import
+mkdir -p "$forest_import/services/api/components"
+git -C "$forest_clone/services/api/components/shared" worktree add -q "$forest_import/services/api/components/shared" tutorial/import
+git -C "$forest_clone/clients/web" worktree add -q "$forest_import/clients/web" tutorial/import
+cd "$forest_import/services/api/components/shared"
+run_json "$wtree" import "$forest_import" --project "$forest_clone" --name tutorial/import --dry-run --json
+run_quiet "$wtree" import "$forest_import" --project "$forest_clone" --name tutorial/import
+run_quiet "$wtree" path tutorial/import
+run_quiet "$wtree" repo path api
+run_json "$wtree" status tutorial/import --json
+cd "$forest_clone"
+run_quiet "$wtree" delete tutorial/import
+[ ! -e "$forest_import/services/api" ] || fail "forest import delete retained a managed checkout"
+
+export WTREE_DATA_HOME=$original_data
+cd "$project"
 
 step "compare the normalized final state"
 actual=$test_root/all-commands-final-state.txt

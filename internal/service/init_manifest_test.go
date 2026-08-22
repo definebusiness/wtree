@@ -62,8 +62,8 @@ func TestInitPublishesPortableManifestFromVerifiedUpstreams(t *testing.T) {
 	if local.Manifest.Path != "project.wtree.yml" || local.Manifest.Source != "https://example.invalid/acme/project.wtree.yml" {
 		t.Fatalf("local manifest metadata = %#v", local.Manifest)
 	}
-	if local.Version != config.Version {
-		t.Fatalf("local configuration version = %d, want unchanged version %d", local.Version, config.Version)
+	if local.Version != config.ProjectConfigVersion {
+		t.Fatalf("local configuration version = %d, want unchanged version %d", local.Version, config.ProjectConfigVersion)
 	}
 	portableBytes, err := os.ReadFile(result.ManifestPath)
 	if err != nil {

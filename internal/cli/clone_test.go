@@ -38,11 +38,15 @@ func TestCloneDryRunAndExecutionThroughPublicCLI(t *testing.T) {
 		Operation       string `json:"operation"`
 		Status          string `json:"status"`
 		Destination     string `json:"destination"`
+		LogicalRoot     string `json:"logicalRoot"`
+		BaseRepository  string `json:"baseRepository"`
 		RepositoryCount int    `json:"repositoryCount"`
 		ManifestSource  string `json:"manifestSource"`
 		Repositories    []struct {
 			ID           string `json:"id"`
 			ActualCommit string `json:"actualCommit"`
+			Mount        string `json:"mount"`
+			ResolvedPath string `json:"resolvedPath"`
 		} `json:"repositories"`
 		Project struct{ ID, Name string } `json:"project"`
 	}
@@ -50,7 +54,7 @@ func TestCloneDryRunAndExecutionThroughPublicCLI(t *testing.T) {
 		t.Fatalf("clone JSON = %#v", result)
 	}
 	manifestAbs, _ := filepath.Abs(manifest)
-	if output.Version != 2 || output.Operation != "clone" || output.Status != "completed" || output.Project.ID != projectID || output.Destination != destination || output.RepositoryCount != 2 || output.ManifestSource != manifestAbs || len(output.Repositories) != 2 || output.Repositories[0].ID != "backend" || output.Repositories[1].ID != "root" || output.Repositories[0].ActualCommit == "" || output.Repositories[1].ActualCommit == "" {
+	if output.Version != 2 || output.Operation != "clone" || output.Status != "completed" || output.Project.ID != projectID || output.Destination != destination || output.LogicalRoot != destination || output.BaseRepository != "root" || output.RepositoryCount != 2 || output.ManifestSource != manifestAbs || len(output.Repositories) != 2 || output.Repositories[0].ID != "backend" || output.Repositories[1].ID != "root" || output.Repositories[0].ActualCommit == "" || output.Repositories[1].ActualCommit == "" || output.Repositories[0].Mount != "backend" || output.Repositories[0].ResolvedPath != filepath.Join(destination, "backend") || output.Repositories[1].Mount != "." || output.Repositories[1].ResolvedPath != destination {
 		t.Fatalf("clone JSON = %#v", output)
 	}
 	if strings.Contains(result.Stdout, `"exactCommit"`) || strings.Contains(result.Stdout, `"parentCommit"`) || !strings.Contains(result.Stdout, `"observedCommit"`) {
@@ -146,16 +150,18 @@ func TestCloneHTTPFromNestedContextHonorsCustomRootsAndCleansUpManifestMismatch(
 
 	dryRun := testutil.RunCommand(t, cli.Execute, "clone", server.URL+"/project.wtree.yml", "--data-dir", data, "--worktree-root", worktrees, "--dry-run", "--json")
 	var dryOutput struct {
-		Version int    `json:"version"`
-		Status  string `json:"status"`
-		DryRun  bool   `json:"dryRun"`
-		Plan    struct {
+		Version        int    `json:"version"`
+		Status         string `json:"status"`
+		DryRun         bool   `json:"dryRun"`
+		LogicalRoot    string `json:"logicalRoot"`
+		BaseRepository string `json:"baseRepository"`
+		Plan           struct {
 			Destination struct {
 				Path string `json:"path"`
 			} `json:"destination"`
 		} `json:"plan"`
 	}
-	if dryRun.Err != nil || dryRun.Stderr != "" || json.Unmarshal([]byte(dryRun.Stdout), &dryOutput) != nil || dryOutput.Version != service.CloneResultVersion || dryOutput.Status != "planned" || !dryOutput.DryRun || dryOutput.Plan.Destination.Path != expectedDestination {
+	if dryRun.Err != nil || dryRun.Stderr != "" || json.Unmarshal([]byte(dryRun.Stdout), &dryOutput) != nil || dryOutput.Version != service.CloneResultVersion || dryOutput.Status != "planned" || !dryOutput.DryRun || dryOutput.LogicalRoot != expectedDestination || dryOutput.BaseRepository != "root" || dryOutput.Plan.Destination.Path != expectedDestination {
 		t.Fatalf("nested HTTP dry-run JSON = %#v output=%#v", dryRun, dryOutput)
 	}
 	if _, statErr := os.Lstat(expectedDestination); !os.IsNotExist(statErr) {

@@ -48,21 +48,25 @@ func TestExecuteStatusRendersCleanWorkspaceJSON(t *testing.T) {
 		t.Fatalf("status = %#v", result)
 	}
 	var value struct {
-		Workspace    string `json:"workspace"`
-		Repositories []struct {
-			ID       string `json:"id"`
-			Branch   string `json:"branch"`
-			Path     string `json:"path"`
-			Clean    bool   `json:"clean"`
-			Ahead    int    `json:"ahead"`
-			Behind   int    `json:"behind"`
-			Upstream bool   `json:"upstream"`
+		Workspace      string `json:"workspace"`
+		LogicalRoot    string `json:"logicalRoot"`
+		BaseRepository string `json:"baseRepository"`
+		Repositories   []struct {
+			ID           string `json:"id"`
+			ParentID     string `json:"parentId"`
+			Branch       string `json:"branch"`
+			Path         string `json:"path"`
+			ResolvedPath string `json:"resolvedPath"`
+			Clean        bool   `json:"clean"`
+			Ahead        int    `json:"ahead"`
+			Behind       int    `json:"behind"`
+			Upstream     bool   `json:"upstream"`
 		} `json:"repositories"`
 	}
 	if err := json.Unmarshal([]byte(result.Stdout), &value); err != nil {
 		t.Fatal(err)
 	}
-	if value.Workspace != "feature/status" || len(value.Repositories) != 1 || value.Repositories[0].ID != "root" || value.Repositories[0].Branch != "feature/status" || value.Repositories[0].Path != target || !value.Repositories[0].Clean || value.Repositories[0].Ahead != 0 || value.Repositories[0].Behind != 1 || !value.Repositories[0].Upstream {
+	if value.Workspace != "feature/status" || value.LogicalRoot != target || value.BaseRepository != "root" || len(value.Repositories) != 1 || value.Repositories[0].ID != "root" || value.Repositories[0].Branch != "feature/status" || value.Repositories[0].Path != target || value.Repositories[0].ResolvedPath != target || !value.Repositories[0].Clean || value.Repositories[0].Ahead != 0 || value.Repositories[0].Behind != 1 || !value.Repositories[0].Upstream {
 		t.Fatalf("status JSON = %s", result.Stdout)
 	}
 	human := testutil.RunCommand(t, cli.Execute, "status", "--project", project.Path, "feature/status", "--data-dir", data)

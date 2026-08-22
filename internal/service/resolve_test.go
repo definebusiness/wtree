@@ -142,8 +142,8 @@ func TestResolverPrefersLocalConfigOverPersistedWorkspaceRegistry(t *testing.T) 
 	}
 
 	_, err = service.NewResolver().Resolve(context.Background(), service.ResolveRequest{Path: localConfigDirectory, DataDir: data})
-	if !errors.Is(err, service.ErrStaleRegistry) {
-		t.Fatalf("Resolve() error = %v, want the local project's Git identity error", err)
+	if err == nil || !strings.Contains(err.Error(), "reinitialization is required") {
+		t.Fatalf("Resolve() error = %v, want local-v1 reinitialization diagnostic", err)
 	}
 }
 
@@ -297,7 +297,7 @@ func TestResolverDoesNotRewriteLiveRegistryForCloneWithSameProjectID(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	root.Run(t, "add", "-f", ".wtree.yml")
+	root.Run(t, "add", "-f", ".wtree.yml", "project.wtree.yml")
 	root.Run(t, "commit", "-m", "track wtree config")
 	clone := filepath.Join(t.TempDir(), "clone")
 	root.Run(t, "clone", root.Path, clone)

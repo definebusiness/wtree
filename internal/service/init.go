@@ -29,6 +29,7 @@ var ErrAlreadyInitialized = errors.New("project is already initialized")
 // silently lost by a map conversion.
 type InitRequest struct {
 	Path, DataDir, WorktreeRoot string
+	BaseRepository              string
 	DryRun                      bool
 	Ignores                     []string
 	ManifestSource              string
@@ -45,6 +46,8 @@ type InitResult struct {
 	LocalConfig      config.ProjectConfig    `json:"localConfig"`
 	PortableManifest config.PortableManifest `json:"portableManifest"`
 	IgnoreUpdates    []IgnoreUpdate          `json:"ignoreUpdates"`
+	LogicalRoot      string                  `json:"logicalRoot"`
+	BaseRepository   string                  `json:"baseRepository"`
 }
 
 // IgnoreUpdate is rendered by the CLI without exposing filesystem snapshots.
@@ -159,7 +162,7 @@ func (i *Initializer) Init(ctx context.Context, request InitRequest) (InitResult
 	if err != nil {
 		return InitResult{}, retainInitIgnoreProgress(plan.ignorePlan, ignoreResult, err)
 	}
-	if err := rejectRegistrationConflicts(plan.configPath, plan.identityMap, lockedRegistry); err != nil {
+	if err := rejectRegistrationConflicts(ctx, request.DataDir, plan.configPath, plan.identityMap, plan.state.Path, registrationTopLevelPaths(plan.configuration.Repositories, plan.state.Repositories), lockedRegistry); err != nil {
 		return InitResult{}, retainInitIgnoreProgress(plan.ignorePlan, ignoreResult, err)
 	}
 	if _, exists := lockedRegistry.Projects[plan.id]; exists {
@@ -217,6 +220,7 @@ func verifyRetainedIgnoreProgress(plan IgnorePlan, result IgnoreApplyResult) err
 
 type initPlan struct {
 	id, root, configPath, manifestPath, registryPath, workspacePath string
+	basePath                                                        string
 	configuration                                                   config.ProjectConfig
 	manifest                                                        config.PortableManifest
 	repositories                                                    []discovery.Repository
@@ -241,12 +245,19 @@ func (i *Initializer) plan(ctx context.Context, request InitRequest) (initPlan, 
 	if err != nil {
 		return initPlan{}, err
 	}
-	repositories, err := discovery.Discover(root, request.Ignores)
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return initPlan{}, fmt.Errorf("canonicalize logical root: %w", err)
+	}
+	repositories, err := discovery.DiscoverContext(ctx, root, request.Ignores)
 	if err != nil {
 		return initPlan{}, err
 	}
-	root = repositories[0].Path
-	configPath, manifestPath := filepath.Join(root, ".wtree.yml"), filepath.Join(root, "project.wtree.yml")
+	base, err := selectInitBase(repositories, request.BaseRepository)
+	if err != nil {
+		return initPlan{}, err
+	}
+	configPath, manifestPath := filepath.Join(base.Path, ".wtree.yml"), filepath.Join(base.Path, "project.wtree.yml")
 	if _, err := os.Lstat(configPath); err == nil {
 		return initPlan{}, ErrAlreadyInitialized
 	} else if !os.IsNotExist(err) {
@@ -261,7 +272,7 @@ func (i *Initializer) plan(ctx context.Context, request InitRequest) (initPlan, 
 		return initPlan{}, NewError(ErrorValidation, err)
 	}
 
-	p := initPlan{root: root, configPath: configPath, manifestPath: manifestPath, registryPath: filepath.Join(request.DataDir, "registry.json"), repositories: repositories, identityMap: map[string]string{}}
+	p := initPlan{root: root, basePath: base.Path, configPath: configPath, manifestPath: manifestPath, registryPath: filepath.Join(request.DataDir, "registry.json"), repositories: repositories, identityMap: map[string]string{}}
 	checkouts := map[string]store.CheckoutState{}
 	byID := map[string]discovery.Repository{}
 	for _, repository := range repositories {
@@ -277,15 +288,13 @@ func (i *Initializer) plan(ctx context.Context, request InitRequest) (initPlan, 
 		}
 		p.identityMap[common] = repository.ID
 	}
-	baseRepository := ""
-	for _, repository := range repositories {
-		if repository.ParentID == "" {
-			baseRepository = repository.ID
-			break
-		}
+	logicalRoot, err := filepath.Rel(base.Path, root)
+	if err != nil {
+		return initPlan{}, err
 	}
-	p.configuration = config.ProjectConfig{Version: config.Version, Project: config.Project{Name: filepath.Base(root)}, Repositories: map[string]config.Repository{}, Worktrees: config.Worktrees{Root: request.WorktreeRoot}, Discovery: config.Discovery{Ignore: request.Ignores}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: source}}
-	p.manifest = config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "identity", Name: filepath.Base(root), BaseRepository: baseRepository}, Repositories: map[string]config.PortableRepository{}}
+	logicalRoot = filepath.ToSlash(logicalRoot)
+	p.configuration = config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{Name: filepath.Base(root), BaseRepository: base.ID}, LogicalRoot: logicalRoot, Repositories: map[string]config.Repository{}, Worktrees: config.Worktrees{Root: request.WorktreeRoot}, Discovery: config.Discovery{Ignore: request.Ignores}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: source}}
+	p.manifest = config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "identity", Name: filepath.Base(root), BaseRepository: base.ID}, Repositories: map[string]config.PortableRepository{}}
 	for id := range overrides {
 		if _, ok := byID[id]; !ok {
 			return initPlan{}, NewError(ErrorValidation, fmt.Errorf("clone URL override references unknown repository %q", id))
@@ -298,7 +307,7 @@ func (i *Initializer) plan(ctx context.Context, request InitRequest) (initPlan, 
 		}
 		upstream, head, initial := facts.Upstream, facts.Head, facts.Roots
 		relative, _ := filepath.Rel(root, repository.Path)
-		if repository.ID == "root" {
+		if relative == "." {
 			relative = "."
 		}
 		cloneURL := upstream.FetchURL
@@ -324,7 +333,7 @@ func (i *Initializer) plan(ctx context.Context, request InitRequest) (initPlan, 
 		return initPlan{}, err
 	}
 	p.configuration.Project.ID, p.manifest.Project.ID = p.id, p.id
-	if err := rejectRegistrationConflicts(configPath, p.identityMap, registry); err != nil {
+	if err := rejectRegistrationConflicts(ctx, request.DataDir, configPath, p.identityMap, root, registrationTopLevelPaths(p.configuration.Repositories, checkouts), registry); err != nil {
 		return initPlan{}, err
 	}
 	p.registry, p.registryHad = cloneRegistry(registry), had
@@ -366,7 +375,7 @@ func (i *Initializer) preflightIgnores(ctx context.Context, p *initPlan) error {
 	if !ok {
 		return NewError(ErrorInternal, errors.New("initializer git implementation does not inspect working-tree ignores"))
 	}
-	localConfigIgnored, err := i.git.IsIgnoredWorkingTree(ctx, p.root, ".wtree.yml")
+	localConfigIgnored, err := i.git.IsIgnoredWorkingTree(ctx, p.basePath, ".wtree.yml")
 	if err != nil {
 		return NewError(ErrorGit, fmt.Errorf("inspect root local configuration ignore: %w", err))
 	}
@@ -374,7 +383,7 @@ func (i *Initializer) preflightIgnores(ctx context.Context, p *initPlan) error {
 	for _, repository := range p.repositories {
 		byID[repository.ID] = repository
 	}
-	p.ignoreRequirements = []IgnoreRequirement{{ParentRepositoryID: "root", ChildRepositoryID: "root", ParentPath: p.root, LocalConfig: true, AlreadyProtected: localConfigIgnored}}
+	p.ignoreRequirements = []IgnoreRequirement{{ParentRepositoryID: p.configuration.Project.BaseRepository, ChildRepositoryID: p.configuration.Project.BaseRepository, ParentPath: p.basePath, LocalConfig: true, AlreadyProtected: localConfigIgnored}}
 	for _, child := range p.repositories {
 		if child.ParentID == "" {
 			continue
@@ -577,7 +586,42 @@ func (p initPlan) result(dry bool) InitResult {
 		}
 		updates = append(updates, IgnoreUpdate{RepositoryID: file.ParentRepositoryID, Path: file.Path, AddedRules: append([]string(nil), file.AddedRules...)})
 	}
-	return InitResult{ProjectID: p.id, ConfigPath: p.configPath, ManifestPath: p.manifestPath, ManifestSource: p.configuration.Manifest.Source, Repositories: p.repositories, DryRun: dry, LocalConfig: p.configuration, PortableManifest: p.manifest, IgnoreUpdates: updates}
+	return InitResult{ProjectID: p.id, ConfigPath: p.configPath, ManifestPath: p.manifestPath, ManifestSource: p.configuration.Manifest.Source, Repositories: p.repositories, DryRun: dry, LocalConfig: p.configuration, PortableManifest: p.manifest, IgnoreUpdates: updates, LogicalRoot: p.root, BaseRepository: p.configuration.Project.BaseRepository}
+}
+
+func selectInitBase(repositories []discovery.Repository, requested string) (discovery.Repository, error) {
+	topLevel := make([]discovery.Repository, 0, len(repositories))
+	for _, repository := range repositories {
+		if repository.ParentID == "" {
+			topLevel = append(topLevel, repository)
+		}
+	}
+	sort.Slice(topLevel, func(left, right int) bool { return topLevel[left].ID < topLevel[right].ID })
+	if requested == "" {
+		if len(topLevel) == 1 {
+			return topLevel[0], nil
+		}
+		return discovery.Repository{}, NewError(ErrorValidation, fmt.Errorf("multiple top-level repositories require --base-repository; candidates: %s", formatInitBaseCandidates(topLevel)))
+	}
+	for _, repository := range topLevel {
+		if repository.ID == requested {
+			return repository, nil
+		}
+	}
+	for _, repository := range repositories {
+		if repository.ID == requested {
+			return discovery.Repository{}, NewError(ErrorValidation, fmt.Errorf("base repository %q is nested; candidates: %s", requested, formatInitBaseCandidates(topLevel)))
+		}
+	}
+	return discovery.Repository{}, NewError(ErrorValidation, fmt.Errorf("base repository %q is not discovered; candidates: %s", requested, formatInitBaseCandidates(topLevel)))
+}
+
+func formatInitBaseCandidates(repositories []discovery.Repository) string {
+	values := make([]string, 0, len(repositories))
+	for _, repository := range repositories {
+		values = append(values, fmt.Sprintf("%s (%s)", repository.ID, repository.Mount))
+	}
+	return strings.Join(values, ", ")
 }
 
 func ParseCloneURLOverrides(values []string) (map[string]string, error) {
@@ -888,22 +932,33 @@ func cloneRegistry(value store.Registry) store.Registry {
 	}
 	return clone
 }
-func rejectRegistrationConflicts(configPath string, repositoryIDs map[string]string, registry store.Registry) error {
+func rejectRegistrationConflicts(ctx context.Context, dataDir, configPath string, repositoryIDs map[string]string, logicalRoot string, topLevelPaths []string, registry store.Registry) error {
 	identities := make([]string, 0, len(repositoryIDs))
 	for identity := range repositoryIDs {
 		identities = append(identities, identity)
 	}
 	sort.Strings(identities)
-	candidates := make([]RegistrationConflictCandidate, 0, len(registry.Projects))
-	for id, project := range registry.Projects {
-		registered := make([]string, 0, len(project.RepositoryIDs))
-		for identity := range project.RepositoryIDs {
-			registered = append(registered, identity)
-		}
-		candidates = append(candidates, RegistrationConflictCandidate{ID: id, ConfigPath: project.ConfigPath, RepositoryIdentities: registered})
-	}
-	if ids := RegistrationConflictIDs(configPath, identities, candidates); len(ids) != 0 {
+	candidates := registeredConflictCandidates(ctx, dataDir, registry)
+	target := RegistrationConflictCandidate{ConfigPath: configPath, RepositoryIdentities: identities, LogicalRoot: logicalRoot, TopLevelPaths: topLevelPaths}
+	if ids := RegistrationConflictIDsForTarget(target, candidates); len(ids) != 0 {
 		return NewError(ErrorConflict, fmt.Errorf("project registration conflicts with existing project IDs %s; inspect registrations with `wtree project list`", strings.Join(ids, ", ")))
 	}
 	return nil
+}
+
+func registrationTopLevelPaths(repositories map[string]config.Repository, checkouts map[string]store.CheckoutState) []string {
+	ids := make([]string, 0, len(repositories))
+	for id, repository := range repositories {
+		if repository.Parent == "" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	paths := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if path := checkouts[id].ResolvedPath; path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths
 }

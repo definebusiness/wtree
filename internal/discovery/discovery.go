@@ -21,8 +21,15 @@ type Repository struct {
 	Mount    string `json:"mount"`
 }
 
-// Discover walks root deterministically, ignoring Git metadata and requested directory names.
+// Discover walks an explicit logical-root boundary deterministically, ignoring
+// Git metadata and requested directory names.
 func Discover(root string, ignores []string) ([]Repository, error) {
+	return DiscoverContext(context.Background(), root, ignores)
+}
+
+// DiscoverContext is Discover with cancellation support. It never promotes an
+// enclosing Git checkout: root is the complete discovery boundary.
+func DiscoverContext(ctx context.Context, root string, ignores []string) ([]Repository, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
@@ -31,31 +38,27 @@ func Discover(root string, ignores []string) ([]Repository, error) {
 	if err != nil {
 		return nil, fmt.Errorf("canonicalize discovery path: %w", err)
 	}
-	root, err = repositoryRoot(root)
+	info, err := os.Stat(root)
 	if err != nil {
 		return nil, err
 	}
-	if !isGit(root) {
-		return nil, fmt.Errorf("%q is not a Git repository", root)
-	}
-	ignored := map[string]bool{".git": true}
-	for _, value := range defaultIgnores {
-		ignored[value] = true
-	}
-	for _, value := range ignores {
-		ignored[value] = true
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%q is not a directory", root)
 	}
 	var paths []string
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err != nil {
 			return err
 		}
 		relative, _ := filepath.Rel(root, path)
-		if path != root && entry.IsDir() && ignoredPath(relative, entry.Name(), ignored) {
+		if path != root && entry.IsDir() && ShouldIgnorePath(relative, entry.Name(), ignores) {
 			return filepath.SkipDir
 		}
 		if entry.IsDir() && isGit(path) {
-			hasSubmodules, err := hasSubmodules(path)
+			hasSubmodules, err := hasSubmodules(ctx, path)
 			if err != nil {
 				return err
 			}
@@ -69,29 +72,74 @@ func Discover(root string, ignores []string) ([]Repository, error) {
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(paths)
-	ids := repositoryIDs(root, paths)
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("%q contains no Git repositories", root)
+	}
+	sort.Slice(paths, func(left, right int) bool {
+		leftDepth := pathDepth(root, paths[left])
+		rightDepth := pathDepth(root, paths[right])
+		if leftDepth != rightDepth {
+			return leftDepth < rightDepth
+		}
+		return paths[left] < paths[right]
+	})
+	ids := repositoryIDs(root, paths, isGit(root))
 	repositories := make([]Repository, 0, len(paths))
 	for _, path := range paths {
 		id := ids[path]
 		parent := ""
-		mount := "."
-		if path != root {
-			for i := len(repositories) - 1; i >= 0; i-- {
-				if contains(repositories[i].Path, path) {
-					parent = repositories[i].ID
-					relative, _ := filepath.Rel(repositories[i].Path, path)
-					mount = filepath.ToSlash(relative)
-					break
-				}
+		mount := ""
+		for i := len(repositories) - 1; i >= 0; i-- {
+			if contains(repositories[i].Path, path) {
+				parent = repositories[i].ID
+				relative, _ := filepath.Rel(repositories[i].Path, path)
+				mount = filepath.ToSlash(relative)
+				break
+			}
+		}
+		if parent == "" {
+			relative, _ := filepath.Rel(root, path)
+			mount = filepath.ToSlash(relative)
+			if path == root {
+				mount = "."
 			}
 		}
 		repositories = append(repositories, Repository{ID: id, Path: path, ParentID: parent, Mount: mount})
 	}
+	sortRepositories(repositories)
 	return repositories, nil
 }
 
-func hasSubmodules(path string) (bool, error) {
+func sortRepositories(repositories []Repository) {
+	byID := make(map[string]Repository, len(repositories))
+	for _, repository := range repositories {
+		byID[repository.ID] = repository
+	}
+	depths := make(map[string]int, len(repositories))
+	var depth func(string) int
+	depth = func(id string) int {
+		if value, found := depths[id]; found {
+			return value
+		}
+		repository := byID[id]
+		if repository.ParentID == "" {
+			depths[id] = 0
+			return 0
+		}
+		value := depth(repository.ParentID) + 1
+		depths[id] = value
+		return value
+	}
+	sort.Slice(repositories, func(left, right int) bool {
+		leftDepth, rightDepth := depth(repositories[left].ID), depth(repositories[right].ID)
+		if leftDepth != rightDepth {
+			return leftDepth < rightDepth
+		}
+		return repositories[left].ID < repositories[right].ID
+	})
+}
+
+func hasSubmodules(ctx context.Context, path string) (bool, error) {
 	_, err := os.Stat(filepath.Join(path, ".gitmodules"))
 	if err == nil {
 		return true, nil
@@ -99,7 +147,7 @@ func hasSubmodules(path string) (bool, error) {
 	if !os.IsNotExist(err) {
 		return false, fmt.Errorf("check submodule configuration in %q: %w", path, err)
 	}
-	hasGitlink, err := gitadapter.NewAdapter("git").HasSubmodules(context.Background(), path)
+	hasGitlink, err := gitadapter.NewAdapter("git").HasSubmodules(ctx, path)
 	if err != nil {
 		return false, fmt.Errorf("inspect Git submodule metadata in %q: %w", path, err)
 	}
@@ -111,31 +159,14 @@ var defaultIgnores = []string{
 	"node_modules/**", "vendor/**", ".venv/**", "target/**", "build/**",
 }
 
-func repositoryRoot(path string) (string, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", err
+func repositoryIDs(root string, paths []string, rootIsRepository bool) map[string]string {
+	counts := map[string]int{}
+	if rootIsRepository {
+		counts["root"] = 1
 	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("%q is not a directory", path)
-	}
-	for {
-		if isGit(path) {
-			return path, nil
-		}
-		parent := filepath.Dir(path)
-		if parent == path {
-			return "", fmt.Errorf("%q is not inside a Git repository", path)
-		}
-		path = parent
-	}
-}
-
-func repositoryIDs(root string, paths []string) map[string]string {
-	counts := map[string]int{"root": 1}
 	bases := make(map[string]string, len(paths))
 	for _, path := range paths {
-		if path == root {
+		if rootIsRepository && path == root {
 			continue
 		}
 		base := slug(filepath.Base(path))
@@ -147,7 +178,7 @@ func repositoryIDs(root string, paths []string) map[string]string {
 	}
 	ids := make(map[string]string, len(paths))
 	for _, path := range paths {
-		if path == root {
+		if rootIsRepository && path == root {
 			ids[path] = "root"
 			continue
 		}
@@ -162,7 +193,27 @@ func repositoryIDs(root string, paths []string) map[string]string {
 	}
 	return ids
 }
-func ignoredPath(relative, name string, patterns map[string]bool) bool {
+
+func pathDepth(root, path string) int {
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == "." {
+		return 0
+	}
+	return strings.Count(filepath.ToSlash(relative), "/") + 1
+}
+
+// ShouldIgnorePath applies the built-in and configured discovery ignore
+// patterns to one path relative to a logical-root boundary. It is shared by
+// initialization discovery and import observation so an ignored checkout is
+// never treated as an unknown repository by only one entry point.
+func ShouldIgnorePath(relative, name string, ignores []string) bool {
+	patterns := map[string]bool{".git": true}
+	for _, value := range defaultIgnores {
+		patterns[value] = true
+	}
+	for _, value := range ignores {
+		patterns[value] = true
+	}
 	if patterns[name] || patterns[filepath.ToSlash(relative)] {
 		return true
 	}

@@ -64,15 +64,17 @@ type CloneResultFailure struct {
 // owns a complete validated plan. A failed result owns only credential-free
 // provenance known before the failing boundary and never fabricates a plan.
 type CloneResult struct {
-	Version       int                       `json:"version"`
-	Operation     string                    `json:"operation"`
-	Status        CloneResultStatus         `json:"status"`
-	DryRun        bool                      `json:"dryRun"`
-	RequestSource *CloneResultRequestSource `json:"requestSource,omitempty"`
-	Source        *ClonePlanSource          `json:"source,omitempty"`
-	Plan          *ClonePlan                `json:"plan,omitempty"`
-	Repositories  []CloneRepositoryOutcome  `json:"repositories,omitempty"`
-	Failure       *CloneResultFailure       `json:"failure,omitempty"`
+	Version        int                       `json:"version"`
+	Operation      string                    `json:"operation"`
+	Status         CloneResultStatus         `json:"status"`
+	DryRun         bool                      `json:"dryRun"`
+	LogicalRoot    string                    `json:"logicalRoot,omitempty"`
+	BaseRepository string                    `json:"baseRepository,omitempty"`
+	RequestSource  *CloneResultRequestSource `json:"requestSource,omitempty"`
+	Source         *ClonePlanSource          `json:"source,omitempty"`
+	Plan           *ClonePlan                `json:"plan,omitempty"`
+	Repositories   []CloneRepositoryOutcome  `json:"repositories,omitempty"`
+	Failure        *CloneResultFailure       `json:"failure,omitempty"`
 }
 
 func NewCloneResult(plan ClonePlan) (CloneResult, error) {
@@ -82,6 +84,7 @@ func NewCloneResult(plan ClonePlan) (CloneResult, error) {
 	ownedPlan := clonePlanCopy(plan)
 	result := CloneResult{
 		Version: CloneResultVersion, Operation: "clone", Status: CloneResultPlanned, DryRun: true,
+		LogicalRoot: ownedPlan.LogicalRoot, BaseRepository: ownedPlan.BaseRepository,
 		Plan: &ownedPlan, Repositories: cloneResultOutcomes(ownedPlan),
 	}
 	if err := result.Validate(); err != nil {
@@ -180,7 +183,7 @@ func (result CloneResult) Validate() error {
 	}
 	switch result.Status {
 	case CloneResultPlanned:
-		if result.RequestSource != nil || result.Source != nil || result.Plan == nil || result.Failure != nil || len(result.Repositories) == 0 {
+		if result.RequestSource != nil || result.Source != nil || result.Plan == nil || result.Failure != nil || len(result.Repositories) == 0 || result.LogicalRoot != result.Plan.LogicalRoot || result.BaseRepository != result.Plan.BaseRepository {
 			return errors.New("planned clone result has mixed or missing status fields")
 		}
 		if err := result.Plan.Validate(); err != nil {
@@ -190,7 +193,7 @@ func (result CloneResult) Validate() error {
 			return errors.New("clone result outcomes do not match its immutable plan")
 		}
 	case CloneResultFailed:
-		if result.Plan != nil || len(result.Repositories) != 0 || result.Failure == nil {
+		if result.Plan != nil || len(result.Repositories) != 0 || result.Failure == nil || result.LogicalRoot != "" || result.BaseRepository != "" {
 			return errors.New("failed clone result has fabricated planning facts")
 		}
 		if !validCloneResultStage(result.Failure.Stage) || !validCloneResultErrorKind(result.Failure.Code) || !validCloneResultStageCode(result.Failure.Stage, result.Failure.Code) || result.Failure.Message == "" || boundedRedactedDiagnostic(result.Failure.Message) != result.Failure.Message {

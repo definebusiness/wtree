@@ -22,11 +22,13 @@ import (
 // CloneExecutionResult describes a successfully published clone. Rendering is
 // deliberately owned by the CLI milestone, not this transaction service.
 type CloneExecutionResult struct {
-	ProjectID    string
-	Destination  string
-	ConfigPath   string
-	StatePath    string
-	Repositories map[string]store.CheckoutState
+	ProjectID      string
+	Destination    string
+	LogicalRoot    string
+	BaseRepository string
+	ConfigPath     string
+	StatePath      string
+	Repositories   map[string]store.CheckoutState
 }
 
 // ClonePublicationLocker is the established registry-then-project lock
@@ -53,6 +55,7 @@ type CloneExecutorDependencies struct {
 	WriteRecoveryCAS  func(string, store.RecoveryRecord, func() error) error
 	WriteRawModeCAS   func(string, []byte, os.FileMode, func() error) error
 	MkdirTemp         func(string, string) (string, error)
+	Mkdir             func(string, os.FileMode) error
 	Rename            func(string, string) error
 	RemoveAll         func(string) error
 	RemoveFileCAS     func(string, func() error) error
@@ -112,6 +115,9 @@ func NewCloneExecutorWith(dependencies CloneExecutorDependencies) *CloneExecutor
 	}
 	if dependencies.MkdirTemp == nil {
 		dependencies.MkdirTemp = os.MkdirTemp
+	}
+	if dependencies.Mkdir == nil {
+		dependencies.Mkdir = os.Mkdir
 	}
 	if dependencies.Rename == nil {
 		dependencies.Rename = os.Rename
@@ -220,7 +226,10 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		if err := ctx.Err(); err != nil {
 			return CloneExecutionResult{}, cleanup(err)
 		}
-		path := staging
+		path, err := stagedCloneRepositoryPath(plan, staging, repository)
+		if err != nil {
+			return CloneExecutionResult{}, cleanup(NewError(ErrorValidation, err))
+		}
 		if repository.Parent != "" {
 			parent := planRepository(plan, repository.Parent)
 			parentPath := paths[repository.Parent]
@@ -237,13 +246,25 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 			if err := executor.after(ctx, progress, "repository-"+repository.ID+"-parent-ignore"); err != nil {
 				return CloneExecutionResult{}, cleanup(err)
 			}
-			path = filepath.Join(parentPath, filepath.FromSlash(repository.Mount))
 			if _, err := executor.dependencies.Lstat(path); err == nil || !os.IsNotExist(err) {
 				return CloneExecutionResult{}, cleanup(NewError(ErrorConflict, fmt.Errorf("repository %q mount already exists", repository.ID)))
 			}
 		}
+		parentPath := staging
+		if repository.Parent != "" {
+			parentPath = paths[repository.Parent]
+		}
+		if err := executor.prepareCloneGroupingDirectories(ctx, progress, staging, parentPath, path, repository.ID); err != nil {
+			return CloneExecutionResult{}, cleanup(NewError(ErrorInternal, fmt.Errorf("create repository %q grouping directory: %w", repository.ID, err)))
+		}
 		if err := executor.before(ctx, progress, "repository-"+repository.ID+"-clone"); err != nil {
 			return CloneExecutionResult{}, cleanup(err)
+		}
+		// The started callback is intentionally observable. Revalidate after it
+		// returns and immediately before the adapter call so a callback cannot
+		// replace a previously-safe grouping component with a symlink.
+		if err := executor.revalidateCloneGroupingDirectories(staging, parentPath, path); err != nil {
+			return CloneExecutionResult{}, cleanup(NewError(ErrorValidation, fmt.Errorf("revalidate repository %q grouping directory: %w", repository.ID, err)))
 		}
 		if err := executor.dependencies.Git.Clone(ctx, repository.CloneURL, path, repository.CloneRemote); err != nil {
 			return CloneExecutionResult{}, cleanup(NewError(ErrorGit, fmt.Errorf("clone repository %q: %w", repository.ID, err)))
@@ -290,7 +311,9 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 	}
 
 	configuration := cloneLocalConfiguration(plan)
-	configPath := filepath.Join(staging, ".wtree.yml")
+	baseRepository := planRepository(plan, plan.BaseRepository)
+	basePath := paths[plan.BaseRepository]
+	configPath := filepath.Join(basePath, ".wtree.yml")
 	expectedConfigBytes, err := config.MarshalProject(configuration)
 	if err != nil {
 		return CloneExecutionResult{}, cleanup(NewError(ErrorInternal, fmt.Errorf("encode local clone config: %w", err)))
@@ -315,7 +338,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 	if err != nil || !configPublished.exists || !bytes.Equal(configPublished.data, expectedConfigBytes) || configPublished.mode.Perm() != 0o600 {
 		return CloneExecutionResult{}, cleanup(NewError(ErrorInternal, errors.New("local clone config bytes, type, identity, or mode differ from plan")))
 	}
-	ignored, err := executor.dependencies.Git.IsIgnoredAt(ctx, staging, heads[plan.Repositories[0].ID], ".wtree.yml")
+	ignored, err := executor.dependencies.Git.IsIgnoredAt(ctx, basePath, heads[baseRepository.ID], ".wtree.yml")
 	if err != nil || !ignored {
 		return CloneExecutionResult{}, cleanup(NewError(ErrorValidation, errors.New("committed root content does not ignore /.wtree.yml")))
 	}
@@ -327,7 +350,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		return CloneExecutionResult{}, cleanup(NewError(ErrorInternal, fmt.Errorf("inventory staged clone: %w", err)))
 	}
 	inventoryReady = true
-	configPublished.path = filepath.Join(plan.Destination.Path, ".wtree.yml")
+	configPublished.path = filepath.Join(finalRepositoryPath(plan, plan.BaseRepository), ".wtree.yml")
 	expectedFinalIdentities = translateCloneIdentities(identities, staging, plan.Destination.Path)
 
 	if err := executor.before(ctx, progress, "publication-lock"); err != nil {
@@ -394,7 +417,13 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 	if stateGeneration.exists {
 		return CloneExecutionResult{}, cleanup(NewError(ErrorConflict, errors.New("default workspace state already exists")))
 	}
-	if err := rejectRegistrationConflicts(filepath.Join(plan.Destination.Path, ".wtree.yml"), expectedFinalIdentities, registryFacts.Registry); err != nil {
+	topLevelPaths := make([]string, 0)
+	for _, repository := range plan.Repositories {
+		if repository.Parent == "" {
+			topLevelPaths = append(topLevelPaths, finalRepositoryPath(plan, repository.ID))
+		}
+	}
+	if err := rejectRegistrationConflicts(ctx, plan.DataDir, filepath.Join(finalRepositoryPath(plan, plan.BaseRepository), ".wtree.yml"), expectedFinalIdentities, plan.Destination.Path, topLevelPaths, registryFacts.Registry); err != nil {
 		return CloneExecutionResult{}, cleanup(err)
 	}
 	if _, exists := registryFacts.Registry.Projects[plan.Project.ID]; exists {
@@ -491,7 +520,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 	if registry.Projects == nil {
 		registry.Projects = map[string]store.RegistryProject{}
 	}
-	registry.Projects[plan.Project.ID] = store.RegistryProject{Name: plan.Project.Name, ConfigPath: filepath.Join(plan.Destination.Path, ".wtree.yml"), RepositoryIDs: identities}
+	registry.Projects[plan.Project.ID] = store.RegistryProject{Name: plan.Project.Name, ConfigPath: filepath.Join(finalRepositoryPath(plan, plan.BaseRepository), ".wtree.yml"), RepositoryIDs: identities}
 	registryBytes := mustRegistryBytes(registry)
 	if err := executor.before(ctx, progress, "registry-write"); err != nil {
 		stateErr := rollbackState()
@@ -560,7 +589,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		return CloneExecutionResult{}, cleanup(errors.Join(NewError(ErrorConflict, err), registryErr, stateErr))
 	}
 	stateWritten = false
-	return CloneExecutionResult{ProjectID: plan.Project.ID, Destination: plan.Destination.Path, ConfigPath: filepath.Join(plan.Destination.Path, ".wtree.yml"), StatePath: statePath, Repositories: checkouts}, nil
+	return CloneExecutionResult{ProjectID: plan.Project.ID, Destination: plan.Destination.Path, LogicalRoot: plan.LogicalRoot, BaseRepository: plan.BaseRepository, ConfigPath: filepath.Join(finalRepositoryPath(plan, plan.BaseRepository), ".wtree.yml"), StatePath: statePath, Repositories: checkouts}, nil
 }
 
 type cloneEffectProgress struct {
@@ -702,7 +731,7 @@ func (executor *CloneExecutor) verifyRepository(ctx context.Context, plan CloneP
 	if err != nil || hasSubmodules {
 		return "", NewError(ErrorValidation, fmt.Errorf("repository %q contains submodules", repository.ID))
 	}
-	if repository.Parent == "" {
+	if repository.ID == plan.BaseRepository {
 		tracked, err := executor.dependencies.Git.TrackedFile(ctx, path, head, "project.wtree.yml")
 		if err != nil || !bytes.Equal(tracked, plan.ManifestBytes()) {
 			return "", NewError(ErrorValidation, errors.New("root tracked manifest does not equal the fetched manifest"))
@@ -753,10 +782,10 @@ func (executor *CloneExecutor) removeOwnedTree(ctx context.Context, plan ClonePl
 		if err := revalidateCloneTree(target, inventory); err != nil {
 			return fmt.Errorf("refuse cleanup after destination changed: %w", err)
 		}
-		if configSnapshot.path != filepath.Join(target, ".wtree.yml") || revalidateCloneFileSnapshot(configSnapshot) != nil {
+		if configSnapshot.path != filepath.Join(finalRepositoryPath(plan, plan.BaseRepository), ".wtree.yml") || revalidateCloneFileSnapshot(configSnapshot) != nil {
 			return errors.New("refuse published destination cleanup after config identity changed")
 		}
-		configuration, err := config.ReadProjectFile(filepath.Join(target, ".wtree.yml"))
+		configuration, err := config.ReadProjectFile(filepath.Join(finalRepositoryPath(plan, plan.BaseRepository), ".wtree.yml"))
 		if err != nil || configuration.Project.ID != plan.Project.ID || len(configuration.Repositories) != len(plan.Repositories) {
 			return errors.New("refuse published destination cleanup after project identity changed")
 		}
@@ -845,14 +874,125 @@ func hasCloneErrorKind(err error, kind ErrorKind) bool {
 func cloneLocalConfiguration(plan ClonePlan) config.ProjectConfig {
 	repositories := make(map[string]config.Repository, len(plan.Repositories))
 	for _, repository := range plan.Repositories {
-		source := "."
-		if repository.Parent != "" {
-			relative, _ := filepath.Rel(plan.Destination.Path, repository.Path)
-			source = filepath.ToSlash(relative)
-		}
+		relative, _ := filepath.Rel(plan.Destination.Path, repository.Path)
+		source := filepath.ToSlash(relative)
 		repositories[repository.ID] = config.Repository{Source: source, Parent: repository.Parent, DefaultMount: repository.Mount, DefaultBranch: repository.LocalBranch}
 	}
-	return config.ProjectConfig{Version: config.Version, Project: config.Project{ID: plan.Project.ID, Name: plan.Project.Name}, Repositories: repositories, Worktrees: config.Worktrees{Root: plan.WorktreeRoot}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: plan.Source.Value}}
+	base := finalRepositoryPath(plan, plan.BaseRepository)
+	logicalRoot, _ := filepath.Rel(base, plan.Destination.Path)
+	return config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{ID: plan.Project.ID, Name: plan.Project.Name, BaseRepository: plan.Project.BaseRepository}, LogicalRoot: filepath.ToSlash(logicalRoot), Repositories: repositories, Worktrees: config.Worktrees{Root: plan.WorktreeRoot}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: plan.Source.Value}}
+}
+
+func stagedCloneRepositoryPath(plan ClonePlan, staging string, repository ClonePlanRepository) (string, error) {
+	relative, err := filepath.Rel(plan.Destination.Path, repository.Path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return "", fmt.Errorf("repository %q path escapes the clone logical root", repository.ID)
+	}
+	return filepath.Join(staging, relative), nil
+}
+
+// prepareCloneGroupingDirectories creates only the directories between a
+// checkout's immediate parent and its own mount.  It deliberately avoids
+// MkdirAll: a committed symlink in that prefix would otherwise redirect a
+// child checkout outside the private staging logical root.
+func (executor *CloneExecutor) prepareCloneGroupingDirectories(ctx context.Context, progress func(transaction.Event), staging, parent, checkout, repositoryID string) error {
+	grouping, err := cloneGroupingDirectories(parent, checkout)
+	if err != nil {
+		return err
+	}
+	current := filepath.Clean(parent)
+	for _, component := range grouping {
+		if err := executor.validateCloneGroupingDirectory(staging, parent, current); err != nil {
+			return err
+		}
+		next := filepath.Join(current, component)
+		info, err := executor.dependencies.Lstat(next)
+		if os.IsNotExist(err) {
+			step := "repository-" + repositoryID + "-grouping-" + component
+			if err := executor.before(ctx, progress, step); err != nil {
+				return err
+			}
+			if err := executor.dependencies.Mkdir(next, 0o700); err != nil && !os.IsExist(err) {
+				return err
+			}
+			if err := executor.validateCloneGroupingDirectory(staging, parent, next); err != nil {
+				return err
+			}
+			if err := executor.after(ctx, progress, step); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return fmt.Errorf("inspect grouping directory %q: %w", next, err)
+		} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("grouping directory %q must be a real directory without symlinks or reparse points", next)
+		} else if err := executor.validateCloneGroupingDirectory(staging, parent, next); err != nil {
+			return err
+		}
+		current = next
+	}
+	return nil
+}
+
+// revalidateCloneGroupingDirectories closes the normal pre-clone race window
+// for existing grouping directories.  The underlying clone adapter remains
+// responsible for its own filesystem race checks while creating the checkout.
+func (executor *CloneExecutor) revalidateCloneGroupingDirectories(staging, parent, checkout string) error {
+	grouping, err := cloneGroupingDirectories(parent, checkout)
+	if err != nil {
+		return err
+	}
+	current := filepath.Clean(parent)
+	if err := executor.validateCloneGroupingDirectory(staging, parent, current); err != nil {
+		return err
+	}
+	for _, component := range grouping {
+		current = filepath.Join(current, component)
+		if err := executor.validateCloneGroupingDirectory(staging, parent, current); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func cloneGroupingDirectories(parent, checkout string) ([]string, error) {
+	relative, err := filepath.Rel(filepath.Clean(parent), filepath.Clean(checkout))
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return nil, fmt.Errorf("checkout %q is not contained by its immediate parent %q", checkout, parent)
+	}
+	if relative == "." {
+		return nil, nil
+	}
+	components := strings.Split(relative, string(filepath.Separator))
+	if len(components) == 1 {
+		return nil, nil
+	}
+	return components[:len(components)-1], nil
+}
+
+func (executor *CloneExecutor) validateCloneGroupingDirectory(staging, parent, path string) error {
+	info, err := executor.dependencies.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect grouping directory %q: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("grouping directory %q must be a real directory without symlinks or reparse points", path)
+	}
+	canonicalStaging, err := executor.dependencies.EvalSymlinks(staging)
+	if err != nil {
+		return fmt.Errorf("resolve private clone staging %q: %w", staging, err)
+	}
+	canonicalParent, err := executor.dependencies.EvalSymlinks(parent)
+	if err != nil {
+		return fmt.Errorf("resolve immediate parent checkout %q: %w", parent, err)
+	}
+	canonicalPath, err := executor.dependencies.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("resolve grouping directory %q: %w", path, err)
+	}
+	if !pathWithin(canonicalStaging, canonicalPath) || !pathWithin(canonicalParent, canonicalPath) {
+		return fmt.Errorf("grouping directory %q escapes the private clone staging or its immediate parent checkout", path)
+	}
+	return nil
 }
 
 func planRepository(plan ClonePlan, id string) ClonePlanRepository {

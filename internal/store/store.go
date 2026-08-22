@@ -87,6 +87,12 @@ func WorkspaceBytes(value WorkspaceState) ([]byte, error) {
 // narrow: callers restoring a previously read authoritative file retain every
 // byte rather than reserializing it.
 func WriteRawAtomic(path string, data []byte) error { return writeBytes(path, data) }
+
+// WriteRawCAS restores exact authoritative bytes only while compare still
+// accepts the public target at the final atomic replacement boundary.
+func WriteRawCAS(path string, data []byte, compare func() error) error {
+	return writeBytesCAS(path, data, compare)
+}
 func ReadWorkspace(path string) (WorkspaceState, error) {
 	var value WorkspaceState
 	err := read(path, &value)

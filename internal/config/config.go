@@ -4,17 +4,27 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 
+	"github.com/definebusiness/wtree/internal/domain"
+	"github.com/definebusiness/wtree/internal/pathutil"
 	"gopkg.in/yaml.v3"
 )
 
-const Version = 1
+const (
+	// ProjectConfigVersion is the local, machine-specific project config wire
+	// version. v1 is intentionally not translated: users must reinitialize.
+	ProjectConfigVersion = 2
+	// GlobalConfigVersion remains independent and unchanged.
+	GlobalConfigVersion = 1
+)
 
 type Project struct {
-	ID   string `yaml:"id" json:"id"`
-	Name string `yaml:"name" json:"name"`
+	ID             string `yaml:"id" json:"id"`
+	Name           string `yaml:"name" json:"name"`
+	BaseRepository string `yaml:"base_repository" json:"base_repository"`
 }
 type Repository struct {
 	Source        string `yaml:"source" json:"source"`
@@ -44,6 +54,7 @@ func (metadata ManifestMetadata) IsZero() bool {
 type ProjectConfig struct {
 	Version      int                   `yaml:"version" json:"version"`
 	Project      Project               `yaml:"project" json:"project"`
+	LogicalRoot  string                `yaml:"logical_root" json:"logical_root"`
 	Repositories map[string]Repository `yaml:"repositories" json:"repositories"`
 	Worktrees    Worktrees             `yaml:"worktrees" json:"worktrees"`
 	Discovery    Discovery             `yaml:"discovery,omitempty" json:"discovery,omitempty"`
@@ -55,27 +66,161 @@ type GlobalConfig struct {
 }
 
 func LoadProject(data []byte) (ProjectConfig, error) {
-	var config ProjectConfig
-	if err := strictYAML(data, &config); err != nil {
+	var value ProjectConfig
+	if err := strictYAML(data, &value); err != nil {
 		return ProjectConfig{}, err
 	}
-	if config.Version != Version {
-		return ProjectConfig{}, fmt.Errorf("unsupported project config version %d", config.Version)
+	if value.Version == 1 {
+		return ProjectConfig{}, fmt.Errorf("local project config version 1 is unsupported; reinitialization is required")
 	}
-	if err := ValidateManifestMetadata(config.Manifest); err != nil {
+	if value.Version != ProjectConfigVersion {
+		return ProjectConfig{}, fmt.Errorf("unsupported local project config version %d", value.Version)
+	}
+	if err := requireLocalV2Fields(data); err != nil {
 		return ProjectConfig{}, err
 	}
-	return config, nil
+	if err := value.Validate(); err != nil {
+		return ProjectConfig{}, err
+	}
+	return value, nil
+}
+
+func requireLocalV2Fields(data []byte) error {
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return err
+	}
+	if len(document.Content) == 0 {
+		return fmt.Errorf("local project config is required")
+	}
+	root := document.Content[0]
+	for _, field := range []string{"version", "project", "logical_root", "repositories", "worktrees", "manifest"} {
+		if mappingValue(root, field) == nil {
+			return fmt.Errorf("local project config field %q is required", field)
+		}
+	}
+	project := mappingValue(root, "project")
+	for _, field := range []string{"id", "name", "base_repository"} {
+		if mappingValue(project, field) == nil {
+			return fmt.Errorf("local project project field %q is required", field)
+		}
+	}
+	manifest := mappingValue(root, "manifest")
+	for _, field := range []string{"path", "source"} {
+		if mappingValue(manifest, field) == nil {
+			return fmt.Errorf("local project manifest field %q is required", field)
+		}
+	}
+	repositories := mappingValue(root, "repositories")
+	if repositories.Kind != yaml.MappingNode {
+		return fmt.Errorf("local project repositories must be a mapping")
+	}
+	for index := 0; index+1 < len(repositories.Content); index += 2 {
+		id, repository := repositories.Content[index].Value, repositories.Content[index+1]
+		for _, field := range []string{"source", "parent", "mount", "default_branch"} {
+			if mappingValue(repository, field) == nil {
+				return fmt.Errorf("local project repository %q field %q is required", id, field)
+			}
+		}
+	}
+	return nil
+}
+
+func mappingValue(mapping *yaml.Node, key string) *yaml.Node {
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return nil
+	}
+	for index := 0; index+1 < len(mapping.Content); index += 2 {
+		if mapping.Content[index].Value == key {
+			return mapping.Content[index+1]
+		}
+	}
+	return nil
 }
 func LoadGlobal(data []byte) (GlobalConfig, error) {
-	var config GlobalConfig
-	if err := strictYAML(data, &config); err != nil {
+	var value GlobalConfig
+	if err := strictYAML(data, &value); err != nil {
 		return GlobalConfig{}, err
 	}
-	if config.Version != Version {
-		return GlobalConfig{}, fmt.Errorf("unsupported global config version %d", config.Version)
+	if value.Version != GlobalConfigVersion {
+		return GlobalConfig{}, fmt.Errorf("unsupported global config version %d", value.Version)
 	}
-	return config, nil
+	return value, nil
+}
+
+// Validate checks all local v2 facts that do not depend on the checkout's
+// actual filesystem placement. Placement and canonical inversion are checked
+// by the service loader, which has the base configuration path.
+func (value ProjectConfig) Validate() error {
+	if value.Version != ProjectConfigVersion {
+		return fmt.Errorf("unsupported local project config version %d", value.Version)
+	}
+	if err := ValidatePortableID(value.Project.ID); err != nil {
+		return fmt.Errorf("project ID: %w", err)
+	}
+	if value.Project.Name == "" || containsControl(value.Project.Name) {
+		return fmt.Errorf("project name is required and must not contain control characters")
+	}
+	if err := ValidatePortableID(value.Project.BaseRepository); err != nil {
+		return fmt.Errorf("project base repository: %w", err)
+	}
+	if err := ValidateLogicalRoot(value.LogicalRoot); err != nil {
+		return err
+	}
+	if len(value.Repositories) == 0 {
+		return fmt.Errorf("project repositories are required")
+	}
+	if err := ValidateManifestMetadata(value.Manifest); err != nil {
+		return err
+	}
+	repositories := make([]domain.Repository, 0, len(value.Repositories))
+	for id, repository := range value.Repositories {
+		if err := ValidatePortableID(id); err != nil {
+			return fmt.Errorf("repository ID %q: %w", id, err)
+		}
+		if err := ValidateLocalSource(repository.Source); err != nil {
+			return fmt.Errorf("repository %q source: %w", id, err)
+		}
+		if repository.Parent != "" {
+			if err := ValidatePortableID(repository.Parent); err != nil {
+				return fmt.Errorf("repository %q parent: %w", id, err)
+			}
+		}
+		if err := ValidateBranchName(repository.DefaultBranch); err != nil {
+			return fmt.Errorf("repository %q default branch: %w", id, err)
+		}
+		repositories = append(repositories, domain.Repository{ID: id, ParentID: repository.Parent, DefaultMount: repository.DefaultMount, DefaultBranch: repository.DefaultBranch})
+	}
+	project := domain.Project{Version: domain.CurrentVersion, ID: value.Project.ID, Name: value.Project.Name, BaseRepository: value.Project.BaseRepository, Repositories: repositories}
+	if err := project.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidateLogicalRoot accepts a clean relative path from the base config
+// directory back to the logical root. It may contain leading `..` because a
+// non-root base checkout necessarily points upward to its logical root.
+func ValidateLogicalRoot(value string) error {
+	if value == "" {
+		return fmt.Errorf("logical root is required")
+	}
+	if strings.Contains(value, `\`) || strings.HasPrefix(value, "/") || hasWindowsPathVolume(value) {
+		return fmt.Errorf("logical root %q must be relative", value)
+	}
+	if path.Clean(value) != value {
+		return fmt.Errorf("logical root %q must be clean and canonical", value)
+	}
+	return nil
+}
+
+// ValidateLocalSource accepts only clean slash-separated paths relative to
+// the logical project root. `.` preserves one-root compatibility.
+func ValidateLocalSource(value string) error {
+	if _, err := pathutil.NormalizeMount(value, pathutil.TopLevelMount); err != nil {
+		return err
+	}
+	return nil
 }
 func strictYAML(data []byte, value any) error {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))

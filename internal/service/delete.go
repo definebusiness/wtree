@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -37,17 +38,17 @@ type WorkspaceDeleter struct {
 	locker        ProjectLocker
 	writeRecovery func(string, store.RecoveryRecord) error
 	removeState   func(string) error
-	writeRaw      func(string, []byte) error
+	writeRawCAS   func(string, []byte, func() error) error
 	readFile      func(string) ([]byte, error)
 	lockTimeout   time.Duration
 }
 
 func NewWorkspaceDeleter() *WorkspaceDeleter {
-	return NewWorkspaceDeleterWith(gitadapter.NewAdapter("git"), lock.Manager{}, store.WriteRecovery, os.Remove, store.WriteRawAtomic, os.ReadFile)
+	return NewWorkspaceDeleterWith(gitadapter.NewAdapter("git"), lock.Manager{}, store.WriteRecovery, os.Remove, store.WriteRawCAS, os.ReadFile)
 }
 
-func NewWorkspaceDeleterWith(git gitadapter.Git, locker ProjectLocker, writeRecovery func(string, store.RecoveryRecord) error, removeState func(string) error, writeRaw func(string, []byte) error, readFile func(string) ([]byte, error)) *WorkspaceDeleter {
-	return &WorkspaceDeleter{git: git, locker: locker, writeRecovery: writeRecovery, removeState: removeState, writeRaw: writeRaw, readFile: readFile, lockTimeout: time.Second}
+func NewWorkspaceDeleterWith(git gitadapter.Git, locker ProjectLocker, writeRecovery func(string, store.RecoveryRecord) error, removeState func(string) error, writeRawCAS func(string, []byte, func() error) error, readFile func(string) ([]byte, error)) *WorkspaceDeleter {
+	return &WorkspaceDeleter{git: git, locker: locker, writeRecovery: writeRecovery, removeState: removeState, writeRawCAS: writeRawCAS, readFile: readFile, lockTimeout: time.Second}
 }
 
 func (d *WorkspaceDeleter) PlanDelete(ctx context.Context, project domain.Project, workspace domain.Workspace, force bool) (DeletionPlan, error) {
@@ -71,6 +72,13 @@ func (d *WorkspaceDeleter) PlanDelete(ctx context.Context, project domain.Projec
 		}
 		if !exists {
 			return DeletionPlan{}, NewError(ErrorValidation, fmt.Errorf("retained branch %q for repository %q is missing", item.Branch, item.ID))
+		}
+		branchHead, err := d.git.ResolveRef(ctx, repository.SourcePath, "refs/heads/"+item.Branch)
+		if err != nil {
+			return DeletionPlan{}, NewError(ErrorGit, fmt.Errorf("resolve retained branch %q for repository %q: %w", item.Branch, item.ID, err))
+		}
+		if branchHead != item.Head {
+			return DeletionPlan{}, NewError(ErrorConflict, fmt.Errorf("retained branch %q for repository %q changed during delete preflight", item.Branch, item.ID))
 		}
 		worktrees, err := d.git.ListWorktrees(ctx, repository.SourcePath)
 		if err != nil {
@@ -104,7 +112,7 @@ func (d *WorkspaceDeleter) Delete(ctx context.Context, project domain.Project, w
 	if dataDir == "" {
 		return DeletionPlan{}, NewError(ErrorValidation, errors.New("data directory is required"))
 	}
-	if d.locker == nil || d.writeRecovery == nil || d.removeState == nil || d.writeRaw == nil || d.readFile == nil {
+	if d.locker == nil || d.writeRecovery == nil || d.removeState == nil || d.writeRawCAS == nil || d.readFile == nil {
 		return DeletionPlan{}, NewError(ErrorInternal, errors.New("workspace deleter is not configured"))
 	}
 	handle, err := d.locker.ProjectLock(ctx, dataDir, project.ID, d.lockTimeout)
@@ -133,14 +141,30 @@ func (d *WorkspaceDeleter) Delete(ctx context.Context, project domain.Project, w
 	if err != nil {
 		return DeletionPlan{}, NewError(ErrorInternal, fmt.Errorf("read workspace state before delete: %w", err))
 	}
-	steps := d.deletionSteps(project, value, statePath, state)
+	stateSnapshot, err := secureCloneFileSnapshot(statePath)
+	if err != nil {
+		return DeletionPlan{}, NewError(ErrorConflict, fmt.Errorf("capture workspace state deletion ownership: %w", err))
+	}
+	if !stateSnapshot.exists || !bytes.Equal(stateSnapshot.data, state) {
+		return DeletionPlan{}, NewError(ErrorConflict, errors.New("workspace state changed while capturing deletion ownership"))
+	}
+	grouping, err := captureRemovalGroupingInventory(value.RemovalPlan)
+	if err != nil {
+		return DeletionPlan{}, NewError(ErrorConflict, err)
+	}
+	remover := NewWorkspaceRemoverWith(d.git, d.locker, d.writeRecovery)
+	worktreeReceipts, err := remover.captureRemovalWorktreeReceipts(context.WithoutCancel(ctx), project, value.RemovalPlan)
+	if err != nil {
+		return DeletionPlan{}, NewError(ErrorConflict, fmt.Errorf("capture workspace deletion ownership: %w", err))
+	}
+	steps := d.deletionSteps(project, value, statePath, state, stateSnapshot, grouping, worktreeReceipts)
 	result := (transaction.Runner{Progress: progress}).Run(ctx, steps)
 	if result.Succeeded() {
 		return value, nil
 	}
 	if result.RollbackFailure == nil {
 		err := classifyTransactionError("delete workspace", result.Failure)
-		if len(result.Completed) > 0 {
+		if len(result.Completed) > 0 || result.FailedExecuteRolledBack {
 			err = withCleanRollback(err)
 		}
 		return DeletionPlan{}, err
@@ -152,35 +176,115 @@ func (d *WorkspaceDeleter) Delete(ctx context.Context, project domain.Project, w
 	return DeletionPlan{}, NewError(ErrorRollbackIncomplete, fmt.Errorf("workspace deletion rollback is incomplete after %q; recovery metadata: %q: %w", result.FailedStep, recoveryPath, result.RollbackFailure))
 }
 
-func (d *WorkspaceDeleter) deletionSteps(project domain.Project, value DeletionPlan, statePath string, state []byte) []transaction.Step {
+func (d *WorkspaceDeleter) deletionSteps(project domain.Project, value DeletionPlan, statePath string, state []byte, stateSnapshot cloneFileSnapshot, grouping *removalGroupingInventory, worktreeReceipts map[string]*createdWorktreeReceipt) []transaction.Step {
 	remover := NewWorkspaceRemoverWith(d.git, d.locker, d.writeRecovery)
-	steps := remover.removalSteps(project, value.RemovalPlan)
+	steps := remover.removalSteps(project, value.RemovalPlan, grouping, worktreeReceipts)
 	repositories := make(map[string]domain.Repository, len(project.Repositories))
 	for _, repository := range project.Repositories {
 		repositories[repository.ID] = repository
 	}
 	for _, branch := range value.Branches {
 		repository := repositories[branch.RepositoryID]
+		item := removalRepositoryByID(value.RemovalPlan, branch.RepositoryID)
 		branch := branch
+		rollback := func(ctx context.Context) error {
+			return d.restoreDeletedBranch(ctx, repository, branch, item.Head)
+		}
 		steps = append(steps, transaction.Step{Name: "delete_branch:" + branch.RepositoryID, Execute: func(ctx context.Context) error {
+			current, err := d.git.ResolveRef(ctx, repository.SourcePath, "refs/heads/"+branch.Branch)
+			if err != nil {
+				return NewError(ErrorGit, fmt.Errorf("revalidate branch %q for repository %q: %w", branch.Branch, branch.RepositoryID, err))
+			}
+			if current != item.Head {
+				return NewError(ErrorConflict, fmt.Errorf("branch %q for repository %q changed after locked preflight", branch.Branch, branch.RepositoryID))
+			}
 			if err := d.git.DeleteBranch(ctx, repository.SourcePath, branch.Branch, branch.ForceBranch); err != nil {
 				return NewError(ErrorGit, fmt.Errorf("delete branch %q for repository %q: %w", branch.Branch, branch.RepositoryID, err))
 			}
 			return nil
-		}})
+		}, Rollback: rollback, RollbackFailedExecute: rollback})
 	}
 	steps = append(steps, transaction.Step{Name: "delete_state", Execute: func(context.Context) error {
+		if err := revalidateCloneFileSnapshot(stateSnapshot); err != nil {
+			return NewError(ErrorConflict, fmt.Errorf("validate workspace state deletion ownership: %w", err))
+		}
 		if err := d.removeState(statePath); err != nil {
 			return NewError(ErrorInternal, fmt.Errorf("delete workspace state: %w", err))
 		}
-		return nil
-	}, Rollback: func(context.Context) error {
-		if err := d.writeRaw(statePath, state); err != nil {
-			return NewError(ErrorInternal, fmt.Errorf("restore workspace state: %w", err))
+		if _, err := os.Lstat(statePath); err == nil || !errors.Is(err, os.ErrNotExist) {
+			return NewError(ErrorConflict, fmt.Errorf("workspace state %q remains after deletion", statePath))
 		}
 		return nil
+	}, Rollback: func(context.Context) error {
+		return d.restoreDeletedState(statePath, state, stateSnapshot)
+	}, RollbackFailedExecute: func(context.Context) error {
+		return d.restoreDeletedState(statePath, state, stateSnapshot)
 	}})
 	return steps
+}
+
+func removalRepositoryByID(value RemovalPlan, repositoryID string) RemovalRepository {
+	for _, repository := range value.Repositories {
+		if repository.ID == repositoryID {
+			return repository
+		}
+	}
+	return RemovalRepository{}
+}
+
+func (d *WorkspaceDeleter) restoreDeletedBranch(ctx context.Context, repository domain.Repository, branch DeletionBranch, head string) error {
+	exists, err := d.git.BranchExists(ctx, repository.SourcePath, branch.Branch)
+	if err != nil {
+		return NewError(ErrorGit, fmt.Errorf("inspect deleted branch %q for repository %q: %w", branch.Branch, branch.RepositoryID, err))
+	}
+	if exists {
+		current, err := d.git.ResolveRef(ctx, repository.SourcePath, "refs/heads/"+branch.Branch)
+		if err != nil {
+			return NewError(ErrorGit, fmt.Errorf("resolve retained branch %q for repository %q: %w", branch.Branch, branch.RepositoryID, err))
+		}
+		if current != head {
+			return NewError(ErrorConflict, fmt.Errorf("refuse to replace concurrently recreated branch %q for repository %q", branch.Branch, branch.RepositoryID))
+		}
+		return nil
+	}
+	if err := d.git.CreateBranch(ctx, repository.SourcePath, branch.Branch, head); err != nil {
+		return NewError(ErrorGit, fmt.Errorf("restore branch %q for repository %q: %w", branch.Branch, branch.RepositoryID, err))
+	}
+	return nil
+}
+
+func (d *WorkspaceDeleter) restoreDeletedState(statePath string, state []byte, snapshot cloneFileSnapshot) error {
+	current, err := secureCloneFileSnapshot(statePath)
+	if err != nil {
+		return NewError(ErrorConflict, fmt.Errorf("inspect deleted workspace state: %w", err))
+	}
+	if current.exists {
+		if sameCloneFileSnapshot(snapshot, current) {
+			return nil
+		}
+		return NewError(ErrorConflict, fmt.Errorf("refuse to replace concurrently recreated workspace state %q", statePath))
+	}
+	compare := func() error {
+		current, err := secureCloneFileSnapshot(statePath)
+		if err != nil {
+			return fmt.Errorf("inspect workspace state at restore publication: %w", err)
+		}
+		if current.exists {
+			return fmt.Errorf("refuse to replace concurrently recreated workspace state %q", statePath)
+		}
+		return nil
+	}
+	if err := d.writeRawCAS(statePath, state, compare); err != nil {
+		return NewError(ErrorInternal, fmt.Errorf("restore workspace state: %w", err))
+	}
+	restored, err := secureCloneFileSnapshot(statePath)
+	if err != nil {
+		return NewError(ErrorConflict, fmt.Errorf("capture restored workspace state: %w", err))
+	}
+	if !restored.exists || !bytes.Equal(restored.data, state) {
+		return NewError(ErrorConflict, errors.New("restored workspace state does not match the owned generation"))
+	}
+	return nil
 }
 
 // deletionRecoveryPath is retained for callers/tests that need the common

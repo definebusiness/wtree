@@ -72,7 +72,7 @@ func (p *WorkspacePlanner) Plan(ctx context.Context, project domain.Project, req
 			return plan.WorkspacePlan{}, NewError(ErrorValidation, fmt.Errorf("workspace target escapes configured worktree root: %w", err))
 		}
 	}
-	if err := checkTargetPath(rootPath); err != nil {
+	if err := checkTargetPath(project, mounts, request.Operation, rootPath); err != nil {
 		return plan.WorkspacePlan{}, NewError(ErrorConflict, err)
 	}
 	if err := checkWorkspaceCollision(project.ID, request.DataDir, request.Operation, request.WorkspaceName, rootPath); err != nil {
@@ -107,14 +107,16 @@ func (p *WorkspacePlanner) Plan(ctx context.Context, project domain.Project, req
 		})
 	}
 	value := plan.WorkspacePlan{
-		Version:       plan.Version,
-		Operation:     request.Operation,
-		ProjectID:     project.ID,
-		WorkspaceName: request.WorkspaceName,
-		WorkspaceID:   pathutil.StorageName(request.WorkspaceName),
-		RootPath:      rootPath,
-		Repositories:  repositories,
-		Steps:         planSteps(request.Operation, repositories),
+		Version:        plan.Version,
+		Operation:      request.Operation,
+		ProjectID:      project.ID,
+		WorkspaceName:  request.WorkspaceName,
+		WorkspaceID:    pathutil.StorageName(request.WorkspaceName),
+		RootPath:       rootPath,
+		LogicalRoot:    rootPath,
+		BaseRepository: project.BaseRepository,
+		Repositories:   repositories,
+		Steps:          planSteps(request.Operation, repositories),
 	}
 	if err := value.Validate(); err != nil {
 		return plan.WorkspacePlan{}, NewError(ErrorValidation, fmt.Errorf("validate workspace plan: %w", err))
@@ -213,7 +215,11 @@ func normalizeMountOverrides(project domain.Project, mounts map[string]string) (
 		if !exists {
 			return nil, fmt.Errorf("mount override has unknown repository %q", id)
 		}
-		value, err := pathutil.NormalizeMount(mount, repository.ParentID == "")
+		kind := pathutil.ChildMount
+		if repository.ParentID == "" {
+			kind = pathutil.TopLevelMount
+		}
+		value, err := pathutil.NormalizeMount(mount, kind)
 		if err != nil {
 			return nil, fmt.Errorf("repository %q mount: %w", id, err)
 		}
@@ -227,7 +233,11 @@ func normalizeProjectMounts(project domain.Project) (domain.Project, error) {
 	normalized.Repositories = append([]domain.Repository(nil), project.Repositories...)
 	for index := range normalized.Repositories {
 		repository := &normalized.Repositories[index]
-		mount, err := pathutil.NormalizeMount(repository.DefaultMount, repository.ParentID == "")
+		kind := pathutil.ChildMount
+		if repository.ParentID == "" {
+			kind = pathutil.TopLevelMount
+		}
+		mount, err := pathutil.NormalizeMount(repository.DefaultMount, kind)
 		if err != nil {
 			return domain.Project{}, fmt.Errorf("normalize repository %q default mount: %w", repository.ID, err)
 		}
@@ -251,10 +261,16 @@ func plannedRoot(projectID string, request WorkspacePlanRequest) (string, error)
 	return filepath.Clean(abs), nil
 }
 
-func checkTargetPath(path string) error {
+func checkTargetPath(project domain.Project, mounts map[string]string, operation plan.Operation, path string) error {
 	if info, err := os.Lstat(path); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("workspace path %q is an existing symlink", path)
+		}
+		if operation == plan.Checkout && info.IsDir() && projectHasPlainLogicalRoot(project, mounts) {
+			if info.Mode().Perm()&0o222 == 0 {
+				return fmt.Errorf("workspace path %q is not writable", path)
+			}
+			return nil
 		}
 		return fmt.Errorf("workspace path %q already exists", path)
 	} else if !os.IsNotExist(err) {
@@ -281,6 +297,15 @@ func checkTargetPath(path string) error {
 		}
 		parent = next
 	}
+}
+
+func projectHasPlainLogicalRoot(project domain.Project, mounts map[string]string) bool {
+	for _, repository := range project.Repositories {
+		if repository.ParentID == "" && effectiveMount(repository, mounts) == "." {
+			return false
+		}
+	}
+	return true
 }
 
 func checkWorkspaceCollision(projectID, dataDir string, operation plan.Operation, name, rootPath string) error {
@@ -365,7 +390,7 @@ type IgnoreEnsure struct {
 	Rules              []string
 }
 
-// WorkspacePlanIgnoreEnsures projects normalized non-root repository entries
+// WorkspacePlanIgnoreEnsures projects normalized child-repository entries
 // into parent-file requirements. It performs no filesystem or Git inspection.
 func WorkspacePlanIgnoreEnsures(value plan.WorkspacePlan) ([]IgnoreEnsure, error) {
 	repositories := make(map[string]plan.RepositoryPlan, len(value.Repositories))
@@ -398,7 +423,7 @@ func WorkspacePlanIgnoreEnsures(value plan.WorkspacePlan) ([]IgnoreEnsure, error
 		if !found || parent.ID == repository.ID {
 			return nil, fmt.Errorf("repository %q has unknown or invalid parent %q", repository.ID, repository.ParentID)
 		}
-		mount, err := pathutil.NormalizeMount(repository.Mount, false)
+		mount, err := pathutil.NormalizeMount(repository.Mount, pathutil.ChildMount)
 		if err != nil {
 			return nil, fmt.Errorf("repository %q mount: %w", repository.ID, err)
 		}

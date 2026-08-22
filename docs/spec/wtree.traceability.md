@@ -106,6 +106,24 @@ itself labels the feature optional; no required MVP section is deferred.
 | 93 | planning coverage | executed milestone plan and package boundaries | plan test suites, CI, this matrix |
 | 94 | portable manifest authoring and clone extension | [portable manifest clone specification](portable-manifest-clone.md); `service.Initializer`, portable config codec, manifest loader, clone planner/executor, clone CLI | portable-config/init/manifest-source/clone-plan/clone-execute/clone CLI tests and process E2E; update/sync/release locking remain future work |
 
+## Logical-root repository-forest extension
+
+The [logical project root and repository forest specification](logical-project-root-base-repository.md)
+extends the implemented requirements above without renumbering the historical
+core specification. Its authoritative implementation plan and durable run
+ledger provide the detailed milestone evidence.
+
+| Extension requirement | Enforcement | Evidence / user surface |
+|---|---|---|
+| Plain logical roots and sibling top-level repository trees | `domain.Project`, `Project.EffectivePaths`, resolver, discovery | domain/path/discovery/resolve tests; root help and README topology example |
+| Exactly one top-level base metadata authority | local config v2, portable v2, init/clone loaders | config/init/clone tests; portable guidance |
+| Logical-root-relative top-level mounts and immediate-parent-relative child mounts | `pathutil`, domain effective paths, planners/importer | path/domain/plan/import tests and fuzz |
+| Stable forest ordering | `Project.ParentFirst` and `ChildFirst` | domain, clone/create/import/status/doctor/remove/delete tests |
+| Forest-aware init, clone, create/checkout, import, inspection and teardown | `internal/service` and `internal/cli` command owners | focused forest integration and public CLI/process tests; tutorial |
+| Additive topology JSON with scalar compatibility | service result objects and CLI renderers | structural JSON tests for init/clone/workspace/import/status/doctor/project/remove/delete; `path` and `repo path` scalar tests |
+| Safety-first rollback and recovery across repository trees | transaction, receipt/CAS publication, recovery records | failure-injection, replacement, recovery, normal/race and tutorial evidence |
+| Strict local v2 transition with unchanged surrounding schema versions | config/store/plan/result validators | local-v1 rejection and global/registry/workspace/recovery/plan compatibility tests |
+
 ## Required architectural invariants (§90)
 
 | # | Invariant | Enforcing code | Focused evidence |

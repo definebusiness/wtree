@@ -181,7 +181,7 @@ func validateConfigRequest(request ConfigRequest, requireValue bool) error {
 func loadGlobalConfig(path string) (configuration.GlobalConfig, error) {
 	global, err := configuration.ReadGlobalFile(path)
 	if os.IsNotExist(err) {
-		return configuration.GlobalConfig{Version: configuration.Version}, nil
+		return configuration.GlobalConfig{Version: configuration.GlobalConfigVersion}, nil
 	}
 	if err != nil {
 		return configuration.GlobalConfig{}, NewError(ErrorValidation, fmt.Errorf("read global configuration: %w", err))

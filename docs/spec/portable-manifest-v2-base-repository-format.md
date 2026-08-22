@@ -4,6 +4,16 @@ Status: implemented
 Source idea: [Logical project roots with a designated base repository](../ideas/logical-project-root-base-repository.md)
 Implementation plan: [Portable manifest v2 base-repository format implementation plan](../plans/portable-manifest-v2-base-repository-format.md)
 
+Current topology extension: [Logical project root and repository forest specification](logical-project-root-base-repository.md)
+
+> **Current implementation:** This document records the deliberately narrow
+> format-v2 prerequisite as it was delivered. The later logical-root
+> specification now replaces the single-root restrictions in sections 4, 5,
+> and 7 while retaining portable manifest version 2, the same fields, strict
+> decoding, deterministic serialization, and tracked-manifest verification.
+> The historical prerequisite contract below is not rewritten as though it
+> originally delivered forest execution.
+
 ## 1. Purpose and scope
 
 This specification pulls forward the portable-manifest format portion of the

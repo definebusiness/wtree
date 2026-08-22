@@ -77,16 +77,17 @@ create_origin maintainer-app
 create_origin shared-library
 
 git clone -q "$origins_dir/maintainer-app.git" "$project_dir"
-git clone -q "$origins_dir/shared-library.git" "$project_dir/library"
+mkdir -p "$project_dir/components"
+git clone -q "$origins_dir/shared-library.git" "$project_dir/components/library"
 git -C "$project_dir" config user.name "Wtree Tutorial"
 git -C "$project_dir" config user.email "tutorial@wtree.invalid"
-git -C "$project_dir/library" config user.name "Wtree Tutorial"
-git -C "$project_dir/library" config user.email "tutorial@wtree.invalid"
+git -C "$project_dir/components/library" config user.name "Wtree Tutorial"
+git -C "$project_dir/components/library" config user.email "tutorial@wtree.invalid"
 
 complete=true
 printf '%s\n' \
 	"Created the init fixture in $fixture_dir" \
 	"" \
 	"Project checkout: $project_dir" \
-	"Nested checkout:  $project_dir/library" \
+	"Grouped checkout: $project_dir/components/library" \
 	"Bare origins:     $origins_dir"

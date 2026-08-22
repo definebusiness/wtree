@@ -147,7 +147,7 @@ USAGE
 
 DESCRIPTION
   wtree creates, imports, restores, inspects, and safely removes one logical
-  workspace spanning independent nested Git repositories.
+  workspace spanning an independent Git repository forest.
 
 GLOBAL OPTIONS
   -h, --help              show this reference or command help
@@ -174,11 +174,20 @@ COMMANDS
   config     inspect or update global/project configuration
 
 CONCEPTS
-  project: one configured repository hierarchy.
-  workspace: named checkouts across that hierarchy.
-  repository: an independently versioned Git repository.
-  mount: a child repository location relative to its parent checkout.
+  project: one logical root containing one or more independent repository trees.
+  base repository: the designated metadata authority; its top-level mount may
+                   be non-dot and grouped beneath the logical root.
+  workspace: named checkouts across the complete repository forest.
+  repository: an independently versioned Git repository; siblings and nested
+              children are both supported.
+  mount: top-level mounts are logical-root-relative; child mounts are relative
+         to their immediate parent checkout.
   repository identity: the common Git directory, used instead of directory names.
+  metadata and ignores: local metadata lives only in the base checkout; nested
+                        ignore protection lives only in each immediate parent.
+  inspection and recovery: status, doctor, and project inspection are
+                           deterministic; incomplete rollback remains visible
+                           until it is safely recovered.
 
 WORKTREE LOCATION
   Workspace locations come from --path, project/global worktrees.root, or the
@@ -336,7 +345,7 @@ func isProjectCommand(command *cobra.Command) bool {
 }
 
 func newInitCommand(stdout io.Writer, projectPath *string) *cobra.Command {
-	var worktreeRoot, dataDir, manifestSource string
+	var worktreeRoot, dataDir, manifestSource, baseRepository string
 	var dryRun, jsonOutput bool
 	var ignores []string
 	var cloneURLs []string
@@ -364,7 +373,7 @@ func newInitCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 			if _, err := service.ParseCloneURLOverrides(cloneURLs); err != nil {
 				return invalidArgumentsError{cause: err}
 			}
-			result, err := service.NewInitializer().Init(command.Context(), service.InitRequest{Path: path, DataDir: dataDir, WorktreeRoot: worktreeRoot, DryRun: dryRun, Ignores: ignores, ManifestSource: manifestSource, CloneURLOverrides: cloneURLs})
+			result, err := service.NewInitializer().Init(command.Context(), service.InitRequest{Path: path, DataDir: dataDir, WorktreeRoot: worktreeRoot, BaseRepository: baseRepository, DryRun: dryRun, Ignores: ignores, ManifestSource: manifestSource, CloneURLOverrides: cloneURLs})
 			if err != nil {
 				return err
 			}
@@ -394,11 +403,12 @@ func newInitCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 	command.Flags().StringSliceVar(&ignores, "ignore", nil, "repository discovery ignore glob")
 	command.Flags().StringVar(&manifestSource, "manifest-source", "", "persisted local path or HTTP(S) manifest source")
 	command.Flags().StringArrayVar(&cloneURLs, "clone-url", nil, "portable clone URL override in repository-id=url form")
+	command.Flags().StringVar(&baseRepository, "base-repository", "", "top-level repository that owns project metadata")
 	return command
 }
 
 func renderInitPlan(stdout io.Writer, result service.InitResult) error {
-	if _, err := fmt.Fprintf(stdout, "Operation: init\nProject: %s\nLocal config: %s\nManifest: %s\nSource: %s\nRepositories:\n", result.ProjectID, result.ConfigPath, result.ManifestPath, result.ManifestSource); err != nil {
+	if _, err := fmt.Fprintf(stdout, "Operation: init\nProject: %s\nLogical root: %s\nBase repository: %s\nLocal config: %s\nManifest: %s\nSource: %s\nRepositories:\n", result.ProjectID, result.LogicalRoot, result.BaseRepository, result.ConfigPath, result.ManifestPath, result.ManifestSource); err != nil {
 		return err
 	}
 	ids := make([]string, 0, len(result.PortableManifest.Repositories))

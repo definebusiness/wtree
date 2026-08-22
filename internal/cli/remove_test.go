@@ -26,15 +26,18 @@ func TestExecuteRemoveDryRunJSONDoesNotMutate(t *testing.T) {
 		t.Fatalf("remove dry-run = %#v", result)
 	}
 	var value struct {
-		WorkspaceName string `json:"workspaceName"`
-		Repositories  []struct {
-			ID string `json:"id"`
+		WorkspaceName  string `json:"workspaceName"`
+		LogicalRoot    string `json:"logicalRoot"`
+		BaseRepository string `json:"baseRepository"`
+		Repositories   []struct {
+			ID           string `json:"id"`
+			ResolvedPath string `json:"resolvedPath"`
 		} `json:"repositories"`
 	}
 	if err := json.Unmarshal([]byte(result.Stdout), &value); err != nil {
 		t.Fatal(err)
 	}
-	if value.WorkspaceName != "feature/remove" || len(value.Repositories) != 1 || value.Repositories[0].ID != "root" {
+	if value.WorkspaceName != "feature/remove" || value.LogicalRoot != target || value.BaseRepository != "root" || len(value.Repositories) != 1 || value.Repositories[0].ID != "root" || value.Repositories[0].ResolvedPath != target {
 		t.Fatalf("remove JSON = %s", result.Stdout)
 	}
 	if _, err := os.Stat(target); err != nil {

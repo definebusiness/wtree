@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/definebusiness/wtree/internal/config"
 	"github.com/definebusiness/wtree/internal/domain"
+	"github.com/definebusiness/wtree/internal/fsutil"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
 	"github.com/definebusiness/wtree/internal/lock"
 	"github.com/definebusiness/wtree/internal/store"
@@ -39,14 +41,37 @@ type Resolution struct {
 	RepositoryID string
 }
 
+type projectSelectionKind uint8
+
+const (
+	projectSelectionNone projectSelectionKind = iota
+	projectSelectionConfig
+	projectSelectionGitIdentity
+	projectSelectionLogicalRoot
+	projectSelectionWorkspaceRoot
+)
+
+// projectSelection preserves the evidence that selected a project until the
+// resolver has selected the corresponding workspace. In particular, a
+// registered workspace root carries the exact validated workspace state that
+// proved the match instead of degrading to project-only evidence.
+type projectSelection struct {
+	Kind      projectSelectionKind
+	Project   domain.Project
+	Workspace domain.Workspace
+}
+
 // Resolver discovers a project, its active workspace, and the current
 // repository using explicit selection, local configuration, then Git identity.
 type Resolver struct {
-	git gitadapter.Git
+	git              gitadapter.Git
+	writeRegistryCAS func(string, store.Registry, func() error) error
+	writeRawCAS      func(string, []byte, func() error) error
+	writeRecoveryCAS func(string, store.RecoveryRecord, func() error) error
 }
 
 func NewResolver() *Resolver {
-	return &Resolver{git: gitadapter.NewAdapter("git")}
+	return &Resolver{git: gitadapter.NewAdapter("git"), writeRegistryCAS: store.WriteRegistryCAS, writeRawCAS: store.WriteRawCAS, writeRecoveryCAS: store.WriteRecoveryCAS}
 }
 
 // ResolveProject resolves only the project aggregate. Import uses this lighter
@@ -63,11 +88,8 @@ func (r *Resolver) ResolveProject(ctx context.Context, request ResolveRequest) (
 	}
 	switch {
 	case request.ProjectPath != "":
-		configPath, err := explicitConfigPath(request.ProjectPath)
-		if err != nil {
-			return domain.Project{}, err
-		}
-		return r.loadProject(ctx, configPath)
+		selection, err := r.resolveExplicitProject(ctx, request.ProjectPath, request.DataDir, registry)
+		return selection.Project, err
 	case findConfigPath(path) != "":
 		configPath := findConfigPath(path)
 		projectID, err := projectIDFromConfig(configPath)
@@ -83,12 +105,12 @@ func (r *Resolver) ResolveProject(ctx context.Context, request ResolveRequest) (
 		}
 		return r.loadProject(ctx, configPath)
 	default:
-		project, found, err := r.projectForPersistedWorkspace(ctx, request.DataDir, path, registry)
+		selection, err := r.projectForPersistedWorkspace(ctx, request.DataDir, path, registry)
 		if err != nil {
 			return domain.Project{}, err
 		}
-		if found {
-			return project, nil
+		if selection.Kind != projectSelectionNone {
+			return selection.Project, nil
 		}
 		return r.projectFromGitIdentity(ctx, path, registry)
 	}
@@ -97,6 +119,9 @@ func (r *Resolver) ResolveProject(ctx context.Context, request ResolveRequest) (
 // ReconcileProject records a relocated project only after a mutating command
 // has completed its read-only preflight.
 func (r *Resolver) ReconcileProject(ctx context.Context, dataDir string, project domain.Project) error {
+	if r == nil || r.writeRegistryCAS == nil || r.writeRawCAS == nil || r.writeRecoveryCAS == nil {
+		return NewError(ErrorInternal, errors.New("project reconciliation publication is not configured"))
+	}
 	registry, err := readRegistry(filepath.Join(dataDir, "registry.json"))
 	if err != nil {
 		return err
@@ -124,18 +149,16 @@ func (r *Resolver) resolve(ctx context.Context, request ResolveRequest, reconcil
 		return Resolution{}, err
 	}
 
-	var project domain.Project
+	var selection projectSelection
 	localConfig := false
 	switch {
 	case request.ProjectPath != "":
-		configPath, err := explicitConfigPath(request.ProjectPath)
+		selection, err = r.resolveExplicitProject(ctx, request.ProjectPath, request.DataDir, registry)
 		if err != nil {
 			return Resolution{}, err
 		}
-		project, err = r.loadProject(ctx, configPath)
-		if err != nil {
-			return Resolution{}, err
-		}
+		// An explicit logical/workspace root is proven by persisted project
+		// evidence and may legitimately be a plain, non-Git directory.
 		localConfig = true
 	default:
 		if configPath := findConfigPath(path); configPath != "" {
@@ -148,33 +171,55 @@ func (r *Resolver) resolve(ctx context.Context, request ResolveRequest, reconcil
 				return Resolution{}, registeredErr
 			}
 			if found {
-				project = registeredProject
+				selection = projectSelection{Kind: projectSelectionGitIdentity, Project: registeredProject}
 			} else {
-				project, err = r.loadProject(ctx, configPath)
+				project, loadErr := r.loadProject(ctx, configPath)
+				err = loadErr
 				if err != nil {
 					return Resolution{}, err
 				}
+				selection = projectSelection{Kind: projectSelectionConfig, Project: project}
 				localConfig = true
 			}
 		} else {
-			persistedProject, found, resolveErr := r.projectForPersistedWorkspace(ctx, request.DataDir, path, registry)
+			persistedSelection, resolveErr := r.projectForPersistedWorkspace(ctx, request.DataDir, path, registry)
 			if resolveErr != nil {
 				return Resolution{}, resolveErr
 			}
-			if found {
-				project = persistedProject
+			if persistedSelection.Kind != projectSelectionNone {
+				selection = persistedSelection
 			} else {
-				project, err = r.projectFromGitIdentity(ctx, path, registry)
+				project, gitErr := r.projectFromGitIdentity(ctx, path, registry)
+				err = gitErr
 				if err != nil {
 					return Resolution{}, err
 				}
+				selection = projectSelection{Kind: projectSelectionGitIdentity, Project: project}
 			}
 		}
 	}
+	project := selection.Project
 	if localConfig && reconcile {
-		if err := r.reconcileRegistry(ctx, request.DataDir, project, registry); err != nil {
+		registered, exists := registry.Projects[project.ID]
+		needsReconciliation, err := registryNeedsReconciliation(registered, exists, project)
+		if err != nil {
 			return Resolution{}, err
 		}
+		if needsReconciliation {
+			if err := r.ReconcileProject(ctx, request.DataDir, project); err != nil {
+				return Resolution{}, err
+			}
+		}
+	}
+	if selection.Kind == projectSelectionWorkspaceRoot {
+		return Resolution{Project: project, Workspace: selection.Workspace}, nil
+	}
+	if selection.Kind == projectSelectionLogicalRoot {
+		workspace, err := r.defaultWorkspace(ctx, request.DataDir, project)
+		if err != nil {
+			return Resolution{}, err
+		}
+		return Resolution{Project: project, Workspace: workspace}, nil
 	}
 
 	commonGitDir, err := r.git.CommonGitDir(ctx, path)
@@ -216,6 +261,30 @@ func (r *Resolver) resolve(ctx context.Context, request ResolveRequest, reconcil
 	return Resolution{Project: project, Workspace: workspace, RepositoryID: repositoryID}, nil
 }
 
+func (r *Resolver) resolveExplicitProject(ctx context.Context, path, dataDir string, registry store.Registry) (projectSelection, error) {
+	configPath, configErr := explicitConfigPath(path)
+	if configErr == nil {
+		project, err := r.loadProject(ctx, configPath)
+		return projectSelection{Kind: projectSelectionConfig, Project: project}, err
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return projectSelection{}, configErr
+	}
+	directory, err := canonicalDirectory(path)
+	if err != nil {
+		return projectSelection{}, configErr
+	}
+	selection, err := r.projectForRegisteredRoot(ctx, dataDir, directory, registry)
+	if err != nil {
+		return projectSelection{}, err
+	}
+	if selection.Kind != projectSelectionNone {
+		return selection, nil
+	}
+	return projectSelection{}, configErr
+}
+
 func projectIDFromConfig(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -228,18 +297,22 @@ func projectIDFromConfig(path string) (string, error) {
 	return configuration.Project.ID, nil
 }
 
-func (r *Resolver) projectForPersistedWorkspace(ctx context.Context, dataDir, path string, registry store.Registry) (domain.Project, bool, error) {
+func (r *Resolver) projectForPersistedWorkspace(ctx context.Context, dataDir, path string, registry store.Registry) (projectSelection, error) {
+	rootSelection, err := r.projectForRegisteredRoot(ctx, dataDir, path, registry)
+	if err != nil || rootSelection.Kind != projectSelectionNone {
+		return rootSelection, err
+	}
 	commonGitDir, err := r.git.CommonGitDir(ctx, path)
 	if err != nil {
-		return domain.Project{}, false, nil
+		return projectSelection{}, nil
 	}
 	topLevel, err := r.git.TopLevel(ctx, path)
 	if err != nil {
-		return domain.Project{}, false, nil
+		return projectSelection{}, nil
 	}
 	topLevel, err = filepath.EvalSymlinks(topLevel)
 	if err != nil {
-		return domain.Project{}, false, fmt.Errorf("canonicalize current checkout: %w", err)
+		return projectSelection{}, fmt.Errorf("canonicalize current checkout: %w", err)
 	}
 	var candidates []string
 	for projectID, registered := range registry.Projects {
@@ -249,24 +322,178 @@ func (r *Resolver) projectForPersistedWorkspace(ctx context.Context, dataDir, pa
 		}
 		matches, err := workspaceStateMatches(WorkspaceStateDirectory(dataDir, projectID), repositoryID, topLevel)
 		if err != nil {
-			return domain.Project{}, false, err
+			return projectSelection{}, err
 		}
 		if matches {
 			candidates = append(candidates, projectID)
 		}
 	}
 	if len(candidates) == 0 {
-		return domain.Project{}, false, nil
+		return projectSelection{}, nil
 	}
 	sort.Strings(candidates)
 	if len(candidates) > 1 {
-		return domain.Project{}, false, fmt.Errorf("%w: %v", ErrAmbiguousProject, candidates)
+		return projectSelection{}, fmt.Errorf("%w: %v", ErrAmbiguousProject, candidates)
 	}
 	project, err := r.projectFromGitIdentity(ctx, path, registry)
 	if err != nil {
-		return domain.Project{}, false, err
+		return projectSelection{}, err
 	}
-	return project, true, nil
+	return projectSelection{Kind: projectSelectionGitIdentity, Project: project}, nil
+}
+
+func (r *Resolver) projectForRegisteredRoot(ctx context.Context, dataDir, path string, registry store.Registry) (projectSelection, error) {
+	projectIDs := make([]string, 0, len(registry.Projects))
+	for projectID := range registry.Projects {
+		projectIDs = append(projectIDs, projectID)
+	}
+	sort.Strings(projectIDs)
+	candidates := make([]projectSelection, 0, len(projectIDs))
+	for _, projectID := range projectIDs {
+		project, found, err := r.registeredProject(ctx, projectID, registry)
+		if err != nil {
+			claimed, claimErr := workspaceStateClaimsRoot(WorkspaceStateDirectory(dataDir, projectID), path)
+			if claimErr != nil {
+				return projectSelection{}, claimErr
+			}
+			if claimed {
+				return projectSelection{}, err
+			}
+			continue
+		}
+		if !found {
+			continue
+		}
+		workspaces, err := workspacesForRegisteredRoot(WorkspaceStateDirectory(dataDir, projectID), path, project)
+		if err != nil {
+			return projectSelection{}, err
+		}
+		if project.LogicalRoot == path {
+			if len(workspaces) == 0 {
+				candidates = append(candidates, projectSelection{Kind: projectSelectionLogicalRoot, Project: project})
+				continue
+			}
+			if len(workspaces) == 1 && workspaces[0].ID == "default" {
+				candidates = append(candidates, projectSelection{Kind: projectSelectionWorkspaceRoot, Project: project, Workspace: workspaces[0]})
+				continue
+			}
+			return projectSelection{}, ambiguousWorkspaceRootError(projectID, workspaces, true)
+		}
+		if len(workspaces) > 1 {
+			return projectSelection{}, ambiguousWorkspaceRootError(projectID, workspaces, false)
+		}
+		if len(workspaces) == 1 {
+			candidates = append(candidates, projectSelection{Kind: projectSelectionWorkspaceRoot, Project: project, Workspace: workspaces[0]})
+		}
+	}
+	if len(candidates) == 0 {
+		return projectSelection{}, nil
+	}
+	if len(candidates) > 1 {
+		ids := make([]string, 0, len(candidates))
+		for _, candidate := range candidates {
+			ids = append(ids, candidate.Project.ID)
+		}
+		return projectSelection{}, fmt.Errorf("%w: %v", ErrAmbiguousProject, ids)
+	}
+	return candidates[0], nil
+}
+
+func workspaceStateClaimsRoot(stateDir, path string) (bool, error) {
+	entries, err := os.ReadDir(stateDir)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read workspace state: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		state, err := store.ReadWorkspace(filepath.Join(stateDir, entry.Name()))
+		if err != nil {
+			return false, fmt.Errorf("read workspace state %q: %w", entry.Name(), err)
+		}
+		if err := validateDefaultWorkspaceState(entry.Name(), state); err != nil {
+			return false, err
+		}
+		root, err := filepath.EvalSymlinks(state.Path)
+		if err == nil && root == path {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func workspacesForRegisteredRoot(stateDir, path string, project domain.Project) ([]domain.Workspace, error) {
+	entries, err := os.ReadDir(stateDir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read workspace state: %w", err)
+	}
+	var matches []domain.Workspace
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		state, err := store.ReadWorkspace(filepath.Join(stateDir, entry.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("read workspace state %q: %w", entry.Name(), err)
+		}
+		if err := validateDefaultWorkspaceState(entry.Name(), state); err != nil {
+			return nil, err
+		}
+		workspace, err := workspaceFromState(state)
+		if err != nil || workspace.Partial || workspace.RootPath != path {
+			continue
+		}
+		if err := workspace.Validate(project); err != nil {
+			continue
+		}
+		if workspaceHasCanonicalPaths(workspace, project) {
+			matches = append(matches, workspace)
+		}
+	}
+	return matches, nil
+}
+
+func ambiguousWorkspaceRootError(projectID string, workspaces []domain.Workspace, includeDefault bool) error {
+	ids := make([]string, 0, len(workspaces)+1)
+	if includeDefault {
+		ids = append(ids, "default")
+	}
+	for _, workspace := range workspaces {
+		if !includeDefault || workspace.ID != "default" {
+			ids = append(ids, workspace.ID)
+		}
+	}
+	sort.Strings(ids)
+	return fmt.Errorf("%w: project %q workspace roots %v", ErrAmbiguousProject, projectID, ids)
+}
+
+func workspaceHasCanonicalPaths(workspace domain.Workspace, project domain.Project) bool {
+	mounts := make(map[string]string, len(workspace.Checkouts))
+	for _, checkout := range workspace.Checkouts {
+		mounts[checkout.RepositoryID] = checkout.Mount
+	}
+	expectedPaths, err := project.EffectivePaths(workspace.RootPath, mounts)
+	if err != nil {
+		return false
+	}
+	for _, checkout := range workspace.Checkouts {
+		expected, err := filepath.EvalSymlinks(expectedPaths[checkout.RepositoryID])
+		if err != nil || expected != expectedPaths[checkout.RepositoryID] {
+			return false
+		}
+		resolved, err := filepath.EvalSymlinks(checkout.ResolvedPath)
+		if err != nil || resolved != checkout.ResolvedPath || resolved != expected {
+			return false
+		}
+	}
+	return true
 }
 
 func workspaceStateMatches(stateDir, repositoryID, topLevel string) (bool, error) {
@@ -437,47 +664,119 @@ func (r *Resolver) loadProject(ctx context.Context, configPath string) (domain.P
 	if err != nil {
 		return domain.Project{}, fmt.Errorf("canonicalize project configuration: %w", err)
 	}
+	configDirectory := filepath.Dir(configPath)
+	logicalRoot, err := resolveLogicalRoot(configDirectory, configuration.LogicalRoot)
+	if err != nil {
+		return domain.Project{}, fmt.Errorf("resolve project logical root: %w", err)
+	}
+	if err := validateCoLocatedPortableBase(configDirectory, configuration); err != nil {
+		return domain.Project{}, err
+	}
 	ids := make([]string, 0, len(configuration.Repositories))
 	for id := range configuration.Repositories {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	project := domain.Project{Version: configuration.Version, ID: configuration.Project.ID, Name: configuration.Project.Name, ConfigPath: configPath, Repositories: make([]domain.Repository, 0, len(ids))}
+	project := domain.Project{Version: domain.CurrentVersion, ID: configuration.Project.ID, Name: configuration.Project.Name, ConfigPath: configPath, BaseRepository: configuration.Project.BaseRepository, LogicalRoot: logicalRoot, DiscoveryIgnores: append([]string(nil), configuration.Discovery.Ignore...), Repositories: make([]domain.Repository, 0, len(ids))}
 	for _, id := range ids {
 		repository := configuration.Repositories[id]
-		sourcePath, err := sourcePath(filepath.Dir(configPath), repository.Source)
+		project.Repositories = append(project.Repositories, domain.Repository{ID: id, ParentID: repository.Parent, DefaultMount: repository.DefaultMount, DefaultBranch: repository.DefaultBranch})
+	}
+	if err := project.Validate(); err != nil {
+		return domain.Project{}, fmt.Errorf("validate project configuration %q: %w", configPath, err)
+	}
+	effectivePaths, err := project.EffectivePaths(logicalRoot, nil)
+	if err != nil {
+		return domain.Project{}, fmt.Errorf("resolve project topology %q: %w", configPath, err)
+	}
+	loaded := make([]domain.Repository, 0, len(ids))
+	for _, id := range ids {
+		repository := configuration.Repositories[id]
+		sourcePath, err := sourcePath(logicalRoot, repository.Source)
 		if err != nil {
 			return domain.Project{}, fmt.Errorf("project repository %q source: %w", id, err)
+		}
+		expectedPath, err := filepath.EvalSymlinks(effectivePaths[id])
+		if err != nil {
+			return domain.Project{}, fmt.Errorf("canonicalize repository %q effective source: %w", id, err)
+		}
+		if sourcePath != expectedPath {
+			return domain.Project{}, fmt.Errorf("project repository %q source %q does not match its declared topology", id, repository.Source)
+		}
+		if id == configuration.Project.BaseRepository && sourcePath != configDirectory {
+			return domain.Project{}, fmt.Errorf("project base repository %q source does not invert logical root to the configuration directory", id)
 		}
 		commonGitDir, err := r.git.CommonGitDir(ctx, sourcePath)
 		if err != nil {
 			return domain.Project{}, fmt.Errorf("project repository %q source %q: %w", id, sourcePath, err)
 		}
-		for _, existing := range project.Repositories {
+		for _, existing := range loaded {
 			if existing.CommonGitDir == commonGitDir {
 				return domain.Project{}, fmt.Errorf("project repositories %q and %q share Git identity %q", existing.ID, id, commonGitDir)
 			}
 		}
-		project.Repositories = append(project.Repositories, domain.Repository{ID: id, CommonGitDir: commonGitDir, SourcePath: sourcePath, ParentID: repository.Parent, DefaultMount: repository.DefaultMount, DefaultBranch: repository.DefaultBranch})
+		loaded = append(loaded, domain.Repository{ID: id, CommonGitDir: commonGitDir, SourcePath: sourcePath, ParentID: repository.Parent, DefaultMount: repository.DefaultMount, DefaultBranch: repository.DefaultBranch})
 	}
-	if err := project.Validate(); err != nil {
-		return domain.Project{}, fmt.Errorf("validate project configuration %q: %w", configPath, err)
-	}
+	project.Repositories = loaded
 	return project, nil
 }
 
-func sourcePath(configRoot, source string) (string, error) {
-	if source == "" {
-		return "", errors.New("source is required")
+func resolveLogicalRoot(configDirectory, logicalRoot string) (string, error) {
+	if err := config.ValidateLogicalRoot(logicalRoot); err != nil {
+		return "", err
 	}
-	if filepath.IsAbs(source) {
-		return "", fmt.Errorf("source %q must be relative", source)
-	}
-	path, err := filepath.Abs(filepath.Join(configRoot, filepath.FromSlash(source)))
+	path, err := filepath.Abs(filepath.Join(configDirectory, filepath.FromSlash(logicalRoot)))
 	if err != nil {
 		return "", err
 	}
-	return filepath.EvalSymlinks(path)
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	if canonical != path {
+		return "", fmt.Errorf("logical root %q is a symlink or canonical alias", logicalRoot)
+	}
+	return canonical, nil
+}
+
+func sourcePath(logicalRoot, source string) (string, error) {
+	if err := config.ValidateLocalSource(source); err != nil {
+		return "", err
+	}
+	path, err := filepath.Abs(filepath.Join(logicalRoot, filepath.FromSlash(source)))
+	if err != nil {
+		return "", err
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	if canonical != path {
+		return "", fmt.Errorf("source %q is a symlink or canonical alias", source)
+	}
+	return canonical, nil
+}
+
+func validateCoLocatedPortableBase(configDirectory string, local config.ProjectConfig) error {
+	path := filepath.Join(configDirectory, local.Manifest.Path)
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("declared portable manifest %q is missing", path)
+	}
+	if err != nil {
+		return fmt.Errorf("read portable manifest %q: %w", path, err)
+	}
+	manifest, err := config.LoadPortableManifest(data)
+	if err != nil {
+		return fmt.Errorf("read portable manifest %q: %w", path, err)
+	}
+	if manifest.Project.BaseRepository != local.Project.BaseRepository {
+		return fmt.Errorf("local project base repository %q does not agree with portable manifest base repository %q", local.Project.BaseRepository, manifest.Project.BaseRepository)
+	}
+	if manifest.Project.ID != local.Project.ID {
+		return fmt.Errorf("local project ID %q does not agree with portable manifest project ID %q", local.Project.ID, manifest.Project.ID)
+	}
+	return nil
 }
 
 func repositoryIDs(project domain.Project) map[string]string {
@@ -519,6 +818,14 @@ func (r *Resolver) reconcileRegistry(ctx context.Context, dataDir string, projec
 	if err != nil {
 		return err
 	}
+	registrySnapshot, err := secureCloneFileSnapshot(path)
+	if err != nil || !registrySnapshot.exists {
+		return fmt.Errorf("capture project registry reconciliation generation: %w", err)
+	}
+	currentBytes, err := store.RegistryBytes(current)
+	if err != nil || !bytes.Equal(currentBytes, registrySnapshot.data) {
+		return errors.New("project registry changed while reconciliation was captured")
+	}
 	registered, exists = current.Projects[project.ID]
 	needsReconciliation, err = registryNeedsReconciliation(registered, exists, project)
 	if err != nil {
@@ -527,11 +834,29 @@ func (r *Resolver) reconcileRegistry(ctx context.Context, dataDir string, projec
 	if !needsReconciliation {
 		return nil
 	}
+	otherProjects := cloneRegistry(current)
+	delete(otherProjects.Projects, project.ID)
+	topLevelPaths := make([]string, 0)
+	for _, repository := range project.ParentFirst() {
+		if repository.ParentID == "" {
+			topLevelPaths = append(topLevelPaths, repository.SourcePath)
+		}
+	}
+	if err := rejectRegistrationConflicts(ctx, dataDir, project.ConfigPath, repositoryIDs(project), project.LogicalRoot, topLevelPaths, otherProjects); err != nil {
+		return err
+	}
 	registered.ConfigPath = project.ConfigPath
 	registered.RepositoryIDs = repositoryIDs(project)
 	current.Projects[project.ID] = registered
-	if err := store.WriteRegistry(path, current); err != nil {
-		return fmt.Errorf("update relocated project registry entry: %w", err)
+	if err := r.writeRegistryCAS(path, current, func() error { return revalidateCloneFileSnapshot(registrySnapshot) }); err != nil {
+		if !fsutil.ReplacementCompleted(err) {
+			return fmt.Errorf("update relocated project registry entry: %w", err)
+		}
+		attempted, encodeErr := store.RegistryBytes(current)
+		if encodeErr != nil {
+			return fmt.Errorf("encode relocated project registry entry: %w", encodeErr)
+		}
+		return finishReplacedPublicationFailure(registrySnapshot, attempted, err, dataDir, project.ID, "reconcile-project", "reconcile-project", "commit-registry", publicationRecoveryDependencies{writeRawCAS: r.writeRawCAS, writeRecoveryCAS: r.writeRecoveryCAS})
 	}
 	return nil
 }
@@ -668,10 +993,10 @@ func validateDefaultWorkspaceState(filename string, state store.WorkspaceState) 
 }
 
 func (r *Resolver) sourceWorkspace(ctx context.Context, project domain.Project) (domain.Workspace, error) {
-	var root string
+	root := project.LogicalRoot
 	checkouts := make([]domain.Checkout, 0, len(project.Repositories))
 	for _, repository := range project.ParentFirst() {
-		if repository.ParentID == "" {
+		if root == "" && repository.ID == project.BaseRepository {
 			root = repository.SourcePath
 		}
 		branch, detached, err := r.git.CurrentBranch(ctx, repository.SourcePath)

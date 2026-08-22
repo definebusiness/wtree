@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	configuration "github.com/definebusiness/wtree/internal/config"
 	"github.com/definebusiness/wtree/internal/render"
@@ -22,6 +23,8 @@ type cloneCommandResult struct {
 	Status          string                     `json:"status"`
 	Project         cloneProjectView           `json:"project"`
 	Destination     string                     `json:"destination"`
+	LogicalRoot     string                     `json:"logicalRoot"`
+	BaseRepository  string                     `json:"baseRepository"`
 	RepositoryCount int                        `json:"repositoryCount"`
 	ManifestSource  string                     `json:"manifestSource"`
 	Repositories    []cloneCompletedRepository `json:"repositories"`
@@ -31,6 +34,8 @@ type cloneCommandResult struct {
 type cloneCompletedRepository struct {
 	ID           string `json:"id"`
 	ActualCommit string `json:"actualCommit"`
+	Mount        string `json:"mount"`
+	ResolvedPath string `json:"resolvedPath"`
 }
 
 type cloneProjectView struct {
@@ -44,7 +49,7 @@ func newCloneCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Comma
 	command := &cobra.Command{
 		Use:   "clone <manifest-source> [destination]",
 		Short: "clone and register a complete portable project",
-		Long:  "Read a local or HTTP(S) portable manifest, observe every declared remote branch, assemble all repositories in private staging from execution-time selected branch tips, verify the result, then atomically publish and register the default workspace. Use --dry-run for a complete read-only plan.",
+		Long:  "Read a local or HTTP(S) portable manifest, observe every declared remote branch, assemble the complete repository forest in private staging from execution-time selected branch tips, verify it, then atomically publish and register the default workspace. JSON includes the logical root, designated base repository, and resolved repository topology. Use --dry-run for a complete read-only plan.",
 		Args:  cloneArguments,
 		RunE: func(command *cobra.Command, arguments []string) error {
 			// A root-scoped project has no meaning before the new project exists.
@@ -113,6 +118,7 @@ func newCloneCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Comma
 					Version: 2, Operation: "clone", Status: "completed",
 					Project:     cloneProjectView{ID: result.ProjectID, Name: plan.Project.Name},
 					Destination: result.Destination, RepositoryCount: len(result.Repositories),
+					LogicalRoot: result.LogicalRoot, BaseRepository: result.BaseRepository,
 					ManifestSource: plan.Source.Value, Repositories: completedCloneRepositories(result), Plan: plan,
 				})
 			}
@@ -137,7 +143,7 @@ func cloneArguments(_ *cobra.Command, arguments []string) error {
 func effectiveCloneWorktreeRoot(cliRoot, globalPath, fallback, home string) (string, error) {
 	global, err := configuration.ReadGlobalFile(globalPath)
 	if os.IsNotExist(err) {
-		global = configuration.GlobalConfig{Version: configuration.Version}
+		global = configuration.GlobalConfig{Version: configuration.GlobalConfigVersion}
 	} else if err != nil {
 		return "", fmt.Errorf("read global configuration: %w", err)
 	}
@@ -153,11 +159,11 @@ func effectiveCloneWorktreeRoot(cliRoot, globalPath, fallback, home string) (str
 }
 
 func renderClonePlan(stdout io.Writer, plan service.ClonePlan) error {
-	if _, err := fmt.Fprintf(stdout, "Operation: clone\nSource: %s\nDestination: %s\nProject: %s (%s)\nRepositories:\n", plan.Source.Value, plan.Destination.Path, plan.Project.Name, plan.Project.ID); err != nil {
+	if _, err := fmt.Fprintf(stdout, "Operation: clone\nSource: %s\nDestination: %s\nLogical root: %s\nBase repository: %s\nProject: %s (%s)\nRepositories:\n", plan.Source.Value, plan.Destination.Path, plan.LogicalRoot, plan.BaseRepository, plan.Project.Name, plan.Project.ID); err != nil {
 		return err
 	}
 	for _, repository := range plan.Repositories {
-		if _, err := fmt.Fprintf(stdout, "  %s\n    remote: %s\n    url: %s\n    branch: %s\n    merge: %s\n    mount: %s\n    observed commit: %s\n    verify: initial roots, clean checkout, no submodules, tracked manifest%s\n", repository.ID, repository.CloneRemote, repository.CloneURL, repository.LocalBranch, repository.RemoteRef, repository.Mount, repository.ObservedCommit, cloneParentIgnoreSuffix(repository.Parent)); err != nil {
+		if _, err := fmt.Fprintf(stdout, "  %s\n    remote: %s\n    url: %s\n    branch: %s\n    merge: %s\n    mount: %s\n    observed commit: %s\n    verify: %s\n", repository.ID, repository.CloneRemote, repository.CloneURL, repository.LocalBranch, repository.RemoteRef, repository.Mount, repository.ObservedCommit, cloneVerificationSummary(repository.Verification)); err != nil {
 			return err
 		}
 	}
@@ -180,11 +186,15 @@ func renderClonePlan(stdout io.Writer, plan service.ClonePlan) error {
 	return render.Line(stdout, "No changes made.")
 }
 
-func cloneParentIgnoreSuffix(parent string) string {
-	if parent == "" {
-		return ""
+func cloneVerificationSummary(verification service.CloneVerification) string {
+	parts := []string{"initial roots", "clean checkout", "no submodules"}
+	if verification.TrackedManifestExact {
+		parts = append(parts, "tracked manifest")
 	}
-	return ", committed parent ignore"
+	if verification.CommittedParentIgnore {
+		parts = append(parts, "committed parent ignore")
+	}
+	return strings.Join(parts, ", ")
 }
 
 func renderCloneSuccess(stdout io.Writer, plan service.ClonePlan, result service.CloneExecutionResult) error {
@@ -210,7 +220,8 @@ func completedCloneRepositories(result service.CloneExecutionResult) []cloneComp
 	ids := result.RepositoryIDs()
 	repositories := make([]cloneCompletedRepository, 0, len(ids))
 	for _, id := range ids {
-		repositories = append(repositories, cloneCompletedRepository{ID: id, ActualCommit: result.Repositories[id].Head})
+		checkout := result.Repositories[id]
+		repositories = append(repositories, cloneCompletedRepository{ID: id, ActualCommit: checkout.Head, Mount: checkout.Mount, ResolvedPath: checkout.ResolvedPath})
 	}
 	return repositories
 }

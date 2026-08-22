@@ -758,22 +758,24 @@ func assertWorkspacePlanV1JSON(t *testing.T, output, operation, workspaceName, r
 	if err := json.Unmarshal([]byte(output), &document); err != nil {
 		t.Fatalf("decode workspace v1 JSON: %v", err)
 	}
-	assertJSONKeys(t, document, "version", "operation", "projectId", "workspaceName", "workspaceId", "rootPath", "repositories", "steps")
+	assertJSONKeys(t, document, "version", "operation", "projectId", "workspaceName", "workspaceId", "rootPath", "logicalRoot", "baseRepository", "repositories", "steps")
 
 	var value struct {
-		Version       int               `json:"version"`
-		Operation     string            `json:"operation"`
-		ProjectID     string            `json:"projectId"`
-		WorkspaceName string            `json:"workspaceName"`
-		WorkspaceID   string            `json:"workspaceId"`
-		RootPath      string            `json:"rootPath"`
-		Repositories  []json.RawMessage `json:"repositories"`
-		Steps         []json.RawMessage `json:"steps"`
+		Version        int               `json:"version"`
+		Operation      string            `json:"operation"`
+		ProjectID      string            `json:"projectId"`
+		WorkspaceName  string            `json:"workspaceName"`
+		WorkspaceID    string            `json:"workspaceId"`
+		RootPath       string            `json:"rootPath"`
+		LogicalRoot    string            `json:"logicalRoot"`
+		BaseRepository string            `json:"baseRepository"`
+		Repositories   []json.RawMessage `json:"repositories"`
+		Steps          []json.RawMessage `json:"steps"`
 	}
 	if err := json.Unmarshal([]byte(output), &value); err != nil {
 		t.Fatalf("decode workspace v1 JSON fields: %v", err)
 	}
-	if value.Version != 1 || value.Operation != operation || value.ProjectID == "" || value.WorkspaceName != workspaceName || value.WorkspaceID == "" || value.RootPath != rootPath {
+	if value.Version != 1 || value.Operation != operation || value.ProjectID == "" || value.WorkspaceName != workspaceName || value.WorkspaceID == "" || value.RootPath != rootPath || value.LogicalRoot != rootPath || value.BaseRepository == "" {
 		t.Fatalf("workspace v1 JSON fields = %#v, want version/operation/project/workspace/root %d/%q/non-empty/%q/%q", value, 1, operation, workspaceName, rootPath)
 	}
 	if len(value.Repositories) != len(repositories) {

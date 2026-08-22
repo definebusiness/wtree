@@ -42,7 +42,7 @@ func TestWorkspacePlannerBuildsParentFirstCreatePlanWithIndependentHEADBases(t *
 		From:          "HEAD",
 		WorktreeRoot:  filepath.Join(data, "worktrees"),
 		DataDir:       data,
-		Mounts:        []service.MountOverride{{RepositoryID: "backend", Mount: `services\..\api`}},
+		Mounts:        []service.MountOverride{{RepositoryID: "backend", Mount: "api"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +111,7 @@ func TestWorkspacePlanIgnoreEnsuresProjectNormalizedEntriesParentFirst(t *testin
 	}
 }
 
-func TestWorkspacePlannerTreatsNormalizedOverrideAsConfiguredDefault(t *testing.T) {
+func TestWorkspacePlannerRejectsCanonicalAliasDefaultMount(t *testing.T) {
 	project, _, _, data := plannerFixture(t)
 	for index := range project.Repositories {
 		if project.Repositories[index].ID == "backend" {
@@ -119,19 +119,16 @@ func TestWorkspacePlannerTreatsNormalizedOverrideAsConfiguredDefault(t *testing.
 		}
 	}
 
-	result, err := service.NewWorkspacePlanner().Plan(context.Background(), project, service.WorkspacePlanRequest{
+	_, err := service.NewWorkspacePlanner().Plan(context.Background(), project, service.WorkspacePlanRequest{
 		Operation: plan.Create, WorkspaceName: "feature", WorktreeRoot: filepath.Join(data, "worktrees"), DataDir: data,
 		Mounts: []service.MountOverride{{RepositoryID: "backend", Mount: "api"}},
 	})
-	if err != nil {
-		t.Fatalf("Plan() = %v, want semantically identical legacy default to skip committed-ignore preflight", err)
-	}
-	if got := result.Repositories[1].Mount; got != "api" {
-		t.Fatalf("planned mount = %q, want normalized api", got)
+	if err == nil || !contains(err.Error(), "must be relative") {
+		t.Fatalf("Plan() error = %v, want canonical alias rejection", err)
 	}
 }
 
-func TestWorkspacePlannerNormalizesDefaultMountBeforeSourceConflictPreflight(t *testing.T) {
+func TestWorkspacePlannerRejectsCanonicalAliasBeforeSourceConflictPreflight(t *testing.T) {
 	project, root, _, data := plannerFixture(t)
 	for index := range project.Repositories {
 		if project.Repositories[index].ID == "backend" {
@@ -145,8 +142,8 @@ func TestWorkspacePlannerNormalizesDefaultMountBeforeSourceConflictPreflight(t *
 	_, err := service.NewWorkspacePlanner().Plan(context.Background(), project, service.WorkspacePlanRequest{
 		Operation: plan.Create, WorkspaceName: "feature", WorktreeRoot: filepath.Join(data, "worktrees"), DataDir: data,
 	})
-	if err == nil || !contains(err.Error(), "contains content") || !contains(err.Error(), "api") {
-		t.Fatalf("Plan() error = %v, want normalized default mount source-content conflict", err)
+	if err == nil || !contains(err.Error(), "must be relative") {
+		t.Fatalf("Plan() error = %v, want canonical alias rejection", err)
 	}
 }
 

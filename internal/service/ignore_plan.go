@@ -171,7 +171,7 @@ func normalizeIgnoreRequirements(requirements []IgnoreRequirement) ([]ignoreRequ
 			}
 		} else {
 			var err error
-			mount, err = pathutil.NormalizeMount(requirement.Mount, false)
+			mount, err = pathutil.NormalizeMount(requirement.Mount, pathutil.ChildMount)
 			if err != nil {
 				return nil, fmt.Errorf("repository %q mount: %w", requirement.ChildRepositoryID, err)
 			}

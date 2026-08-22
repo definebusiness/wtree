@@ -17,11 +17,9 @@ func TestNestedDirectoryRuleIsLiteralAndAnchored(t *testing.T) {
 		want  string
 	}{
 		{mount: "with space", want: `/with\ space/`},
-		{mount: "with\ttab", want: "/with\\\ttab/"},
 		{mount: "unicode-世界", want: "/unicode-世界/"},
 		{mount: "#hash", want: `/\#hash/`},
 		{mount: "!bang", want: `/\!bang/`},
-		{mount: "star*query?", want: `/star\*query\?/`},
 		{mount: "[brackets]", want: `/\[brackets\]/`},
 		{mount: "parent/child", want: "/parent/child/"},
 	} {
@@ -48,7 +46,7 @@ func TestNestedDirectoryRuleIsLiteralAndAnchored(t *testing.T) {
 }
 
 func TestNestedDirectoryRuleRequiresNormalizedNonRootMount(t *testing.T) {
-	for _, mount := range []string{".", `dir\child`, "dir/../child", "line\nbreak"} {
+	for _, mount := range []string{".", `dir\child`, "dir/../child", "line\nbreak", "with\ttab", "star*query?"} {
 		if _, err := service.NestedDirectoryRule(mount); err == nil {
 			t.Fatalf("NestedDirectoryRule(%q) error = nil", mount)
 		}

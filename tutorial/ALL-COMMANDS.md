@@ -87,7 +87,8 @@ how-to flags are terminal: do not combine them with an operation.
 
 ## 2. Publisher situation: initialize existing repositories
 
-Create a root checkout with an independently pushed nested library:
+Create a root-Git checkout with an independently pushed library below the
+ordinary grouping directory `components/`:
 
 ```sh
 cd "$WTREE_SOURCE_ROOT"
@@ -115,7 +116,8 @@ git -C "$WTREE_INIT_PROJECT" diff -- .gitignore project.wtree.yml
 ```
 
 `init` writes local `.wtree.yml`, portable manifest version 2, and the exact
-`/library/` protection needed by the parent checkout. It does not stage,
+`/components/library/` protection needed by the parent checkout. The grouping
+directory owns no metadata or ignore rule. `init` does not stage,
 commit, or push. A maintainer should review those changes before publishing
 them. Use `--ignore <glob>` to omit an intentionally unrelated Git tree,
 `--clone-url id=url` when the fetch URL must differ from the attached
@@ -518,7 +520,44 @@ therefore an expected safe failure:
 wtree delete manual/partial
 ```
 
-## 13. Verify the final state
+## 13. Exercise a plain logical-root repository forest
+
+The executable runner also creates a second, isolated project with this
+Windows-safe layout:
+
+```text
+maintainer-forest/                 logical root, not a Git repository
+├── services/api/                 designated base repository
+│   └── components/shared/        child repository of api
+└── clients/web/                  sibling top-level repository
+```
+
+It initializes the forest with an explicit base, publishes the generated
+portable manifest to local bare remotes, clones the forest, and exercises
+create, status/path/repository inspection, remove, checkout, delete, and a
+complete manual import. Representative commands are:
+
+```sh
+wtree init "$FOREST_ROOT" --base-repository api --dry-run --json
+wtree init "$FOREST_ROOT" --base-repository api
+wtree clone "$FOREST_ROOT/services/api/project.wtree.yml" \
+  "$FOREST_CONSUMER" --dry-run --json
+wtree create tutorial/forest --from main
+wtree status tutorial/forest --json
+wtree remove tutorial/forest
+wtree checkout tutorial/forest
+wtree delete tutorial/forest
+wtree import "$FOREST_MANUAL" --project "$FOREST_CONSUMER" \
+  --name tutorial/import
+```
+
+The runner asserts that only `services/api` owns `.wtree.yml` and
+`project.wtree.yml`, that `api` owns the direct-child ignore rule, that every
+checkout resolves beneath the logical workspace root, and that scalar `path`
+commands remain one-line paths. Publisher and consumer registries use separate
+temporary data directories, and every remote is local.
+
+## 14. Verify the final state
 
 The default clone, checked-out customer-search workspace, and explicitly
 partial manual import remain. Temporary complete workspaces and their branches

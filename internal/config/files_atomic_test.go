@@ -8,7 +8,7 @@ import (
 
 func TestWriteGlobalFilePreservesPreviousDataBeforeReplacement(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	old := GlobalConfig{Version: Version, Worktrees: Worktrees{Root: "/old"}}
+	old := GlobalConfig{Version: GlobalConfigVersion, Worktrees: Worktrees{Root: "/old"}}
 	if err := WriteGlobalFile(path, old); err != nil {
 		t.Fatal(err)
 	}
@@ -19,7 +19,7 @@ func TestWriteGlobalFilePreservesPreviousDataBeforeReplacement(t *testing.T) {
 		return nil
 	}
 	defer func() { configAtomicStepHook = nil }()
-	if err := WriteGlobalFile(path, GlobalConfig{Version: Version, Worktrees: Worktrees{Root: "/new"}}); err == nil {
+	if err := WriteGlobalFile(path, GlobalConfig{Version: GlobalConfigVersion, Worktrees: Worktrees{Root: "/new"}}); err == nil {
 		t.Fatal("WriteGlobalFile() error = nil, want injected failure")
 	}
 	loaded, err := ReadGlobalFile(path)

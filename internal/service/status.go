@@ -15,6 +15,8 @@ import (
 // with the checkout paths and Git facts currently present on disk.
 type WorkspaceStatus struct {
 	Workspace            string             `json:"workspace"`
+	LogicalRoot          string             `json:"logicalRoot,omitempty"`
+	BaseRepository       string             `json:"baseRepository,omitempty"`
 	Partial              bool               `json:"partial,omitempty"`
 	MissingRepositoryIDs []string           `json:"missingRepositoryIds,omitempty"`
 	Repositories         []RepositoryStatus `json:"repositories"`
@@ -25,11 +27,13 @@ type WorkspaceStatus struct {
 // human table while the boolean fields preserve the underlying facts in JSON.
 type RepositoryStatus struct {
 	ID                string `json:"id"`
+	ParentID          string `json:"parentId,omitempty"`
 	Branch            string `json:"branch,omitempty"`
 	ExpectedBranch    string `json:"expectedBranch,omitempty"`
 	Head              string `json:"head,omitempty"`
 	Mount             string `json:"mount,omitempty"`
 	Path              string `json:"path,omitempty"`
+	ResolvedPath      string `json:"resolvedPath,omitempty"`
 	Clean             bool   `json:"clean"`
 	Staged            bool   `json:"staged,omitempty"`
 	Modified          bool   `json:"modified,omitempty"`
@@ -74,6 +78,7 @@ func (s *StatusService) Status(ctx context.Context, project domain.Project, work
 	}
 	value := WorkspaceStatus{
 		Workspace: workspace.Name, Partial: workspace.Partial,
+		LogicalRoot: workspace.RootPath, BaseRepository: project.BaseRepository,
 		MissingRepositoryIDs: append([]string(nil), workspace.MissingRepositoryIDs...),
 		Repositories:         make([]RepositoryStatus, 0, len(project.Repositories)),
 	}
@@ -81,7 +86,7 @@ func (s *StatusService) Status(ctx context.Context, project domain.Project, work
 	for _, repository := range project.ParentFirst() {
 		checkout, found := checkouts[repository.ID]
 		if !found {
-			status := RepositoryStatus{ID: repository.ID, Missing: missing[repository.ID], StaleState: !missing[repository.ID], Status: "stale-state"}
+			status := RepositoryStatus{ID: repository.ID, ParentID: repository.ParentID, Missing: missing[repository.ID], StaleState: !missing[repository.ID], Status: "stale-state"}
 			if status.Missing {
 				status.Status = "missing"
 			}
@@ -113,7 +118,7 @@ func (s *StatusService) Status(ctx context.Context, project domain.Project, work
 }
 
 func (s *StatusService) repositoryStatus(ctx context.Context, repository domain.Repository, checkout domain.Checkout, checkoutPath string, stale bool, managedChildPaths []string) (RepositoryStatus, error) {
-	status := RepositoryStatus{ID: repository.ID, ExpectedBranch: checkout.Branch, Mount: checkout.Mount, Path: checkoutPath, StaleState: stale}
+	status := RepositoryStatus{ID: repository.ID, ParentID: repository.ParentID, ExpectedBranch: checkout.Branch, Mount: checkout.Mount, Path: checkoutPath, ResolvedPath: checkout.ResolvedPath, StaleState: stale}
 	if checkout.ResolvedPath == "" || checkout.Head == "" || (checkout.Detached && checkout.Branch != "") || (!checkout.Detached && checkout.Branch == "") {
 		status.StaleState = true
 	}

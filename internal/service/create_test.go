@@ -3,6 +3,7 @@ package service_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -102,6 +104,80 @@ func TestWorkspaceCreatorCreatesThreeLevelRenamedWorkspace(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCreatorCreatesRootGitWorkspaceWithGroupedChildren(t *testing.T) {
+	project, _, _, _, data := createThreeLevelFixture(t)
+	target := filepath.Join(t.TempDir(), "root-git-workspace")
+	value, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{
+		WorkspaceName: "feature/grouped-root",
+		TargetPath:    target,
+		DataDir:       data,
+		Mounts: []service.MountOverride{
+			{RepositoryID: "backend", Mount: "packages/backend"},
+			{RepositoryID: "shared", Mount: "tools/shared"},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := map[string]string{
+		"root":    target,
+		"backend": filepath.Join(target, "packages", "backend"),
+		"shared":  filepath.Join(target, "packages", "backend", "tools", "shared"),
+	}
+	for id, path := range paths {
+		if got := createRepositoryPlanPath(value, id); got != path {
+			t.Fatalf("%s path = %q, want %q", id, got, path)
+		}
+		if _, err := os.Stat(filepath.Join(path, ".git")); err != nil {
+			t.Fatalf("%s checkout: %v", id, err)
+		}
+	}
+	contents, err := os.ReadFile(filepath.Join(target, ".gitignore"))
+	if err != nil || !strings.Contains(string(contents), "/packages/backend/") {
+		t.Fatalf("root parent ignore = %q, %v", contents, err)
+	}
+	backendIgnore, err := os.ReadFile(filepath.Join(paths["backend"], ".gitignore"))
+	if err != nil || !strings.Contains(string(backendIgnore), "/tools/shared/") {
+		t.Fatalf("backend parent ignore = %q, %v", backendIgnore, err)
+	}
+}
+
+func TestWorkspacePlannerForestIsIndependentOfRepositoryInsertionOrder(t *testing.T) {
+	project, _, _, _, data := createThreeLevelFixture(t)
+	request := service.WorkspacePlanRequest{Operation: plan.Create, WorkspaceName: "feature/order", TargetPath: filepath.Join(t.TempDir(), "workspace"), DataDir: data}
+	first, err := service.NewWorkspacePlanner().Plan(context.Background(), project, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shuffled := project
+	shuffled.Repositories = append([]domain.Repository(nil), project.Repositories...)
+	slices.Reverse(shuffled.Repositories)
+	second, err := service.NewWorkspacePlanner().Plan(context.Background(), shuffled, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("order-dependent plan:\nfirst=%#v\nsecond=%#v", first, second)
+	}
+	firstJSON, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJSON, err := json.Marshal(second)
+	if err != nil || !bytes.Equal(firstJSON, secondJSON) {
+		t.Fatalf("order-dependent plan JSON:\nfirst=%s\nsecond=%s\nerror=%v", firstJSON, secondJSON, err)
+	}
+}
+
+func createRepositoryPlanPath(value plan.WorkspacePlan, id string) string {
+	for _, repository := range value.Repositories {
+		if repository.ID == id {
+			return repository.Path
+		}
+	}
+	return ""
+}
+
 func TestWorkspaceCreatorEnsuresEveryParentBeforeAddingItsChild(t *testing.T) {
 	project, root, backend, _, data := createThreeLevelFixture(t)
 	target := filepath.Join(t.TempDir(), "workspace")
@@ -141,7 +217,7 @@ func TestWorkspaceCreatorEnsuresEveryParentBeforeAddingItsChild(t *testing.T) {
 		}
 	}
 	if got, want := events, []string{
-		"create_branch:root", "add_worktree:root", "inspect_ignore_owner:root", "ensure_ignore:root",
+		"create_branch:root", "prepare_grouping:root", "add_worktree:root", "inspect_ignore_owner:root", "ensure_ignore:root",
 		"create_branch:backend", "add_worktree:backend", "inspect_ignore_owner:backend", "ensure_ignore:backend",
 		"create_branch:shared", "add_worktree:shared",
 	}; !reflect.DeepEqual(got, want) {
@@ -899,6 +975,7 @@ func (g *rollbackFailingCreateGit) DeleteBranch(context.Context, string, string,
 type validationFailingCreateGit struct {
 	gitadapter.Git
 	target string
+	calls  int
 }
 
 type verificationFailingCreateGit struct {
@@ -949,7 +1026,10 @@ func (g *cancelAfterWorktreeGit) AddWorktree(ctx context.Context, repository, pa
 func (g *validationFailingCreateGit) CurrentBranch(ctx context.Context, repository string) (string, bool, error) {
 	branch, detached, err := g.Git.CurrentBranch(ctx, repository)
 	if servicePathEqual(repository, g.target) {
-		return "unexpected", detached, err
+		g.calls++
+		if g.calls == 2 {
+			return "unexpected", detached, err
+		}
 	}
 	return branch, detached, err
 }

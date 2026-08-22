@@ -19,7 +19,7 @@ func TestRootHelpDescribesCommandsConceptsSafetyAndExamples(t *testing.T) {
 	for _, want := range []string{
 		"USAGE", "GLOBAL OPTIONS", "COMMANDS", "CONCEPTS", "WORKTREE LOCATION", "EXAMPLES", "EXIT CODES",
 		"init", "clone", "import", "create", "checkout", "list", "status", "path", "repo", "remove", "delete", "doctor", "config",
-		"project", "workspace", "repository identity", "wtree clone ./project.wtree.yml ./product --dry-run", "wtree create feature/login", "wtree <command> --help",
+		"project", "repository forest", "base repository", "top-level mounts are logical-root-relative", "metadata and ignores", "inspection and recovery", "repository identity", "wtree clone ./project.wtree.yml ./product --dry-run", "wtree create feature/login", "wtree <command> --help",
 	} {
 		if !strings.Contains(result.Stdout, want) {
 			t.Errorf("root help missing %q:\n%s", want, result.Stdout)
@@ -92,6 +92,26 @@ func TestStatusHelpExplainsLastFetchedUpstreamFacts(t *testing.T) {
 	result := testutil.RunCommand(t, cli.Execute, "status", "--help")
 	if result.Err != nil || result.Stderr != "" || !strings.Contains(result.Stdout, "last-fetched local upstream facts") || !strings.Contains(result.Stdout, "does not fetch or contact remotes") {
 		t.Fatalf("status help = %#v", result)
+	}
+}
+
+func TestCommandHelpExplainsImplementedForestSemantics(t *testing.T) {
+	for _, value := range []struct {
+		arguments []string
+		want      string
+	}{
+		{[]string{"clone", "--help"}, "complete repository forest"},
+		{[]string{"import", "--help"}, "base, sibling, or nested checkout"},
+		{[]string{"checkout", "--help"}, "Top-level mounts are logical-root-relative"},
+		{[]string{"status", "--help"}, "deterministic parent-first order"},
+		{[]string{"doctor", "--help"}, "unresolved rollback visibility"},
+		{[]string{"remove", "--help"}, "child-first order"},
+		{[]string{"delete", "--help"}, "grouping-directory contents are preserved"},
+	} {
+		result := testutil.RunCommand(t, cli.Execute, value.arguments...)
+		if result.Err != nil || result.Stderr != "" || !strings.Contains(result.Stdout, value.want) {
+			t.Errorf("%v help = %#v, want %q", value.arguments, result, value.want)
+		}
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/definebusiness/wtree/internal/config"
+	"github.com/definebusiness/wtree/internal/domain"
+	"github.com/definebusiness/wtree/internal/pathutil"
 	"github.com/definebusiness/wtree/internal/store"
 )
 
@@ -20,13 +22,25 @@ type ProjectInventoryReport struct {
 
 // ProjectInventoryEntry is one registered project and its observed health.
 type ProjectInventoryEntry struct {
-	ID          string                    `json:"id"`
-	Name        string                    `json:"name"`
-	ConfigPath  string                    `json:"configPath"`
-	Status      string                    `json:"status"`
-	Prunable    bool                      `json:"prunable"`
-	Findings    []ProjectInventoryFinding `json:"findings"`
-	prunePolicy inventoryPrunePolicy
+	ID             string                       `json:"id"`
+	Name           string                       `json:"name"`
+	ConfigPath     string                       `json:"configPath"`
+	Status         string                       `json:"status"`
+	Prunable       bool                         `json:"prunable"`
+	Findings       []ProjectInventoryFinding    `json:"findings"`
+	LogicalRoot    string                       `json:"logicalRoot,omitempty"`
+	BaseRepository string                       `json:"baseRepository,omitempty"`
+	Repositories   []ProjectInventoryRepository `json:"repositories,omitempty"`
+	prunePolicy    inventoryPrunePolicy
+}
+
+// ProjectInventoryRepository is validated persisted topology for a healthy
+// default workspace. It is omitted whenever inventory cannot prove it.
+type ProjectInventoryRepository struct {
+	ID           string `json:"id"`
+	ParentID     string `json:"parentId,omitempty"`
+	Mount        string `json:"mount"`
+	ResolvedPath string `json:"resolvedPath"`
 }
 
 // inventoryPrunePolicy carries authorization facts separately from the
@@ -110,6 +124,7 @@ type inventoryObservation struct {
 
 func inspectInventoryEntry(dataDir, id string, registered store.RegistryProject, entry *ProjectInventoryEntry) inventoryObservation {
 	observation := inventoryObservation{}
+	var topologyConfig *config.ProjectConfig
 	data, err := os.ReadFile(registered.ConfigPath)
 	if os.IsNotExist(err) {
 		addStaleInventoryFinding(entry, "missing-config", "registered project configuration is missing", nil)
@@ -124,12 +139,21 @@ func inspectInventoryEntry(dataDir, id string, registered store.RegistryProject,
 			if configuration.Project.ID != id {
 				addStaleInventoryFinding(entry, "config-id-mismatch", "registered project ID does not match project configuration", []string{configuration.Project.ID})
 			}
+			code, message := inspectInventoryManifest(filepath.Dir(registered.ConfigPath), configuration)
+			if code != "" {
+				addStaleInventoryFinding(entry, code, message, nil)
+			}
+			if configuration.Project.ID == id && code == "" {
+				topologyConfig = &configuration
+			}
 		}
 	}
 	state, stateErr := store.ReadWorkspace(WorkspaceStatePath(dataDir, id, "default"))
 	if os.IsNotExist(stateErr) {
 		addInventoryFinding(entry, "missing-default-state", "warning", "default workspace state is missing", nil)
 	} else if stateErr != nil || state.ID != "default" || state.Name != "default" {
+		addInventoryFinding(entry, "invalid-default-state", "warning", "default workspace state is invalid", nil)
+	} else if topologyConfig != nil && !populateInventoryTopology(entry, *topologyConfig, state) {
 		addInventoryFinding(entry, "invalid-default-state", "warning", "default workspace state is invalid", nil)
 	}
 	recovery, recoveryErr := hasProjectRecovery(dataDir, id)
@@ -141,6 +165,55 @@ func inspectInventoryEntry(dataDir, id string, registered store.RegistryProject,
 		addInventoryFinding(entry, "recovery-record", "error", "unresolved recovery metadata requires manual action", nil)
 	}
 	return observation
+}
+
+func populateInventoryTopology(entry *ProjectInventoryEntry, local config.ProjectConfig, state store.WorkspaceState) bool {
+	if state.ID != "default" || state.Name != "default" || state.Path == "" || len(state.Repositories) != len(local.Repositories) {
+		entry.LogicalRoot, entry.BaseRepository, entry.Repositories = "", "", nil
+		return false
+	}
+	project := domain.Project{Version: domain.CurrentVersion, ID: local.Project.ID, Name: local.Project.Name, BaseRepository: local.Project.BaseRepository, Repositories: make([]domain.Repository, 0, len(local.Repositories))}
+	for id, repository := range local.Repositories {
+		project.Repositories = append(project.Repositories, domain.Repository{ID: id, ParentID: repository.Parent, DefaultMount: repository.DefaultMount, DefaultBranch: repository.DefaultBranch})
+	}
+	workspace, err := workspaceFromState(state)
+	logicalRoot := filepath.Clean(filepath.Join(filepath.Dir(entry.ConfigPath), filepath.FromSlash(local.LogicalRoot)))
+	canonicalState, stateErr := pathutil.CanonicalPotentialPath(workspace.RootPath)
+	canonicalLocal, localErr := pathutil.CanonicalPotentialPath(logicalRoot)
+	if err != nil || project.Validate() != nil || workspace.Validate(project) != nil || stateErr != nil || localErr != nil || !pathutil.CaseFoldedPathEqual(canonicalState, canonicalLocal) {
+		entry.LogicalRoot, entry.BaseRepository, entry.Repositories = "", "", nil
+		return false
+	}
+	checkouts := workspaceCheckoutMap(workspace)
+	entry.LogicalRoot, entry.BaseRepository = workspace.RootPath, local.Project.BaseRepository
+	entry.Repositories = make([]ProjectInventoryRepository, 0, len(project.Repositories))
+	for _, repository := range project.ParentFirst() {
+		checkout := checkouts[repository.ID]
+		entry.Repositories = append(entry.Repositories, ProjectInventoryRepository{ID: repository.ID, ParentID: repository.ParentID, Mount: checkout.Mount, ResolvedPath: checkout.ResolvedPath})
+	}
+	return true
+}
+
+func inspectInventoryManifest(configDirectory string, local config.ProjectConfig) (string, string) {
+	path := filepath.Join(configDirectory, local.Manifest.Path)
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "missing-manifest", "declared portable manifest is missing"
+	}
+	if err != nil {
+		return "unreadable-manifest", "declared portable manifest cannot be read"
+	}
+	manifest, err := config.LoadPortableManifest(data)
+	if err != nil {
+		return "invalid-manifest", "declared portable manifest is invalid"
+	}
+	if manifest.Project.ID != local.Project.ID {
+		return "manifest-project-id-mismatch", "declared portable manifest project ID does not match local project configuration"
+	}
+	if manifest.Project.BaseRepository != local.Project.BaseRepository {
+		return "manifest-base-mismatch", "declared portable manifest base repository does not match local project configuration"
+	}
+	return "", ""
 }
 
 func diagnoseDuplicatePath(group []string, observed map[string]inventoryObservation, entries map[string]*ProjectInventoryEntry) {

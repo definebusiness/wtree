@@ -32,20 +32,22 @@ type Event struct {
 // Step is one mutation and its explicit inverse. A nil rollback deliberately
 // models a non-reversible step and makes a failed transaction recoverable.
 type Step struct {
-	Name     string
-	Execute  func(context.Context) error
-	Rollback func(context.Context) error
+	Name                  string
+	Execute               func(context.Context) error
+	Rollback              func(context.Context) error
+	RollbackFailedExecute func(context.Context) error
 }
 
 // Result reports the original failure and any failure while undoing completed
 // steps. Completed is execution order, suitable for a recovery record.
 type Result struct {
-	Completed        []string
-	FailedStep       string
-	Failure          error
-	RollbackFailure  error
-	UnrevertedSteps  []string
-	RollbackFailures []RollbackIssue
+	Completed               []string
+	FailedStep              string
+	Failure                 error
+	FailedExecuteRolledBack bool
+	RollbackFailure         error
+	UnrevertedSteps         []string
+	RollbackFailures        []RollbackIssue
 }
 
 // RollbackIssue identifies an effect that could not be undone and preserves
@@ -105,6 +107,18 @@ func (r Runner) Run(ctx context.Context, steps []Step) Result {
 		if err := step.Execute(ctx); err != nil {
 			r.emit(Event{Kind: ExecuteFailed, Step: step.Name, Err: err})
 			result.FailedStep, result.Failure = step.Name, err
+			if step.RollbackFailedExecute != nil {
+				r.emit(Event{Kind: RollbackStarted, Step: step.Name})
+				if cleanupErr := step.RollbackFailedExecute(context.WithoutCancel(ctx)); cleanupErr != nil {
+					r.emit(Event{Kind: RollbackFailed, Step: step.Name, Err: cleanupErr})
+					result.RollbackFailure = cleanupErr
+					result.UnrevertedSteps = append(result.UnrevertedSteps, step.Name)
+					result.RollbackFailures = append(result.RollbackFailures, RollbackIssue{Step: step.Name, Error: cleanupErr.Error()})
+				} else {
+					result.FailedExecuteRolledBack = true
+					r.emit(Event{Kind: RollbackSucceeded, Step: step.Name})
+				}
+			}
 			return r.rollback(ctx, completed, result)
 		}
 		r.emit(Event{Kind: ExecuteSucceeded, Step: step.Name})
@@ -147,7 +161,7 @@ func (r Runner) rollback(ctx context.Context, completed []Step, result Result) R
 		}
 		r.emit(Event{Kind: RollbackSucceeded, Step: step.Name})
 	}
-	result.RollbackFailure = errors.Join(rollbackErrors...)
+	result.RollbackFailure = errors.Join(append(rollbackErrors, result.RollbackFailure)...)
 	return result
 }
 

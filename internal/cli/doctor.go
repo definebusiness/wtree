@@ -14,7 +14,8 @@ func newDoctorCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 	var fix, dryRun, jsonOutput bool
 	command := &cobra.Command{
 		Use:   "doctor [workspace]",
-		Short: "diagnose workspace drift and apply narrowly safe repairs",
+		Short: "diagnose repository-forest drift and apply narrowly safe repairs",
+		Long:  "Diagnose deterministic repository-forest topology, identity, mount, branch, and recovery drift. Read-only reports retain unresolved rollback visibility; --fix applies only independently verified safe repairs and leaves uncertain leftovers visible.",
 		Args:  maximumOneArgument,
 		RunE: func(command *cobra.Command, arguments []string) error {
 			if dryRun && !fix {
@@ -64,6 +65,11 @@ func newDoctorCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 func renderDoctorReport(stdout io.Writer, report service.DoctorReport) error {
 	if err := render.Line(stdout, "Workspace: "+report.Workspace); err != nil {
 		return err
+	}
+	for _, repository := range report.Repositories {
+		if err := render.Line(stdout, fmt.Sprintf("Repository: %s parent=%s mount=%s path=%s status=%s identityMismatch=%t missing=%t mountMismatch=%t branchMismatch=%t headMismatch=%t", repository.ID, repository.ParentID, repository.Mount, repository.ResolvedPath, repository.Status, repository.IdentityMismatch, repository.Missing, repository.MountMismatch, repository.BranchMismatch, repository.HeadMismatch)); err != nil {
+			return err
+		}
 	}
 	if len(report.Findings) == 0 {
 		if err := render.Line(stdout, "OK: no findings"); err != nil {

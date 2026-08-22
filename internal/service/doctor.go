@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/definebusiness/wtree/internal/domain"
+	"github.com/definebusiness/wtree/internal/fsutil"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
 	"github.com/definebusiness/wtree/internal/lock"
 	"github.com/definebusiness/wtree/internal/store"
@@ -33,12 +34,30 @@ type DoctorRepair struct {
 }
 
 type DoctorReport struct {
-	ProjectID string          `json:"projectId"`
-	Workspace string          `json:"workspace"`
-	Findings  []DoctorFinding `json:"findings"`
-	Repairs   []DoctorRepair  `json:"repairs,omitempty"`
-	Fixed     bool            `json:"fixed,omitempty"`
-	DryRun    bool            `json:"dryRun,omitempty"`
+	ProjectID      string             `json:"projectId"`
+	Workspace      string             `json:"workspace"`
+	LogicalRoot    string             `json:"logicalRoot,omitempty"`
+	BaseRepository string             `json:"baseRepository,omitempty"`
+	Repositories   []DoctorRepository `json:"repositories,omitempty"`
+	Findings       []DoctorFinding    `json:"findings"`
+	Repairs        []DoctorRepair     `json:"repairs,omitempty"`
+	Fixed          bool               `json:"fixed,omitempty"`
+	DryRun         bool               `json:"dryRun,omitempty"`
+}
+
+// DoctorRepository is the deterministic declared topology and observed
+// presence for one checkout in a read-only doctor report.
+type DoctorRepository struct {
+	ID               string `json:"id"`
+	ParentID         string `json:"parentId,omitempty"`
+	Mount            string `json:"mount"`
+	ResolvedPath     string `json:"resolvedPath"`
+	Status           string `json:"status"`
+	IdentityMismatch bool   `json:"identityMismatch,omitempty"`
+	Missing          bool   `json:"missing,omitempty"`
+	MountMismatch    bool   `json:"mountMismatch,omitempty"`
+	BranchMismatch   bool   `json:"branchMismatch,omitempty"`
+	HeadMismatch     bool   `json:"headMismatch,omitempty"`
 }
 
 type DoctorFixRequest struct {
@@ -48,17 +67,26 @@ type DoctorFixRequest struct {
 
 // DoctorService detects drift and performs only the M15 allowlisted repairs.
 type DoctorService struct {
-	git            gitadapter.Git
-	locker         ProjectLocker
-	writeWorkspace func(string, store.WorkspaceState) error
+	git               gitadapter.Git
+	locker            ProjectLocker
+	writeWorkspaceCAS func(string, store.WorkspaceState, func() error) error
+	writeRawCAS       func(string, []byte, func() error) error
+	writeRecoveryCAS  func(string, store.RecoveryRecord, func() error) error
 }
 
 func NewDoctorService() *DoctorService {
-	return NewDoctorServiceWith(gitadapter.NewAdapter("git"), lock.Manager{}, store.WriteWorkspace)
+	return &DoctorService{git: gitadapter.NewAdapter("git"), locker: lock.Manager{}, writeWorkspaceCAS: store.WriteWorkspaceCAS, writeRawCAS: store.WriteRawCAS, writeRecoveryCAS: store.WriteRecoveryCAS}
 }
 
 func NewDoctorServiceWith(git gitadapter.Git, locker ProjectLocker, writeWorkspace func(string, store.WorkspaceState) error) *DoctorService {
-	return &DoctorService{git: git, locker: locker, writeWorkspace: writeWorkspace}
+	return &DoctorService{git: git, locker: locker, writeRawCAS: store.WriteRawCAS, writeRecoveryCAS: store.WriteRecoveryCAS, writeWorkspaceCAS: func(path string, state store.WorkspaceState, compare func() error) error {
+		if compare != nil {
+			if err := compare(); err != nil {
+				return err
+			}
+		}
+		return writeWorkspace(path, state)
+	}}
 }
 
 // Doctor is strictly read-only. It observes source identities, persisted
@@ -70,7 +98,7 @@ func (d *DoctorService) Doctor(ctx context.Context, project domain.Project, work
 	if err := project.Validate(); err != nil {
 		return DoctorReport{}, NewError(ErrorValidation, fmt.Errorf("validate project: %w", err))
 	}
-	report := DoctorReport{ProjectID: project.ID, Workspace: workspace.Name}
+	report := DoctorReport{ProjectID: project.ID, Workspace: workspace.Name, LogicalRoot: workspace.RootPath, BaseRepository: project.BaseRepository}
 	registry, registryErr := readRegistry(filepath.Join(dataDir, "registry.json"))
 	if registryErr != nil {
 		report.Findings = append(report.Findings, DoctorFinding{Code: "invalid-registry", Severity: "error", Message: "project registry cannot be read"})
@@ -144,13 +172,56 @@ func (d *DoctorService) Doctor(ctx context.Context, project domain.Project, work
 	if hasRecovery(dataDir, project.ID, workspace.ID) {
 		report.Findings = append(report.Findings, DoctorFinding{Code: "recovery-record", Severity: "error", Message: "an incomplete rollback recovery record requires manual action"})
 	}
-	sort.Slice(report.Findings, func(i, j int) bool {
-		if report.Findings[i].RepositoryID == report.Findings[j].RepositoryID {
+	if workspace.Validate(project) == nil {
+		report.Repositories = doctorRepositories(project, workspace, observed, report.Findings)
+	}
+	repositoryOrder := map[string]int{"": 0}
+	for index, repository := range project.ParentFirst() {
+		repositoryOrder[repository.ID] = index + 1
+	}
+	sort.SliceStable(report.Findings, func(i, j int) bool {
+		left, right := repositoryOrder[report.Findings[i].RepositoryID], repositoryOrder[report.Findings[j].RepositoryID]
+		if left == right {
 			return report.Findings[i].Code < report.Findings[j].Code
 		}
-		return report.Findings[i].RepositoryID < report.Findings[j].RepositoryID
+		return left < right
 	})
 	return report, nil
+}
+
+func doctorRepositories(project domain.Project, workspace domain.Workspace, observed map[string]string, findings []DoctorFinding) []DoctorRepository {
+	checkouts := workspaceCheckoutMap(workspace)
+	result := make([]DoctorRepository, 0, len(project.Repositories))
+	for _, repository := range project.ParentFirst() {
+		checkout, found := checkouts[repository.ID]
+		if !found {
+			continue
+		}
+		status := "known"
+		if _, found := observed[repository.ID]; !found {
+			status = "missing"
+		}
+		value := DoctorRepository{ID: repository.ID, ParentID: repository.ParentID, Mount: checkout.Mount, ResolvedPath: checkout.ResolvedPath, Status: status}
+		for _, finding := range findings {
+			if finding.RepositoryID != repository.ID {
+				continue
+			}
+			switch finding.Code {
+			case "source-identity-mismatch":
+				value.IdentityMismatch = true
+			case "missing-checkout":
+				value.Missing = true
+			case "mount-mismatch":
+				value.MountMismatch = true
+			case "branch-mismatch":
+				value.BranchMismatch = true
+			case "head-mismatch":
+				value.HeadMismatch = true
+			}
+		}
+		result = append(result, value)
+	}
+	return result
 }
 
 // Fix applies only planned allowlisted repairs after holding the project lock.
@@ -163,7 +234,7 @@ func (d *DoctorService) Fix(ctx context.Context, project domain.Project, workspa
 	if request.DryRun || len(report.Repairs) == 0 {
 		return report, nil
 	}
-	if d.locker == nil || d.writeWorkspace == nil {
+	if d.locker == nil || d.writeWorkspaceCAS == nil || d.writeRawCAS == nil || d.writeRecoveryCAS == nil {
 		return DoctorReport{}, NewError(ErrorInternal, errors.New("doctor repair is not configured"))
 	}
 	handle, err := d.locker.ProjectLock(ctx, request.DataDir, project.ID, time.Second)
@@ -171,7 +242,26 @@ func (d *DoctorService) Fix(ctx context.Context, project domain.Project, workspa
 		return DoctorReport{}, NewError(ErrorConflict, fmt.Errorf("acquire project mutation lock: %w", err))
 	}
 	defer handle.Unlock()
-	report, err = d.Doctor(ctx, project, workspace, request.DataDir)
+	statePath := WorkspaceStatePath(request.DataDir, project.ID, workspace.ID)
+	stateSnapshot, err := secureCloneFileSnapshot(statePath)
+	if err != nil {
+		return DoctorReport{}, NewError(ErrorConflict, fmt.Errorf("capture doctor workspace state: %w", err))
+	}
+	if !stateSnapshot.exists {
+		return DoctorReport{}, NewError(ErrorConflict, errors.New("doctor workspace state disappeared before repair"))
+	}
+	state, err := store.ReadWorkspace(statePath)
+	if err != nil {
+		return DoctorReport{}, NewError(ErrorConflict, fmt.Errorf("read doctor workspace state: %w", err))
+	}
+	currentWorkspace, err := workspaceFromState(state)
+	if err != nil {
+		return DoctorReport{}, NewError(ErrorConflict, fmt.Errorf("validate current doctor workspace state: %w", err))
+	}
+	if err := currentWorkspace.Validate(project); err != nil {
+		return DoctorReport{}, NewError(ErrorConflict, fmt.Errorf("validate current doctor workspace state: %w", err))
+	}
+	report, err = d.Doctor(ctx, project, currentWorkspace, request.DataDir)
 	if err != nil {
 		return DoctorReport{}, err
 	}
@@ -184,12 +274,20 @@ func (d *DoctorService) Fix(ctx context.Context, project domain.Project, workspa
 		report.Fixed = true
 	}
 	if hasRepair(report, "repair-mount-metadata") {
-		updated, err := d.repairedWorkspace(ctx, project, workspace)
+		updated, err := d.repairedWorkspace(ctx, project, currentWorkspace)
 		if err != nil {
 			return DoctorReport{}, err
 		}
-		if err := d.writeWorkspace(WorkspaceStatePath(request.DataDir, project.ID, workspace.ID), doctorWorkspaceState(updated)); err != nil {
-			return DoctorReport{}, NewError(ErrorInternal, fmt.Errorf("write repaired workspace state: %w", err))
+		updatedState := doctorWorkspaceState(updated)
+		if err := d.writeWorkspaceCAS(statePath, updatedState, func() error { return revalidateCloneFileSnapshot(stateSnapshot) }); err != nil {
+			if !fsutil.ReplacementCompleted(err) {
+				return DoctorReport{}, NewError(ErrorInternal, fmt.Errorf("write repaired workspace state: %w", err))
+			}
+			attempted, encodeErr := store.WorkspaceBytes(updatedState)
+			if encodeErr != nil {
+				return DoctorReport{}, NewError(ErrorInternal, fmt.Errorf("encode repaired workspace state: %w", encodeErr))
+			}
+			return DoctorReport{}, finishReplacedPublicationFailure(stateSnapshot, attempted, err, request.DataDir, project.ID, workspace.ID, "doctor-fix", "commit-state", publicationRecoveryDependencies{writeRawCAS: d.writeRawCAS, writeRecoveryCAS: d.writeRecoveryCAS})
 		}
 		report.Fixed = true
 	}
@@ -280,14 +378,15 @@ func (d *DoctorService) repairedWorkspace(ctx context.Context, project domain.Pr
 			if updated.Checkouts[index].RepositoryID != repository.ID {
 				continue
 			}
-			mount := "."
+			owner := workspace.RootPath
 			if repository.ParentID != "" {
-				relative, err := filepath.Rel(paths[repository.ParentID], actual)
-				if err != nil || relative == "." || filepath.IsAbs(relative) {
-					return domain.Workspace{}, NewError(ErrorValidation, fmt.Errorf("cannot derive repaired mount for %q", repository.ID))
-				}
-				mount = filepath.ToSlash(relative)
+				owner = paths[repository.ParentID]
 			}
+			relative, err := filepath.Rel(owner, actual)
+			if err != nil || (repository.ParentID != "" && relative == ".") || filepath.IsAbs(relative) {
+				return domain.Workspace{}, NewError(ErrorValidation, fmt.Errorf("cannot derive repaired mount for %q", repository.ID))
+			}
+			mount := filepath.ToSlash(relative)
 			updated.Checkouts[index].Mount, updated.Checkouts[index].ResolvedPath = mount, actual
 		}
 	}

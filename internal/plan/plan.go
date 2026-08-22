@@ -25,14 +25,16 @@ const (
 // deliberately outside this package so it can be rendered, serialized, and
 // dry-run without side effects.
 type WorkspacePlan struct {
-	Version       int              `json:"version"`
-	Operation     Operation        `json:"operation"`
-	ProjectID     string           `json:"projectId"`
-	WorkspaceName string           `json:"workspaceName"`
-	WorkspaceID   string           `json:"workspaceId"`
-	RootPath      string           `json:"rootPath"`
-	Repositories  []RepositoryPlan `json:"repositories"`
-	Steps         []Step           `json:"steps"`
+	Version        int              `json:"version"`
+	Operation      Operation        `json:"operation"`
+	ProjectID      string           `json:"projectId"`
+	WorkspaceName  string           `json:"workspaceName"`
+	WorkspaceID    string           `json:"workspaceId"`
+	RootPath       string           `json:"rootPath"`
+	LogicalRoot    string           `json:"logicalRoot"`
+	BaseRepository string           `json:"baseRepository"`
+	Repositories   []RepositoryPlan `json:"repositories"`
+	Steps          []Step           `json:"steps"`
 }
 
 type RepositoryPlan struct {
@@ -57,8 +59,11 @@ func (p WorkspacePlan) Validate() error {
 	if p.Operation != Create && p.Operation != Checkout {
 		return fmt.Errorf("unsupported plan operation %q", p.Operation)
 	}
-	if p.ProjectID == "" || p.WorkspaceName == "" || p.WorkspaceID == "" || p.RootPath == "" {
-		return fmt.Errorf("plan project, workspace name, workspace ID, and root path are required")
+	if p.ProjectID == "" || p.WorkspaceName == "" || p.WorkspaceID == "" || p.RootPath == "" || p.LogicalRoot == "" || p.BaseRepository == "" {
+		return fmt.Errorf("plan project, workspace name, workspace ID, root path, logical root, and base repository are required")
+	}
+	if p.LogicalRoot != p.RootPath {
+		return fmt.Errorf("plan logical root %q must equal root path %q", p.LogicalRoot, p.RootPath)
 	}
 	if len(p.Repositories) == 0 {
 		return fmt.Errorf("plan must include repositories")
@@ -72,6 +77,10 @@ func (p WorkspacePlan) Validate() error {
 			return fmt.Errorf("plan has duplicate repository %q", repository.ID)
 		}
 		seen[repository.ID] = struct{}{}
+	}
+	base, found := repositoryByID(p.Repositories, p.BaseRepository)
+	if !found || base.ParentID != "" {
+		return fmt.Errorf("plan base repository %q must be a declared top-level repository", p.BaseRepository)
 	}
 	if p.Operation == Create && len(p.Steps) != len(p.Repositories)*2 {
 		return fmt.Errorf("create plan has %d steps, want %d", len(p.Steps), len(p.Repositories)*2)
@@ -88,4 +97,13 @@ func (p WorkspacePlan) Validate() error {
 		}
 	}
 	return nil
+}
+
+func repositoryByID(repositories []RepositoryPlan, id string) (RepositoryPlan, bool) {
+	for _, repository := range repositories {
+		if repository.ID == id {
+			return repository, true
+		}
+	}
+	return RepositoryPlan{}, false
 }

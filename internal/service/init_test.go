@@ -22,19 +22,15 @@ import (
 	"time"
 )
 
-func TestInitFromDescendantUsesDiscoveredRootAndPersistsDiscoveryIgnores(t *testing.T) {
+func TestInitUsesExplicitLogicalRootAndPersistsDiscoveryIgnores(t *testing.T) {
 	root := testutil.NewPushedGitRepository(t)
 	root.CommitFile("readme", "x\n", "initial")
-	descendant := filepath.Join(root.Path, "cmd", "wtree")
-	if err := os.MkdirAll(descendant, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	canonicalRoot, err := filepath.EvalSymlinks(root.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	data := t.TempDir()
-	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: descendant, DataDir: data, Ignores: []string{"examples/**"}})
+	result, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, Ignores: []string{"examples/**"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +66,7 @@ func TestInitFromDescendantUsesDiscoveredRootAndPersistsDiscoveryIgnores(t *test
 	if state.Name != "default" || state.Path != canonicalRoot || state.Repositories["root"].ResolvedPath != canonicalRoot {
 		t.Fatalf("default state = %#v", state)
 	}
-	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: descendant, DataDir: data, DryRun: true}); !errors.Is(err, service.ErrAlreadyInitialized) {
+	if _, err := service.NewInitializer().Init(context.Background(), service.InitRequest{Path: root.Path, DataDir: data, DryRun: true}); !errors.Is(err, service.ErrAlreadyInitialized) {
 		t.Fatalf("dry-run repeat error = %v, want already initialized", err)
 	}
 }
@@ -102,7 +98,7 @@ func TestInitPreflightsDiscoversWritesConfigAndRegistersProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	configuration, err := config.LoadProject(configurationBytes)
-	if err != nil || configuration.Repositories["root"].DefaultBranch != "main" || configuration.Repositories["root"].Source != "." || configuration.Repositories["root"].DefaultMount != "." || configuration.Worktrees.Root != filepath.Join(data, "worktrees") {
+	if err != nil || configuration.Version != config.ProjectConfigVersion || configuration.Project.BaseRepository != "root" || configuration.LogicalRoot != "." || configuration.Repositories["root"].DefaultBranch != "main" || configuration.Repositories["root"].Source != "." || configuration.Repositories["root"].DefaultMount != "." || configuration.Worktrees.Root != filepath.Join(data, "worktrees") || configuration.Manifest.Path != "project.wtree.yml" || configuration.Manifest.Source == "" {
 		t.Fatalf("config=%#v %v", configuration, err)
 	}
 	if _, err := os.Stat(filepath.Join(data, "state", result.ProjectID, "default.json")); err != nil {

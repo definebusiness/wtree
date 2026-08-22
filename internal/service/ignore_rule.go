@@ -11,7 +11,7 @@ import (
 // already-normalized non-root mount. Keeping normalization outside this
 // function ensures placement and protection use the same mount value.
 func NestedDirectoryRule(mount string) (string, error) {
-	normalized, err := pathutil.NormalizeMount(mount, false)
+	normalized, err := pathutil.NormalizeMount(mount, pathutil.ChildMount)
 	if err != nil {
 		return "", err
 	}

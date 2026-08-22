@@ -15,6 +15,7 @@ func newImportCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "import [path]",
 		Short: "record an existing workspace without rewriting its checkouts",
+		Long:  "Record a validated existing repository forest without rewriting checkouts. The path may be the logical root or any proven base, sibling, or nested checkout; ambiguous contexts require --project. JSON retains scalar compatibility and adds logical-root, base, and resolved topology facts only after validation.",
 		Args:  maximumOneArgument,
 		RunE: func(command *cobra.Command, arguments []string) error {
 			if dataDir == "" {

@@ -227,7 +227,7 @@ func (w *WorkspaceTransaction) finishFailure(request WorkspaceTransactionRequest
 			result.RollbackFailure = cleanupErr
 		} else {
 			err := classifyTransactionError("execute workspace transaction", result.Failure)
-			if len(result.Completed) > 0 {
+			if len(result.Completed) > 0 || result.FailedExecuteRolledBack {
 				err = withCleanRollback(err)
 			}
 			return result, err

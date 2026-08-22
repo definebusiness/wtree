@@ -15,7 +15,8 @@ func newDeleteCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Comm
 	var dryRun, force, jsonOutput, verbose bool
 	command := &cobra.Command{
 		Use:   "delete <workspace>",
-		Short: "remove workspace worktrees, branches, and retained state",
+		Short: "delete forest worktrees child-first, branches, and retained state",
+		Long:  "Delete managed repository-forest worktrees in child-first order, then retained branches and workspace state after preflight. Ordinary logical-root and grouping-directory contents are preserved.",
 		Args:  exactArguments(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
 			project, dataDir, err := resolveWorkspaceProject(command.Context(), *projectPath, dataDir)

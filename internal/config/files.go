@@ -30,19 +30,19 @@ func ReadProjectFile(path string) (ProjectConfig, error) {
 
 func WriteGlobalFile(path string, value GlobalConfig) error {
 	if value.Version == 0 {
-		value.Version = Version
+		value.Version = GlobalConfigVersion
 	}
-	if value.Version != Version {
+	if value.Version != GlobalConfigVersion {
 		return fmt.Errorf("unsupported global config version %d", value.Version)
 	}
 	return writeYAML(path, value)
 }
 
 func WriteProjectFile(path string, value ProjectConfig) error {
-	if value.Version != Version {
+	if value.Version != ProjectConfigVersion {
 		return fmt.Errorf("unsupported project config version %d", value.Version)
 	}
-	if err := ValidateManifestMetadata(value.Manifest); err != nil {
+	if err := value.Validate(); err != nil {
 		return err
 	}
 	return writeYAML(path, value)

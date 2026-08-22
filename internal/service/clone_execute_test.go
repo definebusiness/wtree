@@ -68,7 +68,7 @@ func TestCloneExecuteThreeLevelExactPlanPublishesConfigStateAndRegistry(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ProjectID != "clone-project" || result.Destination != plan.Destination.Path {
+	if result.ProjectID != "clone-project" || result.Destination != plan.Destination.Path || result.LogicalRoot != plan.LogicalRoot || result.BaseRepository != plan.BaseRepository {
 		t.Fatalf("result = %#v", result)
 	}
 	if _, err := os.Stat(filepath.Join(plan.Destination.Path, "backend", "shared", "shared.txt")); err != nil {
@@ -78,7 +78,7 @@ func TestCloneExecuteThreeLevelExactPlanPublishesConfigStateAndRegistry(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if configuration.Manifest.Source != manifestPath || configuration.Repositories["api"].Source != "backend" || configuration.Repositories["shared"].Source != "backend/shared" {
+	if configuration.Version != config.ProjectConfigVersion || configuration.Project.BaseRepository != "root" || configuration.LogicalRoot != "." || configuration.Manifest.Source != manifestPath || configuration.Repositories["api"].Source != "backend" || configuration.Repositories["shared"].Source != "backend/shared" {
 		t.Fatalf("local config = %#v", configuration)
 	}
 	state, err := store.ReadWorkspace(WorkspaceStatePath(dataDir, "clone-project", "default"))
@@ -119,6 +119,217 @@ func TestCloneExecuteThreeLevelExactPlanPublishesConfigStateAndRegistry(t *testi
 	}
 	if len(events) == 0 {
 		t.Fatal("expected bounded progress events")
+	}
+}
+
+func TestCloneExecuteForestPublishesBaseOwnedMetadataAndEveryCheckout(t *testing.T) {
+	base := t.TempDir()
+	tool := newCloneExecutionRemote(t, "tool-local", "tool-published", map[string]string{"tool.txt": "tool\n"})
+	shared := newCloneExecutionRemote(t, "shared-local", "shared-published", map[string]string{"shared.txt": "shared\n", ".gitignore": "/tools/tool/\n"})
+	web := newCloneExecutionRemote(t, "web-local", "web-published", map[string]string{"web.txt": "web\n"})
+	baseRepository := testutil.NewGitRepository(t)
+	writeAndCommitCloneFiles(t, baseRepository.Path, map[string]string{"README.md": "base\n", ".gitignore": "/.wtree.yml\n/packages/shared/\n"}, "base identity")
+	baseIdentity := cloneGitOutput(t, baseRepository.Path, "rev-parse", "HEAD")
+	baseRemote := testutil.NewBareGitRemote(t)
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "forest-clone", Name: "forest-clone", BaseRepository: "base"}, Repositories: map[string]config.PortableRepository{
+		"base":   {Clone: config.CloneSource{Remote: "origin", URL: baseRemote}, Upstream: config.Upstream{Branch: "base-local", Remote: "origin", Merge: "refs/heads/base-published"}, Identity: config.RepositoryIdentity{InitialCommits: []string{baseIdentity}}, Mount: "services/base", DefaultBranch: "base-local"},
+		"web":    {Clone: config.CloneSource{Remote: "origin", URL: web.remote}, Upstream: config.Upstream{Branch: "web-local", Remote: "origin", Merge: "refs/heads/web-published"}, Identity: config.RepositoryIdentity{InitialCommits: []string{web.identity}}, Mount: "web", DefaultBranch: "web-local"},
+		"shared": {Clone: config.CloneSource{Remote: "origin", URL: shared.remote}, Upstream: config.Upstream{Branch: "shared-local", Remote: "origin", Merge: "refs/heads/shared-published"}, Identity: config.RepositoryIdentity{InitialCommits: []string{shared.identity}}, Parent: "base", Mount: "packages/shared", DefaultBranch: "shared-local"},
+		"tool":   {Clone: config.CloneSource{Remote: "origin", URL: tool.remote}, Upstream: config.Upstream{Branch: "tool-local", Remote: "origin", Merge: "refs/heads/tool-published"}, Identity: config.RepositoryIdentity{InitialCommits: []string{tool.identity}}, Parent: "shared", Mount: "tools/tool", DefaultBranch: "tool-local"},
+	}}
+	manifestBytes, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAndCommitCloneFiles(t, baseRepository.Path, map[string]string{"project.wtree.yml": string(manifestBytes)}, "portable manifest")
+	cloneGit(t, baseRepository.Path, "push", baseRemote, "HEAD:refs/heads/base-published")
+
+	destination, dataDir := filepath.Join(base, "logical-root"), filepath.Join(base, "data")
+	plan, err := NewClonePlanner().Plan(context.Background(), ClonePlanRequest{ManifestSource: filepath.Join(baseRepository.Path, "project.wtree.yml"), Destination: destination, CWD: base, DataDir: dataDir, WorktreeRoot: filepath.Join(base, "worktrees")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewCloneExecutor().Execute(context.Background(), plan, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	basePath := filepath.Join(result.Destination, "services", "base")
+	paths := map[string]string{"base": basePath, "web": filepath.Join(result.Destination, "web"), "shared": filepath.Join(basePath, "packages", "shared"), "tool": filepath.Join(basePath, "packages", "shared", "tools", "tool")}
+	for id, path := range paths {
+		if _, err := os.Stat(filepath.Join(path, ".git")); err != nil {
+			t.Fatalf("%s checkout missing: %v", id, err)
+		}
+		if result.Repositories[id].ResolvedPath != path {
+			t.Fatalf("%s result path = %#v", id, result.Repositories[id])
+		}
+	}
+	if result.LogicalRoot != result.Destination || result.BaseRepository != "base" || result.ConfigPath != filepath.Join(basePath, ".wtree.yml") {
+		t.Fatalf("base config path = %q", result.ConfigPath)
+	}
+	if _, err := os.Stat(filepath.Join(result.Destination, ".wtree.yml")); !os.IsNotExist(err) {
+		t.Fatalf("logical root incorrectly owns config: %v", err)
+	}
+	configuration, err := config.ReadProjectFile(result.ConfigPath)
+	if err != nil || configuration.LogicalRoot != "../.." || configuration.Repositories["base"].Source != "services/base" || configuration.Repositories["web"].Source != "web" || configuration.Repositories["shared"].Source != "services/base/packages/shared" || configuration.Repositories["tool"].Source != "services/base/packages/shared/tools/tool" {
+		t.Fatalf("forest local config = %#v, %v", configuration, err)
+	}
+	registry, err := store.ReadRegistry(filepath.Join(dataDir, "registry.json"))
+	if err != nil || registry.Projects["forest-clone"].ConfigPath != result.ConfigPath || len(registry.Projects["forest-clone"].RepositoryIDs) != 4 {
+		t.Fatalf("forest registry = %#v, %v", registry, err)
+	}
+	resolver := NewResolver()
+	for id, path := range paths {
+		project, err := resolver.ResolveProject(context.Background(), ResolveRequest{Path: path, DataDir: dataDir})
+		if err != nil || project.ID != "forest-clone" || project.ConfigPath != result.ConfigPath {
+			t.Fatalf("resolve %s from %q = %#v, %v", id, path, project, err)
+		}
+	}
+}
+
+func TestCloneExecuteRejectsCommittedSymlinkGroupingPrefixWithoutTouchingExternalTarget(t *testing.T) {
+	for _, target := range []struct {
+		name string
+		link func(baseRepository, external string) string
+	}{
+		{name: "absolute", link: func(_ string, external string) string { return external }},
+		{name: "relative escape", link: func(baseRepository, external string) string {
+			relative, err := filepath.Rel(baseRepository, external)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return relative
+		}},
+	} {
+		t.Run(target.name, func(t *testing.T) {
+			base := t.TempDir()
+			external := filepath.Join(base, "external")
+			if err := os.Mkdir(external, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(external, "marker")
+			if err := os.WriteFile(marker, []byte("external must remain untouched\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			child := newCloneExecutionRemote(t, "child-local", "child-published", map[string]string{"child.txt": "child\n"})
+			baseRepository := testutil.NewGitRepository(t)
+			writeAndCommitCloneFiles(t, baseRepository.Path, map[string]string{"README.md": "base\n", ".gitignore": "/.wtree.yml\n/packages/shared/\n"}, "base files")
+			if err := os.Symlink(target.link(baseRepository.Path, external), filepath.Join(baseRepository.Path, "packages")); err != nil {
+				t.Skipf("symlink fixtures unsupported: %v", err)
+			}
+			cloneGit(t, baseRepository.Path, "add", "--all")
+			cloneGit(t, baseRepository.Path, "commit", "-m", "committed grouping symlink")
+			baseIdentity := cloneGitOutput(t, baseRepository.Path, "rev-parse", "HEAD")
+			baseRemote := testutil.NewBareGitRemote(t)
+			manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "symlink-prefix", Name: "symlink-prefix", BaseRepository: "base"}, Repositories: map[string]config.PortableRepository{
+				"base":  {Clone: config.CloneSource{Remote: "origin", URL: baseRemote}, Upstream: config.Upstream{Branch: "base-local", Remote: "origin", Merge: "refs/heads/base-published"}, Identity: config.RepositoryIdentity{InitialCommits: []string{baseIdentity}}, Mount: ".", DefaultBranch: "base-local"},
+				"child": {Clone: config.CloneSource{Remote: "origin", URL: child.remote}, Upstream: config.Upstream{Branch: "child-local", Remote: "origin", Merge: "refs/heads/child-published"}, Identity: config.RepositoryIdentity{InitialCommits: []string{child.identity}}, Parent: "base", Mount: "packages/shared", DefaultBranch: "child-local"},
+			}}
+			manifestBytes, err := config.MarshalPortableManifest(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeAndCommitCloneFiles(t, baseRepository.Path, map[string]string{"project.wtree.yml": string(manifestBytes)}, "portable manifest")
+			cloneGit(t, baseRepository.Path, "push", baseRemote, "HEAD:refs/heads/base-published")
+
+			destination, dataDir := filepath.Join(base, "logical-root"), filepath.Join(base, "data")
+			plan, err := NewClonePlanner().Plan(context.Background(), ClonePlanRequest{ManifestSource: filepath.Join(baseRepository.Path, "project.wtree.yml"), Destination: destination, CWD: base, DataDir: dataDir, WorktreeRoot: filepath.Join(base, "worktrees")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = NewCloneExecutor().Execute(context.Background(), plan, nil)
+			if err == nil || !strings.Contains(err.Error(), "grouping directory") {
+				t.Fatalf("committed symlink grouping execution error = %v", err)
+			}
+			assertCloneExecutionAbsent(t, plan)
+			contents, readErr := os.ReadFile(marker)
+			if readErr != nil || string(contents) != "external must remain untouched\n" {
+				t.Fatalf("external marker = %q, %v", contents, readErr)
+			}
+			if _, statErr := os.Lstat(filepath.Join(external, "shared")); !os.IsNotExist(statErr) {
+				t.Fatalf("child clone touched external target: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestCloneExecuteRejectsGroupingDirectoryReplacementAfterCreation(t *testing.T) {
+	root := t.TempDir()
+	staging := filepath.Join(root, "staging")
+	parent := filepath.Join(staging, "base")
+	checkout := filepath.Join(parent, "packages", "shared")
+	external := filepath.Join(root, "external")
+	for _, path := range []string{staging, parent, external} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executor := NewCloneExecutorWith(CloneExecutorDependencies{Mkdir: func(path string, _ os.FileMode) error {
+		return os.Symlink(external, path)
+	}})
+	err := executor.prepareCloneGroupingDirectories(context.Background(), nil, staging, parent, checkout, "child")
+	if err == nil || !strings.Contains(err.Error(), "without symlinks") {
+		t.Fatalf("replacement grouping error = %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(external, "shared")); !os.IsNotExist(statErr) {
+		t.Fatalf("replacement caused an external checkout: %v", statErr)
+	}
+}
+
+func TestCloneExecuteRevalidatesGroupingAfterPublicCloneStartedCallback(t *testing.T) {
+	base := t.TempDir()
+	external := filepath.Join(base, "external")
+	if err := os.Mkdir(external, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(external, "marker")
+	if err := os.WriteFile(marker, []byte("external must remain untouched\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	child := newCloneExecutionRemote(t, "child-local", "child-published", map[string]string{"child.txt": "child\n"})
+	baseRepository := testutil.NewGitRepository(t)
+	writeAndCommitCloneFiles(t, baseRepository.Path, map[string]string{"README.md": "base\n", ".gitignore": "/.wtree.yml\n/packages/shared/\n", "packages/retained": "grouping content\n"}, "base files")
+	baseIdentity := cloneGitOutput(t, baseRepository.Path, "rev-parse", "HEAD")
+	baseRemote := testutil.NewBareGitRemote(t)
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "callback-symlink", Name: "callback-symlink", BaseRepository: "base"}, Repositories: map[string]config.PortableRepository{
+		"base":  {Clone: config.CloneSource{Remote: "origin", URL: baseRemote}, Upstream: config.Upstream{Branch: "base-local", Remote: "origin", Merge: "refs/heads/base-published"}, Identity: config.RepositoryIdentity{InitialCommits: []string{baseIdentity}}, Mount: ".", DefaultBranch: "base-local"},
+		"child": {Clone: config.CloneSource{Remote: "origin", URL: child.remote}, Upstream: config.Upstream{Branch: "child-local", Remote: "origin", Merge: "refs/heads/child-published"}, Identity: config.RepositoryIdentity{InitialCommits: []string{child.identity}}, Parent: "base", Mount: "packages/shared", DefaultBranch: "child-local"},
+	}}
+	manifestBytes, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAndCommitCloneFiles(t, baseRepository.Path, map[string]string{"project.wtree.yml": string(manifestBytes)}, "portable manifest")
+	cloneGit(t, baseRepository.Path, "push", baseRemote, "HEAD:refs/heads/base-published")
+
+	destination, dataDir := filepath.Join(base, "logical-root"), filepath.Join(base, "data")
+	plan, err := NewClonePlanner().Plan(context.Background(), ClonePlanRequest{ManifestSource: filepath.Join(baseRepository.Path, "project.wtree.yml"), Destination: destination, CWD: base, DataDir: dataDir, WorktreeRoot: filepath.Join(base, "worktrees")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewCloneExecutor().Execute(context.Background(), plan, func(event transaction.Event) {
+		if event.Kind != transaction.ExecuteStarted || event.Step != "repository-child-clone" {
+			return
+		}
+		staging := findCloneStaging(t, plan)
+		packages := filepath.Join(staging, "packages")
+		if removeErr := os.RemoveAll(packages); removeErr != nil {
+			t.Fatal(removeErr)
+		}
+		if linkErr := os.Symlink(external, packages); linkErr != nil {
+			t.Fatal(linkErr)
+		}
+	})
+	if err == nil || !strings.Contains(err.Error(), "grouping directory") {
+		t.Errorf("callback grouping replacement execution error = %v", err)
+	}
+	assertCloneExecutionAbsent(t, plan)
+	contents, readErr := os.ReadFile(marker)
+	if readErr != nil || string(contents) != "external must remain untouched\n" {
+		t.Fatalf("external marker = %q, %v", contents, readErr)
+	}
+	if _, statErr := os.Lstat(filepath.Join(external, "shared")); !os.IsNotExist(statErr) {
+		t.Fatalf("callback caused an external checkout: %v", statErr)
 	}
 }
 
@@ -410,7 +621,7 @@ func TestCloneExecuteFailureAndCancellationRemoveOnlyOwnedStaging(t *testing.T) 
 }
 
 func TestCloneExecuteEveryInjectedBoundaryRollsBack(t *testing.T) {
-	steps := []string{"staging-create", "repository-root-clone", "repository-root-fetch", "repository-root-checkout", "repository-root-verify", "repository-api-parent-ignore", "repository-api-clone", "repository-api-fetch", "repository-api-checkout", "repository-api-verify", "local-config-write", "publication-lock", "destination-rename", "final-identity", "state-write", "registry-write"}
+	steps := []string{"staging-create", "repository-root-clone", "repository-root-fetch", "repository-root-checkout", "repository-root-verify", "repository-api-parent-ignore", "repository-api-grouping-backend", "repository-api-clone", "repository-api-fetch", "repository-api-checkout", "repository-api-verify", "local-config-write", "publication-lock", "destination-rename", "final-identity", "state-write", "registry-write"}
 	for _, timing := range []string{"before", "after"} {
 		for _, step := range steps {
 			t.Run(timing+"-"+step, func(t *testing.T) {
@@ -1215,7 +1426,7 @@ func TestCloneExecuteProgressIsExactOrderedAndHasNoFalseSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	steps := []string{"staging-create", "repository-root-clone", "repository-root-fetch", "repository-root-checkout", "repository-root-verify", "repository-api-parent-ignore", "repository-api-clone", "repository-api-fetch", "repository-api-checkout", "repository-api-verify", "local-config-write", "publication-lock", "destination-rename", "final-identity", "state-write", "registry-write"}
+	steps := []string{"staging-create", "repository-root-clone", "repository-root-fetch", "repository-root-checkout", "repository-root-verify", "repository-api-parent-ignore", "repository-api-grouping-backend", "repository-api-clone", "repository-api-fetch", "repository-api-checkout", "repository-api-verify", "local-config-write", "publication-lock", "destination-rename", "final-identity", "state-write", "registry-write"}
 	if len(events) != len(steps)*2 {
 		t.Fatalf("events = %#v", events)
 	}
@@ -1294,18 +1505,18 @@ func TestCloneExecuteRealEffectFailuresHaveExactlyOneFailedTerminalEvent(t *test
 
 type cloneExecutionGit struct {
 	gitadapter.Git
-	plan                                                                                                                                               ClonePlan
-	staleManifest, missingIgnore, wrongRoots, dirty, submodule, wrongBranch, wrongUpstream, cloneFailure, fetchFailure, checkoutFailure, verifyFailure bool
-	finalIdentityFailure                                                                                                                               bool
-	onClone                                                                                                                                            func()
-	actualHeads                                                                                                                                        map[string]string
-	ignoredCommits, trackedCommits                                                                                                                     []string
+	plan                                                                                                                                                                  ClonePlan
+	staleManifest, missingIgnore, missingBaseIgnore, wrongRoots, dirty, submodule, wrongBranch, wrongUpstream, cloneFailure, fetchFailure, checkoutFailure, verifyFailure bool
+	finalIdentityFailure                                                                                                                                                  bool
+	onClone                                                                                                                                                               func()
+	actualHeads                                                                                                                                                           map[string]string
+	ignoredCommits, trackedCommits                                                                                                                                        []string
 }
 
 func (git *cloneExecutionGit) repository(path string) ClonePlanRepository {
 	for index := len(git.plan.Repositories) - 1; index >= 0; index-- {
 		repository := git.plan.Repositories[index]
-		if repository.Parent != "" && strings.HasSuffix(filepath.Clean(path), filepath.FromSlash(repository.Mount)) {
+		if repository.Mount != "." && strings.HasSuffix(filepath.Clean(path), filepath.FromSlash(repository.Mount)) {
 			return repository
 		}
 	}
@@ -1332,8 +1543,11 @@ func (git *cloneExecutionGit) CheckoutTrackingBranch(_ context.Context, path, _ 
 	}
 	return git.Head(context.Background(), path)
 }
-func (git *cloneExecutionGit) IsIgnoredAt(_ context.Context, _ string, commit, _ string) (bool, error) {
+func (git *cloneExecutionGit) IsIgnoredAt(_ context.Context, _ string, commit, path string) (bool, error) {
 	git.ignoredCommits = append(git.ignoredCommits, commit)
+	if git.missingBaseIgnore && path == ".wtree.yml" {
+		return false, nil
+	}
 	return !git.missingIgnore, nil
 }
 func (git *cloneExecutionGit) Head(_ context.Context, path string) (string, error) {
@@ -1489,6 +1703,99 @@ func syntheticExecutableClonePlan(t *testing.T) ClonePlan {
 	data := clonePlanManifest(t, filepath.Join(base, "missing-root.git"), filepath.Join(base, "missing-api.git"))
 	source := writeClonePlanManifest(t, base, data)
 	return mustClonePlan(t, NewClonePlannerWith(ClonePlannerDependencies{RemoteFacts: newClonePlanRemote(filepath.Join(base, "missing-root.git"), filepath.Join(base, "missing-api.git"))}), ClonePlanRequest{ManifestSource: source, Destination: filepath.Join(base, "clone"), CWD: base, DataDir: filepath.Join(base, "data")})
+}
+
+func syntheticForestExecutableClonePlan(t *testing.T) ClonePlan {
+	t.Helper()
+	base := t.TempDir()
+	urls := map[string]string{"base": filepath.Join(base, "base.git"), "web": filepath.Join(base, "web.git"), "shared": filepath.Join(base, "shared.git"), "tool": filepath.Join(base, "tool.git")}
+	commits := map[string]string{"base": clonePlanRootCommit, "web": "1123456789abcdef0123456789abcdef01234567", "shared": clonePlanChildCommit, "tool": "3123456789abcdef0123456789abcdef01234567"}
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "forest-execution", Name: "forest-execution", BaseRepository: "base"}, Repositories: map[string]config.PortableRepository{
+		"base":   {Clone: config.CloneSource{Remote: "origin", URL: urls["base"]}, Upstream: config.Upstream{Branch: "base", Remote: "origin", Merge: "refs/heads/base"}, Identity: config.RepositoryIdentity{InitialCommits: []string{commits["base"]}}, Mount: "services/base", DefaultBranch: "base"},
+		"web":    {Clone: config.CloneSource{Remote: "origin", URL: urls["web"]}, Upstream: config.Upstream{Branch: "web", Remote: "origin", Merge: "refs/heads/web"}, Identity: config.RepositoryIdentity{InitialCommits: []string{commits["web"]}}, Mount: "web", DefaultBranch: "web"},
+		"shared": {Clone: config.CloneSource{Remote: "origin", URL: urls["shared"]}, Upstream: config.Upstream{Branch: "shared", Remote: "origin", Merge: "refs/heads/shared"}, Identity: config.RepositoryIdentity{InitialCommits: []string{commits["shared"]}}, Parent: "base", Mount: "packages/shared", DefaultBranch: "shared"},
+		"tool":   {Clone: config.CloneSource{Remote: "origin", URL: urls["tool"]}, Upstream: config.Upstream{Branch: "tool", Remote: "origin", Merge: "refs/heads/tool"}, Identity: config.RepositoryIdentity{InitialCommits: []string{commits["tool"]}}, Parent: "shared", Mount: "tools/tool", DefaultBranch: "tool"},
+	}}
+	data, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := &clonePlanRemote{commits: map[string]string{}, errors: map[string]error{}}
+	for id, url := range urls {
+		remote.commits[url+"\x00refs/heads/"+id] = commits[id]
+	}
+	return mustClonePlan(t, NewClonePlannerWith(ClonePlannerDependencies{RemoteFacts: remote}), ClonePlanRequest{ManifestSource: writeClonePlanManifest(t, base, data), Destination: filepath.Join(base, "logical-root"), CWD: base, DataDir: filepath.Join(base, "data")})
+}
+
+func TestCloneExecuteForestFailureBoundariesCleanOwnedLogicalRoot(t *testing.T) {
+	for _, step := range []string{"repository-base-clone", "repository-web-clone", "repository-tool-clone", "destination-rename", "state-write", "registry-write"} {
+		t.Run(step, func(t *testing.T) {
+			plan := syntheticForestExecutableClonePlan(t)
+			executor := NewCloneExecutorWith(CloneExecutorDependencies{Git: &cloneExecutionGit{plan: plan}, BeforeEffect: func(current string) error {
+				if current == step {
+					return errors.New("forest injected failure")
+				}
+				return nil
+			}})
+			if _, err := executor.Execute(context.Background(), plan, nil); err == nil {
+				t.Fatal("forest injected failure succeeded")
+			}
+			assertCloneExecutionAbsent(t, plan)
+		})
+	}
+}
+
+func TestCloneExecuteForestVerificationFailuresCleanOwnedLogicalRoot(t *testing.T) {
+	for name, mutate := range map[string]func(*cloneExecutionGit){
+		"base manifest": func(git *cloneExecutionGit) { git.staleManifest = true },
+		"child ignore":  func(git *cloneExecutionGit) { git.missingIgnore = true },
+		"base ignore":   func(git *cloneExecutionGit) { git.missingBaseIgnore = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			plan := syntheticForestExecutableClonePlan(t)
+			fake := &cloneExecutionGit{plan: plan}
+			mutate(fake)
+			if _, err := NewCloneExecutorWith(CloneExecutorDependencies{Git: fake}).Execute(context.Background(), plan, nil); err == nil {
+				t.Fatal("forest verification failure succeeded")
+			}
+			assertCloneExecutionAbsent(t, plan)
+		})
+	}
+}
+
+func TestCloneExecuteForestCancellationAndRollbackRecovery(t *testing.T) {
+	t.Run("cancellation before final checkout", func(t *testing.T) {
+		plan := syntheticForestExecutableClonePlan(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		executor := NewCloneExecutorWith(CloneExecutorDependencies{Git: &cloneExecutionGit{plan: plan}, BeforeEffect: func(step string) error {
+			if step == "repository-tool-clone" {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		}})
+		if _, err := executor.Execute(ctx, plan, nil); !errors.Is(err, context.Canceled) {
+			t.Fatalf("forest cancellation error = %v", err)
+		}
+		assertCloneExecutionAbsent(t, plan)
+	})
+	t.Run("published cleanup failure records recovery", func(t *testing.T) {
+		plan := syntheticForestExecutableClonePlan(t)
+		executor := NewCloneExecutorWith(CloneExecutorDependencies{Git: &cloneExecutionGit{plan: plan}, BeforeEffect: func(step string) error {
+			if step == "state-write" {
+				return errors.New("forest state failure")
+			}
+			return nil
+		}, RemoveAll: func(string) error { return errors.New("forest cleanup failure") }})
+		_, err := executor.Execute(context.Background(), plan, nil)
+		if !hasCloneErrorKind(err, ErrorRollbackIncomplete) {
+			t.Fatalf("forest cleanup recovery error = %v", err)
+		}
+		if _, statErr := os.Stat(filepath.Join(plan.DataDir, "projects", plan.Project.ID, "recovery", "default.json")); statErr != nil {
+			t.Fatalf("forest recovery record missing: %v", statErr)
+		}
+	})
 }
 
 func mustClonePlan(t *testing.T, planner *ClonePlanner, request ClonePlanRequest) ClonePlan {

@@ -67,9 +67,35 @@ wtree project list
 wtree status --project /path/to/project
 ```
 
-`--project` accepts either the project directory or its `.wtree.yml` path.
+`--project` accepts the base checkout, its `.wtree.yml`, or a registered
+logical/workspace root whose persisted state validates the complete forest.
+For a plain logical root, `.wtree.yml` is inside the designated base
+repository rather than at the logical root. You can also run inspection
+commands from any verified top-level or nested checkout.
 Use the duplicate-project procedure above if `project list` reports a stale
 registration; do not edit the registry file by hand.
+
+## Local configuration version 1 is rejected
+
+Local project configuration now requires schema version 2 with an explicit
+base repository, logical-root relationship, repository topology, and portable
+manifest metadata. A version 1 `.wtree.yml` is rejected with a message that
+reinitialization is required. It is not converted or rewritten in place.
+
+Preserve any local changes, then initialize the intended logical root again.
+When it contains more than one top-level repository, name the top-level base
+repository explicitly:
+
+```sh
+cd /path/to/logical-root
+wtree init --base-repository api --dry-run
+wtree init --base-repository api
+```
+
+Review the base-owned `.wtree.yml` and `project.wtree.yml` plus every Git
+parent's `.gitignore` change. `init` does not stage, commit, or push them.
+Global configuration, registry, workspace state and recovery records retain
+their existing version-1 formats; portable manifests remain version 2.
 
 ## Workspace checkout or metadata has drifted
 
@@ -80,9 +106,11 @@ wtree doctor <workspace>
 wtree doctor <workspace> --json
 ```
 
-`doctor` reports conditions such as missing checkouts, changed branches or
-HEADs, mount mismatches, duplicate or unknown nested repositories, and stale
-Git worktree registrations. It is read-only unless `--fix` is supplied.
+`doctor` reports the logical workspace root, designated base repository, and
+every declared repository in deterministic parent-first order. Conditions
+include missing checkouts, changed branches or HEADs, mount mismatches,
+duplicate or unknown repositories, and stale Git worktree registrations. It
+is read-only unless `--fix` is supplied.
 
 Only repairs explicitly listed by `doctor` are eligible for automatic repair.
 Preview them before applying:
@@ -131,16 +159,47 @@ reports it as `recovery-record`:
 
 ```sh
 wtree doctor <workspace>
+wtree doctor <workspace> --json
 ```
 
-Do not delete the recovery record just to unblock commands. Inspect the paths
-and completed or unreverted steps named in the error and recovery record,
-restore the repositories and workspace state to a consistent condition, and
-remove the record only after verifying that recovery is complete. Registry
-pruning and unregistering are intentionally blocked while unresolved recovery
-metadata exists.
+The original command fails immediately, so the leftover is not silent. The
+human error names the failed and unreverted steps; JSON preserves the same
+stable recovery evidence. Mutating operations are blocked while the recovery
+record remains, but read-only inspection stays available.
+
+Do not delete the recovery record just to unblock commands. Use the reported
+repository IDs and resolved paths to inspect every retained checkout before
+changing anything:
+
+```sh
+wtree status <workspace> --json
+wtree doctor <workspace> --json
+git -C /reported/checkout status --short --branch
+git -C /reported/checkout worktree list --porcelain
+```
+
+Then choose a safety-first repair based on what the record reports:
+
+- If the retained checkout contains user work, commit it, move it to a safe
+  location, or otherwise preserve it before attempting cleanup.
+- If it is the exact operation-created checkout and its Git identity, branch,
+  HEAD, and registration still match, remove it with the corresponding Git
+  repository's `git worktree remove` command.
+- Preserve any replacement, concurrent checkout, unrelated file, grouping
+  directory, or identity that cannot be proven to belong to the failed
+  operation. Reconcile the workspace state or registry only after the
+  filesystem and Git registrations agree.
+- Retry `wtree doctor <workspace>` after each repair. Remove recovery metadata
+  only after all retained effects have been accounted for and the workspace is
+  consistent. Registry pruning and unregistering remain blocked while
+  unresolved recovery metadata exists.
 
 During `create`, an automatic `.gitignore` update in a newly created worktree
 is safe for rollback. Any other tracked, staged, or untracked change is
 preserved instead, so the recovery record can be used to inspect and recover
 that worktree without discarding user data.
+
+Today `doctor` reports the evidence but does not generate a complete command
+script, and there is no `wtree recover` command. The staged proposal for those
+improvements is documented in the
+[actionable recovery idea](ideas/actionable-incomplete-rollback-recovery.md).

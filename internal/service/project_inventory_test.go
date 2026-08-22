@@ -28,7 +28,9 @@ func TestProjectInventoryEmptyHealthyAndNoMutation(t *testing.T) {
 	writeInventoryRegistry(t, data, map[string]store.RegistryProject{
 		"healthy": {Name: "healthy-name", ConfigPath: configPath, RepositoryIDs: map[string]string{"git-a": "root"}},
 	})
-	if err := store.WriteWorkspace(service.WorkspaceStatePath(data, "healthy", "default"), store.WorkspaceState{ID: "default", Name: "default", Path: filepath.Dir(configPath), Repositories: map[string]store.CheckoutState{}}); err != nil {
+	if err := store.WriteWorkspace(service.WorkspaceStatePath(data, "healthy", "default"), store.WorkspaceState{ID: "default", Name: "default", Path: filepath.Dir(configPath), Repositories: map[string]store.CheckoutState{
+		"root": {Branch: "main", Mount: ".", ResolvedPath: filepath.Dir(configPath), Head: "healthy-head"},
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	report, err = service.NewProjectInventoryService().Inventory(context.Background(), data)
@@ -185,6 +187,14 @@ func TestProjectInventoryFindingCodesAreIndependentlyReported(t *testing.T) {
 			}
 			writeInventoryRegistry(t, data, map[string]store.RegistryProject{"target": {ConfigPath: path}})
 		}},
+		{code: "missing-manifest", severity: "error", status: "error", prunable: true, related: []string{}, setup: func(t *testing.T, data string) {
+			writeValidDefaultState(t, data, "target")
+			path := writeInventoryConfig(t, data, "target", "target")
+			if err := os.Remove(filepath.Join(filepath.Dir(path), "project.wtree.yml")); err != nil {
+				t.Fatal(err)
+			}
+			writeInventoryRegistry(t, data, map[string]store.RegistryProject{"target": {ConfigPath: path}})
+		}},
 		{code: "config-id-mismatch", severity: "error", status: "error", prunable: true, related: []string{"other"}, setup: func(t *testing.T, data string) {
 			writeValidDefaultState(t, data, "target")
 			writeInventoryRegistry(t, data, map[string]store.RegistryProject{"target": {ConfigPath: writeInventoryConfig(t, data, "other", "other")}})
@@ -330,7 +340,14 @@ func TestProjectInventoryDiagnosesConfigAndStateFailuresAndCanonicalAliases(t *t
 func writeInventoryConfig(t *testing.T, data, id, name string) string {
 	t.Helper()
 	path := filepath.Join(data, "projects with spaces", id, ".wtree.yml")
-	if err := config.WriteProjectFile(path, config.ProjectConfig{Version: config.Version, Project: config.Project{ID: id, Name: name}, Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: "."}}}); err != nil {
+	if err := config.WriteProjectFile(path, config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{ID: id, Name: name, BaseRepository: "root"}, LogicalRoot: ".", Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: ".", DefaultBranch: "main"}}, Worktrees: config.Worktrees{}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: "/manifests/project.wtree.yml"}}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := config.MarshalPortableManifest(config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: id, Name: name, BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: "https://example.test/project.git"}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{"0123456789012345678901234567890123456789"}}, Mount: ".", DefaultBranch: "main"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(path), "project.wtree.yml"), manifest, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path

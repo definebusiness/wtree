@@ -4,6 +4,7 @@ Status: implemented
 Source idea: [Clone and synchronize a multi-repository project](../ideas/cloning-a-multi-repository-project.md)
 Implementation plan: [Portable manifest clone implementation plan](../plans/portable-manifest-clone.md)
 Current portable format: [Portable manifest v2 base-repository format](portable-manifest-v2-base-repository-format.md)
+Current topology extension: [Logical project root and repository forest](logical-project-root-base-repository.md)
 
 ## 1. Purpose and scope
 
@@ -49,8 +50,10 @@ a repository clone transport.
 
 The current strict portable schema is version 2. The
 [portable manifest v2 specification](portable-manifest-v2-base-repository-format.md)
-defines the format transition and its deliberately limited topology. Its
-schema is:
+defines the format transition; the later
+[logical-root forest specification](logical-project-root-base-repository.md)
+broadens the topology without changing the version or wire fields. Its
+root-Git-compatible subset is:
 
 ```yaml
 version: 2
@@ -80,11 +83,13 @@ unsupported versions, and validate the entire project before any mutation.
 Serialization must be deterministic: repository keys are written in lexical
 order and initial commit arrays are sorted.
 
-The repository graph must have exactly one root, contain no missing parents or
-cycles, and use safe unique repository IDs and parent-relative mounts.
-`project.base_repository` is required and names that sole root. The root mount
-is `.` and every child mount is relative to its immediate parent. Sibling
-repositories and a non-Git logical project root are not part of this format.
+The repository graph is a non-empty acyclic forest with safe unique IDs and
+mounts. `project.base_repository` is required and names exactly one top-level
+repository. Top-level mounts are logical-root-relative; child mounts are
+relative to their immediate parents. A top-level `mount: .` remains valid only
+as the sole top-level repository. Plain logical roots, sibling top-level trees,
+grouping directories, and base-owned metadata paths follow the logical-root
+forest specification.
 
 Each repository records exactly one clone remote and URL. The upstream remote
 must equal the clone remote. `upstream.branch` is the local default branch;
