@@ -3,6 +3,7 @@ package service_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"github.com/definebusiness/wtree/internal/domain"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
 	"github.com/definebusiness/wtree/internal/service"
+	"github.com/definebusiness/wtree/internal/store"
 	"github.com/definebusiness/wtree/internal/testutil"
 )
 
@@ -332,6 +334,430 @@ func TestStatusClassifiesGitFactFailure(t *testing.T) {
 	}
 }
 
+func TestStatusWithDataDirUsesTrackedManifestWithoutRemoteOrMutation(t *testing.T) {
+	project, root, _, data := createFixture(t)
+	// Initialisation intentionally leaves the portable manifest uncommitted.
+	// Commit it here so this test exercises the authoritative local-only path,
+	// rather than the compatibility fallback used by older projects.
+	root.Run(t, "add", "-f", ".wtree.yml", "project.wtree.yml")
+	root.Run(t, "commit", "-m", "track portable manifest")
+	workspace, err := service.RequireWorkspace(project, data, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := service.WorkspaceStatePath(data, project.ID, "default")
+	registryPath := filepath.Join(data, "registry.json")
+	stateBefore, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryBefore, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refsBefore := snapshotStatusWorktreeRefs(t, workspace)
+	indexesBefore := snapshotStatusWorktreeIndexes(t, workspace)
+	value, err := service.NewStatusServiceWith(gitadapter.NewAdapter(newRemoteRejectingGitWrapper(t))).StatusWithDataDir(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootStatus := statusFor(t, value, project.BaseRepository)
+	if !rootStatus.HeadMismatch || rootStatus.ExpectedHead == "" || rootStatus.Head == rootStatus.ExpectedHead {
+		t.Fatalf("root expected/actual HEAD facts = %#v", rootStatus)
+	}
+	foundHeadDrift := false
+	for _, drift := range value.Drift {
+		if drift.ID == project.BaseRepository && drift.Origin == "checkout" && drift.Check == "head" {
+			foundHeadDrift = true
+		}
+	}
+	if !foundHeadDrift {
+		t.Fatalf("status drift lacks expected HEAD mismatch: %#v", value.Drift)
+	}
+	stateAfter, stateErr := os.ReadFile(statePath)
+	registryAfter, registryErr := os.ReadFile(registryPath)
+	if stateErr != nil || registryErr != nil || !bytes.Equal(stateBefore, stateAfter) || !bytes.Equal(registryBefore, registryAfter) {
+		t.Fatalf("status changed durable state: state=%v registry=%v", stateErr, registryErr)
+	}
+	assertStatusWorktreeRefsUnchanged(t, refsBefore, workspace)
+	assertStatusWorktreeIndexesUnchanged(t, indexesBefore, workspace)
+}
+
+func TestStatusWithDataDirTrackedManifestFallbackStillReportsRecovery(t *testing.T) {
+	project, _, _, data := createFixture(t)
+	workspace, err := service.RequireWorkspace(project, data, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryPath := filepath.Join(data, "projects", project.ID, "recovery", "default.json")
+	if err := store.WriteRecovery(recoveryPath, store.RecoveryRecord{ProjectID: project.ID, WorkspaceID: "default", Operation: "update", FailedStep: "publish"}); err != nil {
+		t.Fatal(err)
+	}
+	value, err := service.NewStatusServiceWith(gitadapter.NewAdapter(newRemoteRejectingGitWrapper(t))).StatusWithDataDir(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(value.Drift) != 1 || value.Drift[0].Origin != "operation" || value.Drift[0].Check != "update-recovery-record" || value.Drift[0].Status != "incomplete-operation" {
+		t.Fatalf("fallback drift = %#v", value.Drift)
+	}
+}
+
+func TestStatusWithDataDirTrackedManifestProjectsAbsentCheckoutOnce(t *testing.T) {
+	project, root, backend, data := createFixture(t)
+	root.Run(t, "add", "-f", ".wtree.yml", "project.wtree.yml")
+	root.Run(t, "commit", "-m", "track portable manifest")
+	defaultStatePath := service.WorkspaceStatePath(data, project.ID, "default")
+	defaultStateBytes, err := os.ReadFile(defaultStatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultState, err := store.DecodeWorkspace(defaultStateBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := defaultState.Repositories[project.BaseRepository]
+	base.Head = runGitValue(t, root.Path, "rev-parse", "HEAD")
+	defaultState.Repositories[project.BaseRepository] = base
+	if err := store.WriteWorkspace(defaultStatePath, defaultState); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "workspace")
+	if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/absent", TargetPath: target, DataDir: data, Mounts: []service.MountOverride{{RepositoryID: "backend", Mount: "api"}}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := service.RequireWorkspace(project, data, "feature/absent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPath := filepath.Join(target, "api")
+	backend.Run(t, "worktree", "remove", "--force", childPath)
+	rootOnly := statusWorkspaceRepositories(workspace, project.BaseRepository)
+	refsBefore := snapshotStatusWorktreeRefs(t, rootOnly)
+	indexesBefore := snapshotStatusWorktreeIndexes(t, rootOnly)
+	value, err := service.NewStatusServiceWith(gitadapter.NewAdapter(newRemoteRejectingGitWrapper(t))).StatusWithDataDir(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := statusFor(t, value, "backend")
+	if !child.Missing || child.Status != "missing" || child.Upstream || child.ActualIdentity != "" {
+		t.Fatalf("absent repository status = %#v", child)
+	}
+	assertExactlyStatusDrift(t, value, "backend", "manifest", "checkout", "declared-absent")
+	assertStatusWorktreeRefsUnchanged(t, refsBefore, rootOnly)
+	assertStatusWorktreeIndexesUnchanged(t, indexesBefore, rootOnly)
+}
+
+func TestStatusWithDataDirTrackedManifestProjectsReplacementIdentityOnce(t *testing.T) {
+	project, root, backend, data := createFixture(t)
+	root.Run(t, "add", "-f", ".wtree.yml", "project.wtree.yml")
+	root.Run(t, "commit", "-m", "track portable manifest")
+	target := filepath.Join(t.TempDir(), "workspace")
+	if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/replacement", TargetPath: target, DataDir: data, Mounts: []service.MountOverride{{RepositoryID: "backend", Mount: "api"}}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := service.RequireWorkspace(project, data, "feature/replacement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPath := filepath.Join(target, "api")
+	backend.Run(t, "worktree", "remove", "--force", childPath)
+	replacement := testutil.NewPushedGitRepository(t)
+	replacement.CommitFile("replacement.txt", "replacement\n", "replacement")
+	if err := os.Rename(replacement.Path, childPath); err != nil {
+		t.Fatal(err)
+	}
+	replacementIdentity, err := gitadapter.NewAdapter("git").CommonGitDir(context.Background(), childPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootOnly := statusWorkspaceRepositories(workspace, project.BaseRepository)
+	refsBefore := snapshotStatusWorktreeRefs(t, rootOnly)
+	indexesBefore := snapshotStatusWorktreeIndexes(t, rootOnly)
+	value, err := service.NewStatusServiceWith(gitadapter.NewAdapter(newRemoteRejectingGitWrapper(t))).StatusWithDataDir(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := statusFor(t, value, "backend")
+	if !child.UnknownRepository || !child.IdentityMismatch || child.Status != "unknown-repository" || child.Upstream || child.ActualIdentity != replacementIdentity || child.ActualIdentity == child.ExpectedIdentity {
+		t.Fatalf("replacement repository status = %#v", child)
+	}
+	assertExactlyStatusDrift(t, value, "backend", "checkout", "identity", "mismatch")
+	assertStatusWorktreeRefsUnchanged(t, refsBefore, rootOnly)
+	assertStatusWorktreeIndexesUnchanged(t, indexesBefore, rootOnly)
+}
+
+func TestStatusWithDataDirKeepsDefaultIdentityDriftSeparateFromHealthySelectedWorkspace(t *testing.T) {
+	project, root, backend, data := createFixture(t)
+	root.Run(t, "add", "-f", ".wtree.yml", "project.wtree.yml")
+	root.Run(t, "commit", "-m", "track portable manifest")
+	defaultStatePath := service.WorkspaceStatePath(data, project.ID, "default")
+	defaultStateBytes, err := os.ReadFile(defaultStatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultState, err := store.DecodeWorkspace(defaultStateBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := defaultState.Repositories[project.BaseRepository]
+	base.Head = runGitValue(t, root.Path, "rev-parse", "HEAD")
+	defaultState.Repositories[project.BaseRepository] = base
+	if err := store.WriteWorkspace(defaultStatePath, defaultState); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "workspace")
+	if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/healthy", TargetPath: target, DataDir: data, Mounts: []service.MountOverride{{RepositoryID: "backend", Mount: "api"}}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := service.RequireWorkspace(project, data, "feature/healthy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultWorkspace, err := service.RequireWorkspace(project, data, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakeIdentity := filepath.Join(t.TempDir(), "replacement.git")
+	defaultBackendPath := backend.Path
+	refsBefore := snapshotStatusWorktreeRefs(t, workspace)
+	indexesBefore := snapshotStatusWorktreeIndexes(t, workspace)
+	defaultRefsBefore := snapshotStatusWorktreeRefs(t, defaultWorkspace)
+	defaultIndexesBefore := snapshotStatusWorktreeIndexes(t, defaultWorkspace)
+	localOnlyGit := defaultIdentityMismatchingGit{
+		Git:      gitadapter.NewAdapter(newRemoteRejectingGitWrapper(t)),
+		path:     defaultBackendPath,
+		identity: fakeIdentity,
+	}
+	value, err := service.NewStatusServiceWith(localOnlyGit).StatusWithDataDir(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := statusFor(t, value, "backend")
+	if child.ActualIdentity != child.ExpectedIdentity || child.IdentityMismatch || child.UnknownRepository || child.Status != "clean" || !child.Clean || child.Branch != child.ExpectedBranch {
+		t.Fatalf("healthy selected repository was contaminated by default drift: %#v", child)
+	}
+	if statusHasDrift(value, "checkout", "identity") {
+		t.Fatalf("selected identity drift was synthesized: %#v", value.Drift)
+	}
+	assertExactlyStatusDrift(t, value, "backend", "default-checkout", "identity", "mismatch")
+	if len(value.Drift) != 1 {
+		t.Fatalf("default-only drift was not canonical and ParentFirst: %#v", value.Drift)
+	}
+	assertStatusWorktreeRefsUnchanged(t, refsBefore, workspace)
+	assertStatusWorktreeIndexesUnchanged(t, indexesBefore, workspace)
+	assertStatusWorktreeRefsUnchanged(t, defaultRefsBefore, defaultWorkspace)
+	assertStatusWorktreeIndexesUnchanged(t, defaultIndexesBefore, defaultWorkspace)
+}
+
+func TestStatusWithDataDirProjectsTrackedLocalAuthorityAndOperationEvidence(t *testing.T) {
+	project, root, _, data := createFixture(t)
+	root.Run(t, "add", "-f", ".wtree.yml", "project.wtree.yml")
+	root.Run(t, "commit", "-m", "track portable manifest")
+	workspace, err := service.RequireWorkspace(project, data, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryPath := filepath.Join(data, "registry.json")
+	defaultPath := service.WorkspaceStatePath(data, project.ID, "default")
+	configPath := project.ConfigPath
+	registry, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := os.ReadFile(defaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateValue, err := store.DecodeWorkspace(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := stateValue.Repositories[project.BaseRepository]
+	base.Head = runGitValue(t, root.Path, "rev-parse", "HEAD")
+	stateValue.Repositories[project.BaseRepository] = base
+	if err := store.WriteWorkspace(defaultPath, stateValue); err != nil {
+		t.Fatal(err)
+	}
+	state, err = os.ReadFile(defaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err = service.RequireWorkspace(project, data, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciliationPath := filepath.Join(data, "projects", project.ID, "reconciliation.json")
+	reconciliation, err := service.EncodeUpdateReconciliation([]service.UpdateRetainedFact{{RepositoryID: "retained", Path: filepath.Join(data, "retained"), CommonGitDir: filepath.Join(data, "retained.git")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(reconciliationPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reconciliationPath, reconciliation, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteRecovery(filepath.Join(data, "projects", project.ID, "recovery", "default.json"), store.RecoveryRecord{ProjectID: project.ID, WorkspaceID: "default", Operation: "update", FailedStep: "publish"}); err != nil {
+		t.Fatal(err)
+	}
+	writeStatusActiveJournal(t, data, project.ID)
+	assertCheck := func(want string) {
+		t.Helper()
+		value, statusErr := service.NewStatusServiceWith(gitadapter.NewAdapter(newRemoteRejectingGitWrapper(t))).StatusWithDataDir(context.Background(), project, workspace, data)
+		if statusErr != nil {
+			t.Fatalf("status %s: %v", want, statusErr)
+		}
+		if !statusHasDrift(value, "authority", want) || !statusHasDrift(value, "retained", "retained-unmanaged") || !statusHasDrift(value, "operation", "update-in-progress") || !statusHasDrift(value, "operation", "update-recovery-record") {
+			t.Fatalf("status %s did not preserve independent retained/recovery/update evidence: %#v", want, value.Drift)
+		}
+	}
+	value, err := service.NewStatusServiceWith(gitadapter.NewAdapter(newRemoteRejectingGitWrapper(t))).StatusWithDataDir(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !statusHasDrift(value, "retained", "retained-unmanaged") || !statusHasDrift(value, "operation", "update-in-progress") || !statusHasDrift(value, "operation", "update-recovery-record") {
+		t.Fatalf("tracked status drift lacks retained/recovery/update evidence: %#v", value.Drift)
+	}
+	if err := os.WriteFile(registryPath, []byte("not json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertCheck("registry-generation")
+	if err := os.WriteFile(registryPath, registry, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(defaultPath, []byte("not json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertCheck("default-state")
+	if err := os.WriteFile(defaultPath, state, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("not yaml\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertCheck("local-config")
+	if err := os.WriteFile(configPath, configuration, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	badState := filepath.Join(filepath.Dir(defaultPath), "unexpected.json")
+	if err := os.WriteFile(badState, []byte("not json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The shared collector reports an invalid extra state generation through
+	// the default-state authority before it can safely decode a workspace;
+	// independently inventorying the durable operation evidence remains safe.
+	assertCheck("default-state")
+}
+
+func writeStatusActiveJournal(t *testing.T, dataDir, projectID string) {
+	t.Helper()
+	const digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	path, err := service.UpdateJournalPath(dataDir, projectID, "update-0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal := service.UpdateJournal{Version: service.UpdateJournalVersion, OperationID: "update-0123456789abcdef01234567", ProjectID: projectID, PlanDigest: digest, Generations: service.UpdatePlanGenerations{CurrentManifestSHA256: digest, CandidateManifestSHA256: digest, LocalConfigSHA256: digest, RegistrySHA256: digest, DefaultStateSHA256: digest}, RollbackState: "active"}
+	encoded, err := json.MarshalIndent(journal, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(encoded, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func statusHasDrift(value service.WorkspaceStatus, origin, check string) bool {
+	for _, drift := range value.Drift {
+		if drift.Origin == origin && drift.Check == check {
+			return true
+		}
+	}
+	return false
+}
+
+func assertExactlyStatusDrift(t *testing.T, value service.WorkspaceStatus, id, origin, check, status string) {
+	t.Helper()
+	count := 0
+	for _, drift := range value.Drift {
+		if drift.ID == id && drift.Origin == origin && drift.Check == check && drift.Status == status {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("status drift %s/%s/%s/%s count=%d all=%#v", id, origin, check, status, count, value.Drift)
+	}
+}
+
+func statusWorkspaceRepositories(workspace domain.Workspace, ids ...string) domain.Workspace {
+	allowed := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		allowed[id] = true
+	}
+	result := workspace
+	result.Checkouts = nil
+	for _, checkout := range workspace.Checkouts {
+		if allowed[checkout.RepositoryID] {
+			result.Checkouts = append(result.Checkouts, checkout)
+		}
+	}
+	return result
+}
+
+func TestWorkspaceStatusLegacyJSONBytesRemainIdenticalWithoutAdditiveFacts(t *testing.T) {
+	type legacyRepository struct {
+		ID                string `json:"id"`
+		ParentID          string `json:"parentId,omitempty"`
+		Branch            string `json:"branch,omitempty"`
+		ExpectedBranch    string `json:"expectedBranch,omitempty"`
+		Head              string `json:"head,omitempty"`
+		Mount             string `json:"mount,omitempty"`
+		Path              string `json:"path,omitempty"`
+		ResolvedPath      string `json:"resolvedPath,omitempty"`
+		Clean             bool   `json:"clean"`
+		Staged            bool   `json:"staged,omitempty"`
+		Modified          bool   `json:"modified,omitempty"`
+		Untracked         bool   `json:"untracked,omitempty"`
+		Missing           bool   `json:"missing,omitempty"`
+		BranchMismatch    bool   `json:"branchMismatch,omitempty"`
+		MountMismatch     bool   `json:"mountMismatch,omitempty"`
+		Detached          bool   `json:"detached,omitempty"`
+		UnknownRepository bool   `json:"unknownRepository,omitempty"`
+		StaleState        bool   `json:"staleState,omitempty"`
+		Ahead             int    `json:"ahead,omitempty"`
+		Behind            int    `json:"behind,omitempty"`
+		Upstream          bool   `json:"upstream,omitempty"`
+		Status            string `json:"status"`
+	}
+	type legacyWorkspace struct {
+		Workspace            string             `json:"workspace"`
+		LogicalRoot          string             `json:"logicalRoot,omitempty"`
+		BaseRepository       string             `json:"baseRepository,omitempty"`
+		Partial              bool               `json:"partial,omitempty"`
+		MissingRepositoryIDs []string           `json:"missingRepositoryIds,omitempty"`
+		Repositories         []legacyRepository `json:"repositories"`
+	}
+	legacy := legacyWorkspace{Workspace: "default", LogicalRoot: "/tree", BaseRepository: "root", Partial: true, MissingRepositoryIDs: []string{"missing"}, Repositories: []legacyRepository{{ID: "root", ParentID: "parent", Branch: "main", ExpectedBranch: "main", Head: "0123", Mount: ".", Path: "/tree", ResolvedPath: "/tree", Clean: true, Staged: true, Modified: true, Untracked: true, Missing: true, BranchMismatch: true, MountMismatch: true, Detached: true, UnknownRepository: true, StaleState: true, Ahead: 1, Behind: 2, Upstream: true, Status: "unknown-repository"}}}
+	current := service.WorkspaceStatus{Workspace: legacy.Workspace, LogicalRoot: legacy.LogicalRoot, BaseRepository: legacy.BaseRepository, Partial: legacy.Partial, MissingRepositoryIDs: legacy.MissingRepositoryIDs, Repositories: []service.RepositoryStatus{{ID: "root", ParentID: "parent", Branch: "main", ExpectedBranch: "main", Head: "0123", Mount: ".", Path: "/tree", ResolvedPath: "/tree", Clean: true, Staged: true, Modified: true, Untracked: true, Missing: true, BranchMismatch: true, MountMismatch: true, Detached: true, UnknownRepository: true, StaleState: true, Ahead: 1, Behind: 2, Upstream: true, Status: "unknown-repository"}}}
+	want, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := json.Marshal(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("legacy JSON changed:\n got %s\nwant %s", got, want)
+	}
+}
+
 type failingCurrentBranchGit struct{ gitadapter.Git }
 
 func (failingCurrentBranchGit) CurrentBranch(context.Context, string) (string, bool, error) {
@@ -422,6 +848,21 @@ exec git "$@"
 		t.Fatal(err)
 	}
 	return wrapper
+}
+
+type defaultIdentityMismatchingGit struct {
+	gitadapter.Git
+	path     string
+	identity string
+}
+
+func (git defaultIdentityMismatchingGit) CommonGitDir(ctx context.Context, repository string) (string, error) {
+	observed, observedErr := filepath.EvalSymlinks(repository)
+	want, wantErr := filepath.EvalSymlinks(git.path)
+	if observedErr == nil && wantErr == nil && filepath.Clean(observed) == filepath.Clean(want) {
+		return git.identity, nil
+	}
+	return git.Git.CommonGitDir(ctx, repository)
 }
 
 func TestStatusRemoteRejectingGitWrapperRejectsRemoteArgumentsAnywhere(t *testing.T) {

@@ -11,6 +11,15 @@ wtree doctor <workspace>
 Add `--json` when structured output is easier to inspect. For commands that
 change state, use `--dry-run` first when it is supported.
 
+## Update stopped with an active journal
+
+An interrupted `wtree update` deliberately leaves its journal and private
+backups in place rather than guessing which files to remove. Read-only
+commands such as `status` and `doctor` remain safe to run; mutating resolver
+operations refuse to proceed while that journal is present. Do not delete the
+journal or edit the registry/state files manually. Record the exact error and
+use the documented recovery path once it is available for the operation.
+
 ## Duplicate project after reinitializing
 
 This usually happens when a project was initialized, its local `.wtree.yml`
@@ -124,6 +133,27 @@ Currently, safe repairs are limited to verified checkout mount/path metadata
 and Git registrations for worktrees whose directories are missing. Branch or
 HEAD mismatches, unknown or duplicate checkouts, stale workspace state, and
 recovery records require manual investigation.
+
+## Push readiness is blocked
+
+`wtree push` only reports whether a complete workspace is already ready for
+manual publication. It never invokes `git push`, fetches, or creates refs or
+tags. Resolve the reported dirty checkout, missing upstream, divergence,
+identity, metadata, or remote-availability condition, then publish each
+repository manually. Coordinated publication is a future workflow.
+
+`doctor` also separates four similarly named situations. A
+`retained-unmanaged-repository` is a checkout deliberately retained after a
+successful manifest removal; preserve it or reconcile it manually, but do not
+treat it as an unknown checkout. A `manifest-repository-unmanaged` or another
+manifest/identity/branch/mount finding is ordinary drift: compare the current
+manifest, workspace state, and checkout before changing anything. An
+`update-in-progress` finding means an update journal is still present, so
+read-only diagnosis is safe but repair and other mutations refuse to run. An
+`update-recovery-record` or existing `recovery-record` identifies actionable
+incomplete rollback evidence; follow the recovery guidance below and retain
+the record until every owned effect is accounted for. None of these findings
+is an automatic `doctor --fix` repair.
 
 ## Remove or delete is blocked by local changes
 

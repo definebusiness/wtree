@@ -50,6 +50,17 @@ type Git interface {
 	Clone(context.Context, string, string, string) error
 	FetchTrackingBranch(context.Context, string, string, string) error
 	CheckoutTrackingBranch(context.Context, string, string, string, string) (string, error)
+	ObserveConfiguredRef(context.Context, string, string, string) (ConfiguredRefObservation, error)
+	// FetchConfiguredRef may return an ownership-valid receipt together with an
+	// error when Git updated the selected tracking ref before failing or the
+	// caller's cancellation became observable. Callers must consume that
+	// receipt before handling the error.
+	FetchConfiguredRef(context.Context, string, string, string) (ConfiguredRefFetch, error)
+	// RestoreConfiguredRef reverses only the remote-tracking generation created
+	// by FetchConfiguredRef. It never contacts the remote or consults HEAD.
+	RestoreConfiguredRef(context.Context, string, ConfiguredRefFetch) error
+	FastForward(context.Context, string, string, string, string) (FastForwardReceipt, error)
+	RestoreFastForward(context.Context, string, FastForwardReceipt) error
 }
 
 // Adapter invokes Git only through locale-neutral, non-interactive subprocesses.
@@ -230,8 +241,6 @@ func (a *Adapter) IsIgnoredAt(ctx context.Context, repository, ref, path string)
 		}
 	}
 
-	// A trailing slash makes check-ignore evaluate the mount as a directory,
-	// including the common anchored rule /mount/ before the directory exists.
 	mount += "/"
 	output, err := a.runFact(ctx, repository, "--work-tree="+worktree, "check-ignore", "-v", "--no-index", "--", mount)
 	if err != nil {
@@ -451,7 +460,11 @@ func (a *Adapter) runFactInput(ctx context.Context, repository string, input []b
 }
 
 func (a *Adapter) factEnvironment() []string {
-	return append(append([]string(nil), a.env...), "GIT_OPTIONAL_LOCKS=0")
+	// Facts must not acquire optional index locks or execute a repository's
+	// configured fsmonitor hook. The latter is executable repository-local
+	// configuration, not an observation; overriding it in the child process
+	// preserves status semantics without writing or weakening local config.
+	return append(append([]string(nil), a.env...), "GIT_OPTIONAL_LOCKS=0", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.fsmonitor", "GIT_CONFIG_VALUE_0=false")
 }
 
 func (a *Adapter) runWithEnvironment(ctx context.Context, repository string, environment []string, args ...string) ([]byte, error) {

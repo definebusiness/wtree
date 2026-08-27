@@ -67,6 +67,194 @@ fetch_fixture_branch() {
 	GIT_TERMINAL_PROMPT=0 git -C "$checkout" -c core.hooksPath=/dev/null fetch --no-tags --no-recurse-submodules -- origin "+refs/heads/$branch:$tracking_ref" >/dev/null
 }
 
+fixture_git() {
+	GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
+		git -c core.hooksPath=/dev/null "$@"
+}
+
+fixture_publisher() {
+	origin=$1
+	publisher=$2
+	fixture_git clone -q "$origin" "$publisher"
+	fixture_git -C "$publisher" config user.name "Wtree Tutorial"
+	fixture_git -C "$publisher" config user.email "tutorial@wtree.invalid"
+}
+
+fixture_tracking_ref() {
+	checkout=$1
+	branch=$2
+	fixture_git -C "$checkout" fetch --no-tags --no-recurse-submodules -- origin "+refs/heads/$branch:refs/remotes/origin/$branch" >/dev/null
+}
+
+snapshot_composition_authority() {
+	snapshot=$1
+	: > "$snapshot"
+	for repository in root backend frontend; do
+		case "$repository" in
+			root) checkout=$project ;;
+			*) checkout=$project/$repository ;;
+		esac
+		printf '[checkout %s]\n' "$repository" >> "$snapshot"
+		fixture_git -C "$checkout" rev-parse HEAD >> "$snapshot"
+		fixture_git -C "$checkout" show-ref --head >> "$snapshot"
+		fixture_git -C "$checkout" status --porcelain=v1 >> "$snapshot"
+		fixture_git -C "$checkout" write-tree >> "$snapshot"
+		fixture_git -C "$checkout" config --list --show-origin | sort >> "$snapshot"
+		index=$(fixture_git -C "$checkout" rev-parse --git-path index)
+		case "$index" in
+			/*) ;;
+			*) index=$checkout/$index ;;
+		esac
+		if [ -f "$index" ]; then
+			printf '[index present]\n' >> "$snapshot"
+			cat "$index" >> "$snapshot"
+		else
+			printf '[index absent]\n' >> "$snapshot"
+		fi
+		fetch_head=$(fixture_git -C "$checkout" rev-parse --git-path FETCH_HEAD)
+		case "$fetch_head" in
+			/*) ;;
+			*) fetch_head=$checkout/$fetch_head ;;
+		esac
+		if [ -f "$fetch_head" ]; then
+			cat "$fetch_head" >> "$snapshot"
+		fi
+	done
+	for origin in acme-shop java-backend web-frontend; do
+		printf '[origin %s]\n' "$origin" >> "$snapshot"
+		fixture_git -C "$origins/$origin.git" show-ref --head >> "$snapshot"
+	done
+}
+
+assert_same_composition_authority() {
+	before=$1
+	after=$2
+	if ! cmp -s "$before" "$after"; then
+		diff -u "$before" "$after" >&2 || true
+		fail "composition authority changed unexpectedly"
+	fi
+}
+
+json_repository_objects() {
+	json_file=$1
+	awk '
+		{
+			marker = "\"repositories\":["
+			start = index($0, marker)
+			if (start == 0) exit 2
+			value = substr($0, start + length(marker))
+			depth = 0
+			quoted = 0
+			escaped = 0
+			object = ""
+			for (position = 1; position <= length(value); position++) {
+				character = substr(value, position, 1)
+				if (depth > 0) object = object character
+				if (quoted) {
+					if (escaped) escaped = 0
+					else if (character == "\\") escaped = 1
+					else if (character == "\"") quoted = 0
+					continue
+				}
+				if (character == "\"") {
+					quoted = 1
+					continue
+				}
+				if (character == "{") {
+					if (depth == 0) object = character
+					depth++
+					continue
+				}
+				if (character == "}") {
+					depth--
+					if (depth == 0) print object
+					continue
+				}
+				if (depth == 0 && character == "]") exit
+			}
+			if (depth != 0 || quoted) exit 3
+		}
+	' "$json_file"
+}
+
+json_repository_object() {
+	json_file=$1
+	want_id=$2
+	object=$(json_repository_objects "$json_file" | awk -v want_id="$want_id" '
+		index($0, "\"id\":\"" want_id "\"") {
+			matches++
+			result = $0
+		}
+		END { if (matches != 1) exit 1; print result }
+	') || fail "JSON did not contain exactly one repository object for $want_id"
+	printf '%s\n' "$object"
+}
+
+assert_json_ids() {
+	json_file=$1
+	shift
+	want=$(printf '%s ' "$@" | sed 's/ $//')
+	got=$(json_repository_objects "$json_file" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | tr '\n' ' ' | sed 's/ $//')
+	[ "$got" = "$want" ] || fail "JSON repository IDs = '$got', want '$want'"
+}
+
+assert_json_repository_contains() {
+	json_file=$1
+	repository_id=$2
+	needle=$3
+	object=$(json_repository_object "$json_file" "$repository_id")
+	case "$object" in
+		*"$needle"*) ;;
+		*) fail "JSON repository $repository_id did not contain $needle" ;;
+	esac
+}
+
+assert_json_repository_absent() {
+	json_file=$1
+	repository_id=$2
+	needle=$3
+	object=$(json_repository_object "$json_file" "$repository_id")
+	case "$object" in
+		*"$needle"*) fail "JSON repository $repository_id unexpectedly contained $needle" ;;
+		*) ;;
+	esac
+}
+
+assert_doctor_known_rows() {
+	json_file=$1
+	assert_json_ids "$json_file" root backend frontend
+	assert_json_repository_contains "$json_file" root '"mount":"."'
+	assert_json_repository_contains "$json_file" root '"status":"known"'
+	assert_json_repository_contains "$json_file" backend '"parentId":"root"'
+	assert_json_repository_contains "$json_file" backend '"mount":"backend"'
+	assert_json_repository_contains "$json_file" backend '"status":"known"'
+	assert_json_repository_contains "$json_file" frontend '"parentId":"root"'
+	assert_json_repository_contains "$json_file" frontend '"mount":"frontend"'
+	assert_json_repository_contains "$json_file" frontend '"status":"known"'
+}
+
+assert_status_current_row() {
+	json_file=$1
+	repository_id=$2
+	mount=$3
+	assert_json_repository_contains "$json_file" "$repository_id" "\"mount\":\"$mount\""
+	assert_json_repository_contains "$json_file" "$repository_id" '"clean":true'
+	assert_json_repository_contains "$json_file" "$repository_id" '"upstream":true'
+	assert_json_repository_contains "$json_file" "$repository_id" '"status":"clean"'
+	assert_json_repository_absent "$json_file" "$repository_id" '"ahead":'
+	assert_json_repository_absent "$json_file" "$repository_id" '"behind":'
+}
+
+assert_status_current_rows() {
+	json_file=$1
+	assert_json_ids "$json_file" root backend frontend
+	assert_status_current_row "$json_file" root .
+	assert_json_repository_contains "$json_file" backend '"parentId":"root"'
+	assert_status_current_row "$json_file" backend backend
+	assert_json_repository_contains "$json_file" frontend '"parentId":"root"'
+	assert_status_current_row "$json_file" frontend frontend
+}
+
 export WTREE_DATA_HOME=$test_root/wtree-data
 mkdir -p "$test_root/bin"
 
@@ -78,7 +266,7 @@ step "exercise terminal help and version commands"
 run_quiet "$wtree" --version
 run_quiet "$wtree" --help
 run_quiet "$wtree" --how-to
-for command in project init clone config create checkout import list status path repo remove delete doctor; do
+for command in project init clone config create checkout import list status path repo remove delete doctor update exec fetch push; do
 	run_quiet "$wtree" "$command" --help
 done
 
@@ -114,6 +302,7 @@ step "clone the portable three-repository project"
 manifest=$test_root/consumer/project.wtree.yml
 project=$test_root/consumer/acme-shop
 worktree_root=$test_root/consumer/worktrees
+origins=$test_root/consumer/origins
 run_json "$wtree" clone "$manifest" "$project" --worktree-root "$worktree_root" --dry-run --json
 [ ! -e "$project" ] || fail "clone dry-run created its destination"
 run_quiet "$wtree" clone "$manifest" "$project" --worktree-root "$worktree_root" --verbose
@@ -135,12 +324,101 @@ run_quiet "$wtree" list
 run_json "$wtree" list --json
 run_quiet "$wtree" status
 run_json "$wtree" status default --json
+assert_status_current_rows "$test_root/last.stdout"
+run_json "$wtree" doctor --json
+assert_doctor_known_rows "$test_root/last.stdout"
 run_quiet "$wtree" path default
 run_quiet "$wtree" repo path backend
 run_json "$wtree" repo get frontend --json
 cd "$project/backend"
 run_quiet "$wtree" status
 cd "$project"
+
+step "exercise the default composition update, exec, fetch, and push loop"
+root_head_before=$(fixture_git -C "$project" rev-parse HEAD)
+backend_head_before=$(fixture_git -C "$project/backend" rev-parse HEAD)
+frontend_head_before=$(fixture_git -C "$project/frontend" rev-parse HEAD)
+fixture_publisher "$origins/acme-shop.git" "$test_root/root-publisher"
+printf 'Remote root update for the all-commands tutorial.\n' > "$test_root/root-publisher/tutorial-update.txt"
+fixture_git -C "$test_root/root-publisher" add tutorial-update.txt
+fixture_git -C "$test_root/root-publisher" commit -q -m "Advance root for tutorial update"
+fixture_git -C "$test_root/root-publisher" push -q origin main
+root_remote_head=$(fixture_git -C "$test_root/root-publisher" rev-parse HEAD)
+# update preflight proves ancestry from local configured-ref facts. Refresh only
+# the declared root tracking ref before taking the dry-run authority snapshot.
+fixture_tracking_ref "$project" main
+snapshot_composition_authority "$test_root/update-dry.before"
+run_json "$wtree" update --dry-run --json
+assert_json_ids "$test_root/last.stdout" root backend frontend
+snapshot_composition_authority "$test_root/update-dry.after"
+assert_same_composition_authority "$test_root/update-dry.before" "$test_root/update-dry.after"
+run_json "$wtree" update --json
+[ "$(fixture_git -C "$project" rev-parse HEAD)" = "$root_remote_head" ] || fail "update did not advance root to origin/main"
+[ "$(fixture_git -C "$project/backend" rev-parse HEAD)" = "$backend_head_before" ] || fail "update changed backend unexpectedly"
+[ "$(fixture_git -C "$project/frontend" rev-parse HEAD)" = "$frontend_head_before" ] || fail "update changed frontend unexpectedly"
+run_json "$wtree" doctor --json
+assert_doctor_known_rows "$test_root/last.stdout"
+run_json "$wtree" status --json
+assert_status_current_rows "$test_root/last.stdout"
+run_json "$wtree" exec --json -- git rev-parse --is-inside-work-tree
+assert_json_ids "$test_root/last.stdout" root backend frontend
+for repository in root backend frontend; do
+	assert_json_repository_contains "$test_root/last.stdout" "$repository" '"status":"completed"'
+	assert_json_repository_contains "$test_root/last.stdout" "$repository" '"stdout":"true\n"'
+done
+snapshot_composition_authority "$test_root/push.before"
+run_json "$wtree" push --json
+assert_json_ids "$test_root/last.stdout" root backend frontend
+for repository in root backend frontend; do
+	assert_json_repository_contains "$test_root/last.stdout" "$repository" '"status":"ready"'
+done
+snapshot_composition_authority "$test_root/push.after"
+assert_same_composition_authority "$test_root/push.before" "$test_root/push.after"
+
+fixture_publisher "$origins/java-backend.git" "$test_root/backend-publisher"
+printf 'Remote backend update for the all-commands tutorial.\n' > "$test_root/backend-publisher/tutorial-fetch.txt"
+fixture_git -C "$test_root/backend-publisher" add tutorial-fetch.txt
+fixture_git -C "$test_root/backend-publisher" commit -q -m "Advance backend for tutorial fetch"
+fixture_git -C "$test_root/backend-publisher" push -q origin main
+backend_remote_head=$(fixture_git -C "$test_root/backend-publisher" rev-parse HEAD)
+backend_local_before=$(fixture_git -C "$project/backend" rev-parse HEAD)
+backend_tracking_before=$(fixture_git -C "$project/backend" rev-parse refs/remotes/origin/main)
+root_tracking_before=$(fixture_git -C "$project" rev-parse refs/remotes/origin/main)
+frontend_tracking_before=$(fixture_git -C "$project/frontend" rev-parse refs/remotes/origin/main)
+snapshot_composition_authority "$test_root/fetch-dry.before"
+run_json "$wtree" fetch --dry-run --json
+assert_json_ids "$test_root/last.stdout" root backend frontend
+snapshot_composition_authority "$test_root/fetch-dry.after"
+assert_same_composition_authority "$test_root/fetch-dry.before" "$test_root/fetch-dry.after"
+run_json "$wtree" fetch --json
+assert_json_ids "$test_root/last.stdout" root backend frontend
+[ "$(fixture_git -C "$project/backend" rev-parse HEAD)" = "$backend_local_before" ] || fail "fetch moved backend HEAD"
+[ "$(fixture_git -C "$project/backend" rev-parse refs/remotes/origin/main)" = "$backend_remote_head" ] || fail "fetch did not refresh backend origin/main"
+[ "$backend_tracking_before" != "$backend_remote_head" ] || fail "backend publisher did not advance origin/main"
+[ "$(fixture_git -C "$project" rev-parse refs/remotes/origin/main)" = "$root_tracking_before" ] || fail "fetch changed root origin/main unexpectedly"
+[ "$(fixture_git -C "$project/frontend" rev-parse refs/remotes/origin/main)" = "$frontend_tracking_before" ] || fail "fetch changed frontend origin/main unexpectedly"
+run_json "$wtree" status --json
+assert_json_ids "$test_root/last.stdout" root backend frontend
+assert_status_current_row "$test_root/last.stdout" root .
+assert_json_repository_contains "$test_root/last.stdout" backend '"parentId":"root"'
+assert_json_repository_contains "$test_root/last.stdout" backend '"mount":"backend"'
+assert_json_repository_contains "$test_root/last.stdout" backend '"clean":true'
+assert_json_repository_contains "$test_root/last.stdout" backend '"upstream":true'
+assert_json_repository_contains "$test_root/last.stdout" backend '"status":"clean"'
+assert_json_repository_contains "$test_root/last.stdout" backend '"behind":1'
+assert_json_repository_absent "$test_root/last.stdout" backend '"ahead":'
+assert_json_repository_contains "$test_root/last.stdout" frontend '"parentId":"root"'
+assert_status_current_row "$test_root/last.stdout" frontend frontend
+run_json "$wtree" update --json
+[ "$(fixture_git -C "$project/backend" rev-parse HEAD)" = "$backend_remote_head" ] || fail "update did not consume backend origin/main"
+for checkout in "$project" "$project/backend" "$project/frontend"; do
+	[ -z "$(fixture_git -C "$checkout" status --porcelain)" ] || fail "update left checkout dirty: $checkout"
+	[ "$(fixture_git -C "$checkout" rev-parse HEAD)" = "$(fixture_git -C "$checkout" rev-parse refs/remotes/origin/main)" ] || fail "update left checkout behind: $checkout"
+done
+run_json "$wtree" status --json
+assert_status_current_rows "$test_root/last.stdout"
+run_json "$wtree" doctor --json
+assert_doctor_known_rows "$test_root/last.stdout"
 
 step "exercise checkout success and missing-branch preflight"
 expect_failure 'does not exist' "$wtree" checkout feature/customer-search --dry-run

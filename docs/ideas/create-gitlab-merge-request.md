@@ -1,0 +1,2 @@
+Create a gitlab merge request for all nested repos and add the links to the merge request
+of the parent repo using git: git push -u origin HEAD -o mr.create -o mr.target="main" -o mr.title="Mein MR Titel"

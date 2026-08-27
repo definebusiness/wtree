@@ -16,7 +16,7 @@ func newStatusCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 		Use:   "status [workspace]",
 		Short: "show workspace checkout and upstream status",
 		Long: "Inspect every declared forest checkout in deterministic parent-first order, including working-tree and structural status alongside upstream drift. " +
-			"UPSTREAM comparisons use last-fetched local upstream facts; status does not fetch or contact remotes.",
+			"UPSTREAM comparisons use last-fetched local upstream facts. When an authoritative locally tracked manifest is available, status also reports local manifest/state/disk drift; it does not fetch or contact remotes.",
 		Args: maximumOneArgument,
 		RunE: func(command *cobra.Command, arguments []string) error {
 			if dataDir == "" {
@@ -37,12 +37,15 @@ func newStatusCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 					return err
 				}
 			}
-			value, err := service.NewStatusService().Status(command.Context(), resolution.Project, workspace)
+			value, err := service.NewStatusService().StatusWithDataDir(command.Context(), resolution.Project, workspace, dataDir)
 			if err != nil {
 				return err
 			}
 			if jsonOutput {
-				return render.JSON(stdout, value)
+				if err := render.JSON(stdout, value); err != nil {
+					return outputFailure{err}
+				}
+				return nil
 			}
 			return renderWorkspaceStatus(stdout, value)
 		},
@@ -67,7 +70,23 @@ func renderWorkspaceStatus(stdout io.Writer, value service.WorkspaceStatus) erro
 		}
 		rows = append(rows, []string{repository.ID, branch, repository.Mount, repository.Status, renderUpstreamStatus(repository)})
 	}
-	return render.Table(stdout, rows)
+	if err := render.Table(stdout, rows); err != nil {
+		return err
+	}
+	if len(value.Drift) == 0 {
+		return nil
+	}
+	if err := render.Line(stdout, ""); err != nil {
+		return err
+	}
+	if err := render.Line(stdout, "Local drift:"); err != nil {
+		return err
+	}
+	driftRows := [][]string{{"REPOSITORY", "ORIGIN", "CHECK", "STATUS"}}
+	for _, drift := range value.Drift {
+		driftRows = append(driftRows, []string{drift.ID, drift.Origin, drift.Check, drift.Status})
+	}
+	return render.Table(stdout, driftRows)
 }
 
 func renderUpstreamStatus(repository service.RepositoryStatus) string {

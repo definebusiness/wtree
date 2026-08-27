@@ -55,6 +55,30 @@ func TestRenderWorkspaceStatusIncludesDeterministicUpstreamColumn(t *testing.T) 
 	}
 }
 
+func TestRenderWorkspaceStatusAppendsLocalDriftOnlyWhenPresent(t *testing.T) {
+	value := service.WorkspaceStatus{Workspace: "default", Repositories: []service.RepositoryStatus{{ID: "root", Mount: ".", Status: "clean"}}, Drift: []service.StatusDrift{{ID: "root", Origin: "manifest", Check: "checkout", Status: "declared-absent"}}}
+	var output bytes.Buffer
+	if err := renderWorkspaceStatus(&output, value); err != nil {
+		t.Fatal(err)
+	}
+	want := "Workspace: default\n\nREPOSITORY  BRANCH  MOUNT  STATUS  UPSTREAM\nroot                .      clean   none\n\nLocal drift:\nREPOSITORY  ORIGIN    CHECK     STATUS\nroot        manifest  checkout  declared-absent\n"
+	if output.String() != want {
+		t.Fatalf("human status = %q, want %q", output.String(), want)
+	}
+}
+
+func TestRenderWorkspaceStatusKeepsUnknownIdentityUpstreamNA(t *testing.T) {
+	value := service.WorkspaceStatus{Workspace: "default", Repositories: []service.RepositoryStatus{{ID: "root", Mount: ".", UnknownRepository: true, IdentityMismatch: true, Status: "unknown-repository"}}, Drift: []service.StatusDrift{{ID: "root", Origin: "checkout", Check: "identity", Status: "mismatch"}}}
+	var output bytes.Buffer
+	if err := renderWorkspaceStatus(&output, value); err != nil {
+		t.Fatal(err)
+	}
+	want := "Workspace: default\n\nREPOSITORY  BRANCH  MOUNT  STATUS              UPSTREAM\nroot                .      unknown-repository  n/a\n\nLocal drift:\nREPOSITORY  ORIGIN    CHECK     STATUS\nroot        checkout  identity  mismatch\n"
+	if output.String() != want {
+		t.Fatalf("identity-mismatch human status = %q, want %q", output.String(), want)
+	}
+}
+
 func TestRenderWorkspaceStatusReturnsWriterFailures(t *testing.T) {
 	for _, writer := range []io.Writer{
 		&failingStatusWriter{err: io.ErrClosedPipe},

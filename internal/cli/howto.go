@@ -38,8 +38,9 @@ const globalHowTo = `WTREE HOW-TO
     Run: wtree repo path backend
 14. Inspect status
     Run: wtree status feature/login --json
-    STATUS reports working-tree and structural state; UPSTREAM reports
-    last-fetched local upstream facts. status does not fetch or contact remotes.
+	    STATUS reports working-tree and structural state; UPSTREAM reports
+	    last-fetched local upstream facts. Local drift is compared with the
+	    locally tracked manifest when available. status does not fetch or contact remotes.
 15. Import an existing workspace
     Run: wtree import /path/to/workspace --name feature/login
 16. Import renamed nested checkouts
@@ -71,8 +72,29 @@ const globalHowTo = `WTREE HOW-TO
     Run: wtree project unregister <project-id> --dry-run. It retains every project
     artifact; the retained local config can register the project again after a later
     mutating command is run from that project.
-29. Important safety semantics
+29. Run a direct command across a workspace
+    Run: wtree exec -- go test ./...
+    exec has no implicit shell; arguments are literal. Use sh -c explicitly
+    when needed. It cannot roll back effects made by the invoked program.
+30. Refresh configured upstream facts explicitly
+    Run: wtree fetch --dry-run --json
+    fetch contacts only each configured remote/ref and updates only its
+    remote-tracking ref. It never moves a local branch, HEAD, or worktree;
+    earlier successful fetches remain if a later repository fails. status
+    remains network-free and reports last-fetched facts.
+31. Check manual publication readiness
+    Run: wtree push --json
+    push reports whether every checkout is already at its exact configured
+    upstream tip. It never runs git push, fetches, or creates refs or tags;
+    publication remains manual until a future publishing workflow is specified.
+31. Important safety semantics
     Every available mutation preflights first; destructive reconciliation requires explicit intent.
+30. Update a project safely
+    Run: wtree update. It captures one complete snapshot and only then applies
+    the transaction. Use --dry-run to render the plan. Both modes refuse dirty, divergent, missing,
+    structurally inconsistent, unresolved-operation, and unsafe repository-set
+    changes. It never relocates an existing checkout or deletes a repository
+    removed from the manifest; removed repositories remain retained unmanaged.
 `
 
 var commandHowTo = map[string]string{
@@ -84,6 +106,24 @@ EXAMPLES
   wtree clone ./project.wtree.yml ./product
   wtree clone https://example.invalid/project.wtree.yml --dry-run --json
   wtree clone ./project.wtree.yml --worktree-root /worktrees --data-dir /wtree-data
+`,
+	"update": `HOW TO: update
+
+Reconcile the default workspace against its portable manifest source. Use
+--from to select a replacement source; on successful execution it becomes the
+new manifest.source. Use --dry-run to inspect the plan without mutation.
+
+EXAMPLES
+  wtree update
+  wtree update --from ./next.wtree.yml --dry-run --json
+
+The command refuses dirty, divergent, missing, structurally inconsistent,
+unresolved-operation, and unsafe repository-set changes. Execution is journaled
+and publishes matching local configuration, workspace state, registry, and
+retained-checkout records only after repository effects succeed. Existing
+checkouts are never relocated and repositories removed by a manifest remain
+retained unmanaged; deletion requires a separately specified destructive
+operation.
 `,
 	"init": `HOW TO: init
 
@@ -150,6 +190,19 @@ EXAMPLES
   wtree doctor feature/login --json
   wtree doctor feature/login --fix --dry-run
 `,
+	"push": `HOW TO: push
+
+Check whether every selected checkout is already ready for manual publication.
+The command compares only the configured upstream ref and never runs git push,
+fetches, creates refs or tags, or changes workspace state.
+
+EXAMPLES
+  wtree push
+  wtree push --workspace feature/login --json
+
+Resolve any reported readiness finding, then publish repositories manually.
+Coordinated publication remains a future workflow.
+`,
 	"project": `HOW TO: project
 
 Inspect globally registered projects and their registry diagnostics. To remove an objectively stale registration only, inspect its complete read-only plan with prune. To intentionally remove any exact registration, use unregister. Neither operation deletes Git worktrees, repositories, project configuration, workspace state, recovery data, or lock files. After unregister, the retained local configuration can register the project again when a later mutating command runs from it.
@@ -187,5 +240,5 @@ func renderHowToIfRequested(writer io.Writer, arguments []string) (bool, error) 
 			return true, err
 		}
 	}
-	return true, invalidArgumentsError{cause: fmt.Errorf("--how-to is valid only as `wtree --how-to` or `wtree {project,init,clone,create,import,remove,delete,doctor} --how-to`")}
+	return true, invalidArgumentsError{cause: fmt.Errorf("--how-to is valid only as `wtree --how-to` or `wtree {project,init,clone,update,create,import,remove,delete,doctor} --how-to`")}
 }

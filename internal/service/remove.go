@@ -206,9 +206,9 @@ func (r *WorkspaceRemover) Remove(ctx context.Context, project domain.Project, w
 	if r.locker == nil || r.writeRecovery == nil {
 		return RemovalPlan{}, NewError(ErrorInternal, errors.New("workspace remover is not configured"))
 	}
-	handle, err := r.locker.ProjectLock(ctx, dataDir, project.ID, r.lockTimeout)
+	handle, err := acquireProjectMutationAuthority(ctx, r.locker, dataDir, project.ID, r.lockTimeout)
 	if err != nil {
-		return RemovalPlan{}, NewError(ErrorConflict, fmt.Errorf("acquire project mutation lock: %w", err))
+		return RemovalPlan{}, err
 	}
 	defer handle.Unlock()
 	revalidated, err := r.PlanRemove(ctx, project, workspace, force)

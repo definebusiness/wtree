@@ -264,7 +264,7 @@ func (a *Adapter) FetchTrackingBranch(ctx context.Context, repository, remote, m
 	if remote == "" || strings.HasPrefix(remote, "-") || remoteBranch == merge || remoteBranch == "" {
 		return fmt.Errorf("fetch selected branch: invalid remote or merge ref")
 	}
-	_, err := a.run(ctx, repository, "fetch", "--no-tags", "--no-recurse-submodules", "--", remote, "+"+merge+":refs/remotes/"+remote+"/"+remoteBranch)
+	_, err := a.run(ctx, repository, "fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", "--", remote, "+"+merge+":refs/remotes/"+remote+"/"+remoteBranch)
 	return err
 }
 
@@ -340,7 +340,7 @@ func (a *Adapter) runRemoteWithEnvironment(ctx context.Context, environment []st
 }
 
 func fullObjectID(value string) bool {
-	if len(value) != 40 {
+	if len(value) != 40 && len(value) != 64 {
 		return false
 	}
 	for _, character := range value {

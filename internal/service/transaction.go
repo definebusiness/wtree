@@ -20,6 +20,21 @@ type ProjectLocker interface {
 	ProjectLock(context.Context, string, string, time.Duration) (lock.Handle, error)
 }
 
+// acquireProjectMutationAuthority is the single lock/journal boundary for
+// project mutations. The journal check must happen after the project lock is
+// acquired and that handle must stay held through the caller's mutation.
+func acquireProjectMutationAuthority(ctx context.Context, locker ProjectLocker, dataDir, projectID string, timeout time.Duration) (lock.Handle, error) {
+	handle, err := locker.ProjectLock(ctx, dataDir, projectID, timeout)
+	if err != nil {
+		return nil, NewError(ErrorConflict, fmt.Errorf("acquire project mutation lock: %w", err))
+	}
+	if err := RefuseActiveUpdateJournal(dataDir, projectID); err != nil {
+		_ = handle.Unlock()
+		return nil, err
+	}
+	return handle, nil
+}
+
 // WorkspaceTransactionRequest supplies a validated plan and concrete effects.
 // Revalidate runs only after the project lock is held; ValidateResult runs
 // after effects and before workspace state becomes authoritative.
@@ -102,9 +117,9 @@ func (w *WorkspaceTransaction) Execute(ctx context.Context, request WorkspaceTra
 	if timeout <= 0 {
 		timeout = time.Second
 	}
-	handle, err := w.Locker.ProjectLock(ctx, request.DataDir, request.Plan.ProjectID, timeout)
+	handle, err := acquireProjectMutationAuthority(ctx, w.Locker, request.DataDir, request.Plan.ProjectID, timeout)
 	if err != nil {
-		return transaction.Result{}, NewError(ErrorConflict, fmt.Errorf("acquire project mutation lock: %w", err))
+		return transaction.Result{}, err
 	}
 	defer handle.Unlock()
 	if request.Revalidate != nil {

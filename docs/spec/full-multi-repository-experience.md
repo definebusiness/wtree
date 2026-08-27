@@ -1,9 +1,10 @@
 # Full multi-repository experience capability specification
 
-Status: initial
+Status: planned
 Source idea: none (created directly)
 Source material: [Full-experience suggestions](../ideas/claude-opus-4.8-suggestions-for-full-experience.md); [Prioritized capability list](../ideas/claude-opus-4.8-prioritized-list.md)
-Implementation plan: none
+Implementation plan: [Multi-repository composition loop and aggregate operations implementation plan](../plans/full-multi-repository-experience.md)
+Traceability companion: [Full multi-repository experience P0/P1 traceability](full-multi-repository-experience.traceability.md)
 
 ## 1. Purpose
 
@@ -394,8 +395,16 @@ must not depend on the caller's current directory.
 
 The following questions must be resolved before the affected capability is
 included in an implementation plan. Until then, existing command behavior,
-persisted-state compatibility, and output contracts take precedence over the
-new behavior proposed by this specification.
+the usability of existing repositories and persisted workspaces after a
+successful change, and output contracts take precedence over the new behavior
+proposed by this specification.
+
+Backward compatibility with older `wtree` releases is not required. A focused
+specification may introduce a versioned break without teaching an older binary
+to read the new format. It must still migrate existing state transactionally or
+reject before mutation, and the resulting application must be able to resolve,
+validate, inspect, and safely operate every repository and workspace retained
+after the change.
 
 ### 10.1 Checkout and remote branch materialization
 
@@ -456,13 +465,16 @@ Open questions:
 - Does the expanded model require workspace state version two?
 - How are all existing version-one synchronized and partial states migrated
   without losing mounts, paths, branches, HEADs, or omission information?
-- Must new binaries continue to read version-one state, and what diagnostic
-  should an older binary give for version-two state?
+- Must the implementing binary continue to read version-one state directly,
+  or migrate every retained version-one generation before publishing version
+  two?
 - Are `partial` and `missingRepositoryIds` retained for compatibility, derived
   from the new kind, or replaced only at a version boundary?
 
-The new fields must not be written into version-one state, and an implementing
-plan must include migration and backward-compatibility tests.
+The new fields must not be written into version-one state. An implementing
+plan must include migration-or-rejection, rollback, and post-change tests that
+prove every retained repository and workspace is usable by the resulting
+application. It need not preserve readability by an older `wtree` release.
 
 ### 10.4 Status exit codes and output compatibility
 
@@ -504,8 +516,8 @@ Open questions:
   configuration, and which schema owns each field?
 - Is compatibility based on a version transition, explicit feature
   negotiation, or separate companion files?
-- How do older binaries fail clearly without partially interpreting a newer
-  manifest or configuration?
+- How does the implementing binary select and validate the new schema before
+  mutation without partially interpreting either generation?
 
 An implementation must not give the same manifest or configuration version two
 different schemas or meanings.
@@ -543,8 +555,10 @@ specification and implementation plan must:
    deliberate versioned break;
 3. include regression tests proving unaffected existing workflows continue to
    work; and
-4. include migration, rollback, mixed-version, and older-client diagnostics
-   wherever stored or portable formats change.
+4. include migration-or-rejection, rollback, and post-change validation
+   wherever stored or portable formats change, proving that every retained
+   repository and workspace is usable by the resulting application. Supporting
+   binaries from older `wtree` releases is not required.
 
 ## 11. Delivery order and dependency gates
 

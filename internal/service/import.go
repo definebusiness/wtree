@@ -242,9 +242,9 @@ func (i *WorkspaceImporter) Import(ctx context.Context, project domain.Project, 
 	if i.locker == nil || i.writeWorkspace == nil || i.writeRecoveryCAS == nil || i.removeFileCAS == nil {
 		return ImportPlan{}, NewError(ErrorInternal, errors.New("workspace importer is not configured"))
 	}
-	handle, err := i.locker.ProjectLock(ctx, request.DataDir, project.ID, i.lockTimeout)
+	handle, err := acquireProjectMutationAuthority(ctx, i.locker, request.DataDir, project.ID, i.lockTimeout)
 	if err != nil {
-		return ImportPlan{}, NewError(ErrorConflict, fmt.Errorf("acquire project mutation lock: %w", err))
+		return ImportPlan{}, err
 	}
 	defer handle.Unlock()
 	revalidated, err := i.PlanImport(ctx, project, request)

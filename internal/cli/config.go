@@ -48,6 +48,8 @@ func newConfigCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 		}
 		result.Scope = service.ConfigScopeProject
 		result.ProjectConfigPath = resolution.Project.ConfigPath
+		result.UpdateDataDir = paths.DataDir
+		result.ProjectID = resolution.Project.ID
 		return result, nil
 	}
 	command.AddCommand(

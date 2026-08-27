@@ -115,9 +115,9 @@ func (d *WorkspaceDeleter) Delete(ctx context.Context, project domain.Project, w
 	if d.locker == nil || d.writeRecovery == nil || d.removeState == nil || d.writeRawCAS == nil || d.readFile == nil {
 		return DeletionPlan{}, NewError(ErrorInternal, errors.New("workspace deleter is not configured"))
 	}
-	handle, err := d.locker.ProjectLock(ctx, dataDir, project.ID, d.lockTimeout)
+	handle, err := acquireProjectMutationAuthority(ctx, d.locker, dataDir, project.ID, d.lockTimeout)
 	if err != nil {
-		return DeletionPlan{}, NewError(ErrorConflict, fmt.Errorf("acquire project mutation lock: %w", err))
+		return DeletionPlan{}, err
 	}
 	defer handle.Unlock()
 	revalidated, err := d.PlanDelete(ctx, project, workspace, force)

@@ -1,9 +1,13 @@
 package cli_test
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -23,6 +27,7 @@ func TestExecuteDoctorJSONIsReadOnlyAndSupportsFixDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	beforeObservation := exactDoctorObservation(t, project.Path, data)
 	result := testutil.RunCommand(t, cli.Execute, "doctor", "--project", project.Path, "default", "--data-dir", data, "--json")
 	if result.Err != nil || result.Stderr != "" {
 		t.Fatalf("doctor = %#v", result)
@@ -50,10 +55,69 @@ func TestExecuteDoctorJSONIsReadOnlyAndSupportsFixDryRun(t *testing.T) {
 	if err != nil || string(after) != string(before) {
 		t.Fatalf("doctor mutated state: %v", err)
 	}
+	if afterObservation := exactDoctorObservation(t, project.Path, data); !reflect.DeepEqual(beforeObservation, afterObservation) {
+		t.Fatalf("doctor changed filesystem, index, status, HEAD, or refs:\nbefore=%#v\nafter=%#v", beforeObservation, afterObservation)
+	}
 	dryRun := testutil.RunCommand(t, cli.Execute, "doctor", "--project", project.Path, "default", "--data-dir", data, "--fix", "--dry-run", "--json")
 	if dryRun.Err != nil || dryRun.Stderr != "" {
 		t.Fatalf("doctor --fix --dry-run = %#v", dryRun)
 	}
+	if afterDryRun := exactDoctorObservation(t, project.Path, data); !reflect.DeepEqual(beforeObservation, afterDryRun) {
+		t.Fatalf("doctor --fix --dry-run changed filesystem, index, status, HEAD, or refs:\nbefore=%#v\nafter=%#v", beforeObservation, afterDryRun)
+	}
+}
+
+func exactDoctorObservation(t *testing.T, repository, dataDir string) map[string]string {
+	t.Helper()
+	result := make(map[string]string)
+	for name, arguments := range map[string][]string{
+		"head":   {"rev-parse", "HEAD"},
+		"refs":   {"show-ref", "--head"},
+		"status": {"status", "--porcelain=v1", "--untracked-files=all"},
+	} {
+		command := exec.Command("git", append([]string{"-C", repository}, arguments...)...)
+		command.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("observe Git %s: %v: %s", name, err, output)
+		}
+		result["git:"+name] = string(output)
+	}
+	for label, root := range map[string]string{"repository": repository, "data": dataDir} {
+		if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			relative, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			info, err := os.Lstat(path)
+			if err != nil {
+				return err
+			}
+			value := fmt.Sprintf("%s:%o", info.Mode().Type(), info.Mode().Perm())
+			switch {
+			case info.Mode()&os.ModeSymlink != 0:
+				target, err := os.Readlink(path)
+				if err != nil {
+					return err
+				}
+				value += ":" + target
+			case info.Mode().IsRegular():
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				value += fmt.Sprintf(":%x", sha256.Sum256(contents))
+			}
+			result[label+":"+filepath.ToSlash(relative)] = value
+			return nil
+		}); err != nil {
+			t.Fatalf("snapshot %s tree: %v", label, err)
+		}
+	}
+	return result
 }
 
 func TestExecuteDoctorReadOnlyResolutionPreservesMovedRegistry(t *testing.T) {

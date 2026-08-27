@@ -30,6 +30,10 @@ type ConfigRequest struct {
 	ProjectConfigPath   string
 	DefaultWorktreeRoot string
 	Home                string
+	// UpdateDataDir and ProjectID bind project-scoped mutations to the same
+	// update-journal authority used by every other project mutator.
+	UpdateDataDir string
+	ProjectID     string
 }
 
 type ConfigValue struct {
@@ -39,9 +43,9 @@ type ConfigValue struct {
 }
 
 // ConfigService owns scoped, locked configuration reads and updates.
-type ConfigService struct{}
+type ConfigService struct{ locker ProjectLocker }
 
-func NewConfigService() *ConfigService { return &ConfigService{} }
+func NewConfigService() *ConfigService { return &ConfigService{locker: lock.Manager{}} }
 
 func (s *ConfigService) Get(_ context.Context, request ConfigRequest) (ConfigValue, error) {
 	if err := validateConfigRequest(request, false); err != nil {
@@ -65,9 +69,17 @@ func (s *ConfigService) Set(ctx context.Context, request ConfigRequest) (ConfigV
 	if err := validateConfigRequest(request, true); err != nil {
 		return ConfigValue{}, err
 	}
+	if err := validateConfigMutationAuthority(request); err != nil {
+		return ConfigValue{}, err
+	}
 	if request.Scope == ConfigScopeProject {
+		handle, err := acquireProjectMutationAuthority(ctx, s.locker, request.UpdateDataDir, request.ProjectID, time.Second)
+		if err != nil {
+			return ConfigValue{}, err
+		}
+		defer handle.Unlock()
 		var result ConfigValue
-		err := withConfigLock(ctx, request.ProjectConfigPath, func() error {
+		err = withConfigLock(ctx, request.ProjectConfigPath, func() error {
 			project, err := loadProjectConfig(request.ProjectConfigPath)
 			if err != nil {
 				return err
@@ -108,10 +120,18 @@ func (s *ConfigService) Unset(ctx context.Context, request ConfigRequest) (Confi
 	if err := validateConfigRequest(request, false); err != nil {
 		return ConfigValue{}, err
 	}
+	if err := validateConfigMutationAuthority(request); err != nil {
+		return ConfigValue{}, err
+	}
 	request.Value = ""
 	if request.Scope == ConfigScopeProject {
+		handle, err := acquireProjectMutationAuthority(ctx, s.locker, request.UpdateDataDir, request.ProjectID, time.Second)
+		if err != nil {
+			return ConfigValue{}, err
+		}
+		defer handle.Unlock()
 		var result ConfigValue
-		err := withConfigLock(ctx, request.ProjectConfigPath, func() error {
+		err = withConfigLock(ctx, request.ProjectConfigPath, func() error {
 			project, err := loadProjectConfig(request.ProjectConfigPath)
 			if err != nil {
 				return err
@@ -174,6 +194,13 @@ func validateConfigRequest(request ConfigRequest, requireValue bool) error {
 	}
 	if requireValue && strings.TrimSpace(request.Value) == "" {
 		return NewError(ErrorValidation, errors.New("configuration value must not be empty; use unset instead"))
+	}
+	return nil
+}
+
+func validateConfigMutationAuthority(request ConfigRequest) error {
+	if request.Scope == ConfigScopeProject && (strings.TrimSpace(request.UpdateDataDir) == "" || !safeUpdateJournalID(request.ProjectID)) {
+		return NewError(ErrorValidation, errors.New("project scope requires update journal authority"))
 	}
 	return nil
 }

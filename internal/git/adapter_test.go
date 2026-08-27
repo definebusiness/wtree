@@ -2,9 +2,11 @@ package git_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -42,6 +44,27 @@ func TestAdapterReadsHermeticRepositoryFacts(t *testing.T) {
 	}
 }
 
+func TestAdapterFactStatusSuppressesConfiguredFSMonitorHook(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fsmonitor hook fixture is POSIX-only")
+	}
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile("readme.txt", "initial\n", "initial")
+	marker := filepath.Join(t.TempDir(), "fsmonitor-ran")
+	hook := filepath.Join(t.TempDir(), "fsmonitor-hook")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch "+marker+"\nprintf '2\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repository.Run(t, "config", "core.fsmonitor", hook)
+	status, err := git.NewAdapter("git").Status(context.Background(), repository.Path)
+	if err != nil || len(status.Entries) != 0 {
+		t.Fatalf("Status() = %#v, %v", status, err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fact status ran configured fsmonitor hook: %v", err)
+	}
+}
+
 func TestAdapterChecksCommittedGitignoreAtRequestedRef(t *testing.T) {
 	repository := testutil.NewGitRepository(t)
 	repository.CommitFile(".gitignore", "/api/\n/services/generated/\n", "ignore mounts")
@@ -72,6 +95,94 @@ func TestAdapterChecksCommittedGitignoreAtRequestedRef(t *testing.T) {
 	ignored, err = adapter.IsIgnoredAt(ctx, repository.Path, "HEAD", "other")
 	if err != nil || ignored {
 		t.Fatalf("IsIgnoredAt(other) with local exclude = %t, %v; want false, nil", ignored, err)
+	}
+	if err := os.WriteFile(filepath.Join(repository.Path, ".git", "info", "exclude"), []byte("/api/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repository.Path, "api"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository.Path, "api", "probe"), []byte("probe\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ignored, err = adapter.InspectCommittedIgnore(ctx, repository.Path, "HEAD", "api")
+	if err != nil || !ignored {
+		t.Fatalf("IsIgnoredAt(api) with coincident local exclude = %t, %v; want committed rule to remain authoritative", ignored, err)
+	}
+}
+
+func TestAdapterChecksNestedCommittedGitignoreWithWinningNegation(t *testing.T) {
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile("packages/.gitignore", "/child/\n", "ignore nested mount")
+	if err := os.MkdirAll(filepath.Join(repository.Path, "packages", "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository.Path, "packages", "child", "probe"), []byte("probe\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adapter := git.NewAdapter("git")
+	ctx := context.Background()
+
+	ignored, err := adapter.InspectCommittedIgnore(ctx, repository.Path, "HEAD", "packages/child")
+	if err != nil || !ignored {
+		t.Fatalf("nested committed ignore = %t, %v; want true, nil", ignored, err)
+	}
+	for _, mount := range []string{"packages/other", "unrelated/child"} {
+		ignored, err = adapter.InspectCommittedIgnore(ctx, repository.Path, "HEAD", mount)
+		if err != nil || ignored {
+			t.Fatalf("unrelated committed ignore for %q = %t, %v; want false, nil", mount, ignored, err)
+		}
+	}
+
+	repository.CommitFile(".gitignore", "/packages/child/\n", "ignore child from root")
+	repository.CommitFile("packages/.gitignore", "/child/\n!/child/\n", "negate nested mount")
+	ignored, err = adapter.InspectCommittedIgnore(ctx, repository.Path, "HEAD", "packages/child")
+	if err != nil || ignored {
+		t.Fatalf("winning committed negation = %t, %v; want false, nil", ignored, err)
+	}
+}
+
+func TestAdapterCommittedIgnoreDoesNotUseTemporaryStorage(t *testing.T) {
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile(".gitignore", "/child/\n", "ignore child")
+	if err := os.Mkdir(filepath.Join(repository.Path, "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository.Path, "child", "probe"), []byte("probe\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	temporary := t.TempDir()
+	if err := os.Chmod(temporary, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(temporary, 0o700) })
+	environment := append(os.Environ(), "TMPDIR="+temporary, "TMP="+temporary, "TEMP="+temporary)
+	adapter := git.NewAdapterWithEnv("git", environment)
+
+	ignored, err := adapter.InspectCommittedIgnore(context.Background(), repository.Path, "HEAD", "child")
+	if err != nil || !ignored {
+		t.Fatalf("committed ignore with unwritable temporary storage = %t, %v", ignored, err)
+	}
+	entries, err := os.ReadDir(temporary)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("committed ignore temporary delta = %#v, %v", entries, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := adapter.InspectCommittedIgnore(ctx, repository.Path, "HEAD", "child"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("committed ignore cancellation = %v, want context.Canceled", err)
+	}
+	entries, err = os.ReadDir(temporary)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("canceled committed ignore temporary delta = %#v, %v", entries, err)
+	}
+	if _, err := git.NewAdapterWithEnv(filepath.Join(t.TempDir(), "missing-git"), environment).InspectCommittedIgnore(context.Background(), repository.Path, "HEAD", "child"); err == nil {
+		t.Fatal("committed ignore accepted an unavailable Git boundary")
+	}
+	entries, err = os.ReadDir(temporary)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("failed committed ignore temporary delta = %#v, %v", entries, err)
 	}
 }
 

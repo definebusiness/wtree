@@ -168,11 +168,39 @@ The cloned checkout is registered as the `default` workspace:
 wtree list
 wtree status
 wtree status default --json
+wtree push --json
 ```
 
+`wtree push` is a readiness report, not a publisher. It verifies that the
+complete workspace is already available at each configured upstream, but never
+pushes, fetches, or creates refs or tags. Publish manually after reviewing its
+report; coordinated publication remains a future workflow.
+
 The human table's `STATUS` column reports working-tree and structural state.
-Its `UPSTREAM` column reports the last-fetched local upstream relationship;
-`wtree status` does not fetch or contact remotes.
+Its `UPSTREAM` column reports the last-fetched local upstream relationship.
+When the manifest tracked by the local base checkout is available, an additive
+`Local drift` table reports manifest/state/disk differences. `wtree status`
+does not fetch or contact remotes.
+
+To run a direct command across every verified checkout, use `exec`. Arguments
+are not interpreted by an implicit shell, and effects from the invoked command
+are not rolled back:
+
+```sh
+wtree exec -- git status --short
+wtree exec -- sh -c 'go test ./... | tee test.log'
+```
+
+Use `fetch` when you deliberately want to refresh those remote-tracking facts.
+It contacts only the configured remote and ref for each present repository,
+updates no local branch, HEAD, or worktree, and is non-transactional: a fetch
+that succeeded before a later failure remains visible. `status` continues to
+use only the last-fetched local facts and never contacts a remote.
+
+```sh
+wtree fetch --dry-run --json
+wtree fetch
+```
 
 Inspect the remote-tracking branches created by the clone:
 
@@ -210,12 +238,14 @@ clone's original project value:
 wtree config get worktrees.root --project
 ```
 
-Future `update` and `sync` ideas may re-author a manifest from local
-repositories or reconcile a checkout from its stored manifest source. They
-are intentionally not available commands in this release. Release-lock
-manifests are also future work; today's portable manifest follows movable
-default branches while dry-run observations remain diagnostic and clone uses
-the selected branch tip fetched during execution.
+Use `wtree update --dry-run` to inspect a compatible revision from the stored
+manifest source, then use `wtree update` to apply it. The update transaction
+may fast-forward configured default branches and add verified repositories; it
+never relocates or deletes existing checkouts, and records removed repositories
+as retained unmanaged evidence. `sync` and release-lock manifests remain
+future work; today's portable manifest follows movable default branches while
+dry-run observations remain diagnostic and clone uses the selected branch tip
+fetched during execution.
 
 ## 5. Understand remote and local branches
 

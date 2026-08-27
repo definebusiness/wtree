@@ -261,9 +261,10 @@ func redactCredentialShapes(value string) string {
 	// Keep diagnostics useful while removing common URL credential shapes.
 	if parsed, err := url.Parse(value); err == nil && parsed.User != nil {
 		parsed.User = url.User("REDACTED")
-		return parsed.String()
+		value = parsed.String()
 	}
-	return credentialURLPattern.ReplaceAllString(value, `${1}REDACTED@`)
+	value = credentialURLPattern.ReplaceAllString(value, `${1}REDACTED@`)
+	return credentialQueryPattern.ReplaceAllString(value, "?[REDACTED]")
 }
 
 func boundedRedactedDiagnostic(value string) string {
@@ -279,3 +280,4 @@ func boundedRedactedDiagnosticLimit(value string, limit int) string {
 }
 
 var credentialURLPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@`)
+var credentialQueryPattern = regexp.MustCompile(`\?[^\s'"]*`)

@@ -102,6 +102,11 @@ git -C services/api add .gitignore project.wtree.yml
 stages, commits, or pushes; review and commit the portable manifest and any
 automatic `.gitignore` changes yourself.
 
+Before manually publishing a complete workspace, run `wtree push`. It only
+reports whether each checkout is already at its exact configured upstream tip;
+it never runs `git push`, fetches, or creates refs or tags. Publication remains
+a manual workflow until a separately specified publishing command exists.
+
 Portable manifests use schema version 2. The `project.base_repository` field
 names exactly one top-level metadata owner. It may be mounted below grouping
 directories and need not be the only top-level repository:
@@ -138,9 +143,11 @@ wtree clone ./project.wtree.yml ./product --dry-run
 wtree clone ./project.wtree.yml ./product
 ```
 
-The clone is verified and registered as the `default` workspace. `update`,
-`sync`, and release-lock manifests remain future ideas; they are not commands
-in this release.
+The clone is verified and registered as the `default` workspace. Use `wtree
+update` to safely apply a compatible portable-manifest revision to that default
+workspace. `--dry-run` shows the classified plan first; execution never
+relocates or deletes existing checkouts and retains removed repositories as
+unmanaged local evidence.
 
 Choose where newly created workspaces live (this is optional; otherwise the
 platform default is used):
@@ -185,6 +192,27 @@ contact remotes:
 ```sh
 wtree status feature/login
 wtree status feature/login --json
+```
+
+Run one direct executable in every verified repository checkout with `exec`.
+It preflights the complete workspace before starting anything, passes arguments
+literally, and does not add an implicit shell or roll back effects made by your
+program. Use an explicit shell only when shell syntax is actually wanted:
+
+```sh
+wtree exec -- go test ./...
+wtree exec -- sh -c 'make test | tee test.log'
+```
+
+Refresh the configured upstream facts explicitly with `fetch`. It contacts only
+the configured remote and ref for each present checkout, updating that one
+remote-tracking ref in parent-first order. It never moves a local branch, HEAD,
+or worktree. Fetch is non-transactional: an earlier refresh remains if a later
+repository fails. `status` remains network-free and reports last-fetched facts.
+
+```sh
+wtree fetch
+wtree fetch --dry-run --json
 ```
 
 Topology-bearing JSON results expose `logicalRoot`, `baseRepository`, and an

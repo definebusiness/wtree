@@ -2,8 +2,10 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/definebusiness/wtree/internal/domain"
@@ -223,6 +225,144 @@ func TestDoctorReportsStaleRegistryWithoutAutoFix(t *testing.T) {
 		t.Fatalf("doctor rewrote registry: %#v %v", after, err)
 	}
 	_ = root
+}
+
+func TestDoctorReportsActiveUpdateJournalAsNonFixableDrift(t *testing.T) {
+	project, _, _, data := createFixture(t)
+	workspace, err := service.RequireWorkspace(project, data, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalPath := writeDoctorActiveJournal(t, data, project.ID)
+	defer os.Remove(journalPath)
+	statePath := service.WorkspaceStatePath(data, project.ID, "default")
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.NewDoctorService().Doctor(context.Background(), project, workspace, data)
+	if err != nil || !doctorHasFinding(report, "update-in-progress", "", false) {
+		t.Fatalf("report=%#v err=%v", report, err)
+	}
+	dryRun, err := service.NewDoctorService().Fix(context.Background(), project, workspace, service.DoctorFixRequest{DataDir: data, DryRun: true})
+	if err != nil || !dryRun.DryRun || !doctorHasFinding(dryRun, "update-in-progress", "", false) {
+		t.Fatalf("dry-run=%#v err=%v", dryRun, err)
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("doctor observation changed state: %v", err)
+	}
+}
+
+func TestDoctorDoesNotClassifyImportedPartialWorkspaceOmissionsAsManifestDrift(t *testing.T) {
+	project, _, _, data := createFixture(t)
+	defaultState, err := store.ReadWorkspace(service.WorkspaceStatePath(data, project.ID, "default"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := defaultState.Repositories["root"]
+	partial := store.WorkspaceState{
+		ID: "imported-partial", Name: "imported-partial", Path: defaultState.Path, Partial: true,
+		MissingRepositoryIDs: []string{"backend"}, Repositories: map[string]store.CheckoutState{"root": root},
+	}
+	if err := store.WriteWorkspace(service.WorkspaceStatePath(data, project.ID, partial.ID), partial); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := service.RequireWorkspace(project, data, partial.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.NewDoctorService().Doctor(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctorHasFinding(report, "manifest-repository-unmanaged", "backend", false) || doctorHasFinding(report, "manifest-repository-missing", "backend", false) {
+		t.Fatalf("imported partial omission was misclassified as manifest drift: %#v", report.Findings)
+	}
+}
+
+func TestDoctorRejectsMalformedUpdateInventoryInsteadOfHidingIt(t *testing.T) {
+	project, _, _, data := createFixture(t)
+	workspace, err := service.RequireWorkspace(project, data, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(data, "projects", project.ID, "update")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "unexpected-secret-token"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.NewDoctorService().Doctor(context.Background(), project, workspace, data)
+	var application *service.Error
+	if err == nil || !errors.As(err, &application) || application.Kind != service.ErrorConflict || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("malformed update inventory was hidden or leaked data: %v", err)
+	}
+}
+
+func TestDoctorPreservesCanceledContext(t *testing.T) {
+	project, _, _, data := createFixture(t)
+	workspace, err := service.RequireWorkspace(project, data, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = service.NewDoctorService().Doctor(ctx, project, workspace, data)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("doctor cancellation = %v, want context.Canceled", err)
+	}
+}
+
+func TestDoctorUsesTrackedManifestInsteadOfWorkingManifest(t *testing.T) {
+	project, root, _, data := createFixture(t)
+	workspace, err := service.RequireWorkspace(project, data, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.Run(t, "add", "--", ".wtree.yml", "project.wtree.yml")
+	root.Run(t, "commit", "-m", "track wtree metadata")
+	workingManifest := filepath.Join(root.Path, "project.wtree.yml")
+	if err := os.WriteFile(workingManifest, []byte("not a portable manifest\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.NewDoctorService().Doctor(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatalf("doctor adopted working manifest instead of tracked HEAD: %v", err)
+	}
+	if doctorHasFinding(report, "manifest-configuration-mismatch", "", false) {
+		t.Fatalf("working-only manifest change became current authority: %#v", report.Findings)
+	}
+}
+
+func TestDoctorRequiresCommittedImmediateParentIgnore(t *testing.T) {
+	project, root, _, data := createFixture(t)
+	workspace, err := service.RequireWorkspace(project, data, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.Run(t, "add", "--", ".wtree.yml", "project.wtree.yml")
+	root.Run(t, "commit", "-m", "track wtree metadata")
+	if err := os.WriteFile(filepath.Join(root.Path, ".gitignore"), []byte("/backend\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.NewDoctorService().Doctor(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !doctorHasFinding(report, "parent-ignore-missing", "backend", false) {
+		t.Fatalf("working-only ignore rule was accepted as committed evidence: %#v", report.Findings)
+	}
+	root.Run(t, "add", "--", ".gitignore")
+	root.Run(t, "commit", "-m", "commit backend ignore")
+	report, err = service.NewDoctorService().Doctor(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctorHasFinding(report, "parent-ignore-missing", "backend", false) {
+		t.Fatalf("committed immediate-parent ignore was not recognized: %#v", report.Findings)
+	}
 }
 
 func doctorHasFinding(report service.DoctorReport, code, repository string, fixable bool) bool {

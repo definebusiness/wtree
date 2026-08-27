@@ -102,6 +102,8 @@ func TestConfigServiceProjectMutationsPreflightGlobalConfigBeforeWriting(t *test
 					ProjectConfigPath:   projectPath,
 					DefaultWorktreeRoot: "/default-worktrees",
 					Home:                "/home/test",
+					UpdateDataDir:       filepath.Join(directory, "data"),
+					ProjectID:           "project",
 				}
 				if err := operation.run(service.NewConfigService(), request); err == nil {
 					t.Fatal("project config mutation succeeded with invalid global config")

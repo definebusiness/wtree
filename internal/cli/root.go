@@ -63,6 +63,9 @@ func ExecuteContext(ctx context.Context, args []string, stdout, stderr io.Writer
 	command.SetContext(ctx)
 	command.SetArgs(args)
 	if err := command.Execute(); err != nil {
+		if JSONRequested(args) && isOutputFailure(err) {
+			return err
+		}
 		err = classifyError(err)
 		if JSONRequested(args) {
 			if renderErr := render.JSONError(stdout, err); renderErr != nil {
@@ -72,6 +75,16 @@ func ExecuteContext(ctx context.Context, args []string, stdout, stderr io.Writer
 		return err
 	}
 	return nil
+}
+
+type outputFailure struct{ error }
+
+func (outputFailure) outputFailure()        {}
+func (failure outputFailure) Unwrap() error { return failure.error }
+
+func isOutputFailure(err error) bool {
+	var failure interface{ outputFailure() }
+	return errors.As(err, &failure)
 }
 func JSONRequested(args []string) bool {
 	for _, arg := range args {
@@ -121,6 +134,7 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 		newProjectCommand(stdout, &projectPath),
 		newInitCommand(stdout, &projectPath),
 		newCloneCommand(stdout, stderr, &projectPath),
+		newUpdateCommand(stdout, stderr, &projectPath),
 		newConfigCommand(stdout, &projectPath),
 		newWorkspacePlanCommand(stdout, stderr, &projectPath, plan.Create),
 		newCheckoutCommand(stdout, stderr, &projectPath),
@@ -130,6 +144,9 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 		newDoctorCommand(stdout, &projectPath),
 		newListCommand(stdout, &projectPath),
 		newStatusCommand(stdout, &projectPath),
+		newExecCommand(stdout, &projectPath),
+		newFetchCommand(stdout, &projectPath),
+		newPushCommand(stdout, &projectPath),
 		newPathCommand(stdout, &projectPath),
 		newRepoCommand(stdout, &projectPath),
 	}
@@ -161,11 +178,15 @@ COMMANDS
   project    inspect globally registered projects and manage registrations safely
   init       discover repositories and initialize a project
   clone      clone and register a project from a portable manifest
+	  update     reconcile a portable-manifest update safely
   import     record an existing workspace by Git identity
   create     create synchronized branches and worktrees
   checkout   restore retained workspace state or an existing branch
   list       list known workspaces
   status     inspect expected versus actual checkout state
+  exec       run one direct command in every verified repository checkout
+  fetch      explicitly refresh configured remote-tracking references
+	  push       report whether a workspace is ready for manual publication
   path       print one workspace path for shell composition
   repo       inspect or print a repository checkout path
   remove     remove worktrees while retaining branches and state
@@ -196,12 +217,14 @@ WORKTREE LOCATION
 EXAMPLES
   wtree init
   wtree clone ./project.wtree.yml ./product --dry-run
+	  wtree update
   wtree project list
   wtree project prune stale-project-id --dry-run
   wtree project unregister project-id --dry-run
   wtree create feature/login
   cd "$(wtree path feature/login)"
   wtree status feature/login --json
+  wtree exec --help
   wtree doctor feature/login
 
 EXIT CODES
@@ -224,11 +247,13 @@ func applyCommandDocumentation(command *cobra.Command) {
 		"wtree project unregister": "  wtree project unregister project-id --dry-run\n  wtree project unregister project-id --json\n",
 		"wtree init":               "  wtree init\n  wtree init --dry-run\n",
 		"wtree clone":              "  wtree clone ./project.wtree.yml ./product\n  wtree clone https://example.invalid/project.wtree.yml --dry-run --json\n",
+		"wtree update":             "  wtree update\n  wtree update --from ./next.wtree.yml --dry-run --json\n",
 		"wtree import":             "  wtree import /work/login --name feature/login\n  wtree import /work/login --dry-run --json\n",
 		"wtree create":             "  wtree create feature/login\n  wtree create feature/login --from main\n  wtree create feature/login --mount backend=api --dry-run\n",
 		"wtree checkout":           "  wtree checkout feature/login\n  wtree checkout feature/login --dry-run\n",
 		"wtree list":               "  wtree list\n  wtree list --json\n",
 		"wtree status":             "  wtree status feature/login\n  wtree status feature/login --json\n",
+		"wtree exec":               "  wtree exec -- go test ./...\n  wtree exec -- sh -c 'make test | tee test.log'\n",
 		"wtree path":               "  wtree path feature/login\n",
 		"wtree repo":               "  wtree repo path backend\n  wtree repo get backend --json\n",
 		"wtree repo path":          "  wtree repo path backend\n",

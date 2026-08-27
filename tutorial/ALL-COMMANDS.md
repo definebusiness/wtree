@@ -2,9 +2,11 @@
 
 This tutorial exercises every `wtree` command in the situations users are
 most likely to encounter: publishing with `init`, consuming with `clone`,
-inspecting configuration and registry state, creating and checking out
-workspaces, importing complete and partial workspaces, handling dirty
-worktrees, retaining and restoring state, diagnosing it, and deleting it.
+inspecting configuration and registry state, refreshing declared remote
+revisions, running a direct command across the default composition, checking
+push readiness, creating and checking out workspaces, importing complete and
+partial workspaces, handling dirty worktrees, retaining and restoring state,
+diagnosing it, and deleting it.
 
 The commands form one ordered scenario. The automated counterpart is
 [`run-all-commands.sh`](run-all-commands.sh); it runs the same lifecycle in an
@@ -26,6 +28,10 @@ isolated temporary directory and compares the normalized end result with
 | `wtree import` | custom mounts by Git identity, complete import, rejected and allowed partial import |
 | `wtree list/status/path` | current and named workspace lookup, text and JSON, explicit project selection |
 | `wtree repo path/get` | root and nested context, text and JSON |
+| `wtree update` | stored-source dry-run authority snapshot, declared root and nested remote revisions, clean normalized result |
+| `wtree exec` | direct-argv JSON command across the default composition, stable parent-first result order |
+| `wtree fetch` | dry-run authority snapshot, configured tracking-ref refresh without moving local HEAD, subsequent status refresh |
+| `wtree push` | deterministic JSON readiness across the default composition without publishing or changing refs |
 | `wtree remove` | dry-run, retained state, dirty refusal, narrow `--force` override |
 | `wtree delete` | dry-run, complete deletion, partial-workspace refusal |
 | `wtree doctor` | healthy checkout, retained checkout, partial checkout, fix dry-run |
@@ -80,6 +86,10 @@ wtree --how-to
 wtree clone --help
 wtree project --help
 wtree config --help
+wtree update --help
+wtree exec --help
+wtree fetch --help
+wtree push --help
 ```
 
 Use `wtree <command> --help` for each remaining command as needed. Help and
@@ -276,6 +286,51 @@ wtree status default --project "$WTREE_PROJECT"
 
 Use `path` and `repo path` for shell composition. Do not reconstruct sanitized
 workspace directories.
+
+### Default-composition update, exec, fetch, and push readiness
+
+The fixture origins are local bare repositories, so this part of the
+tutorial neither contacts the network nor uses user data. Make remote changes
+only in temporary publisher clones, with a local identity and hooks disabled:
+
+```sh
+export WTREE_ORIGINS="$WTREE_ALL_COMMANDS/consumer/origins"
+git -c core.hooksPath=/dev/null clone "$WTREE_ORIGINS/acme-shop.git" \
+  "$WTREE_ALL_COMMANDS/root-publisher"
+git -C "$WTREE_ALL_COMMANDS/root-publisher" config user.name 'Wtree Tutorial'
+git -C "$WTREE_ALL_COMMANDS/root-publisher" config user.email tutorial@wtree.invalid
+printf 'Remote root update.\n' > "$WTREE_ALL_COMMANDS/root-publisher/tutorial-update.txt"
+git -C "$WTREE_ALL_COMMANDS/root-publisher" add tutorial-update.txt
+git -C "$WTREE_ALL_COMMANDS/root-publisher" commit -m 'Advance root for update'
+git -C "$WTREE_ALL_COMMANDS/root-publisher" push origin main
+```
+
+The runner snapshots every checkout's HEAD, refs, index, config, `FETCH_HEAD`,
+and every fixture-owned bare-origin ref around the dry run. It refreshes only
+the declared local root tracking ref required for the stored-source update
+preflight, then proves the dry run changes none of those authorities:
+
+```sh
+wtree update --dry-run --json
+wtree update --json
+wtree doctor --json
+wtree status --json
+wtree exec --json -- git rev-parse --is-inside-work-tree
+wtree push --json
+```
+
+The JSON rows are `root`, `backend`, then `frontend`. The real update advances
+only the declared root revision; `exec` uses direct argv (not a shell) and
+returns `true` for each checkout; and ready `push` reports readiness only. The
+runner snapshots local and bare refs around `push` to prove it did not publish,
+create, or delete a ref.
+
+Advance `java-backend` in another temporary publisher clone. A fetch dry run
+has the same complete no-mutation snapshot; the real fetch updates only its
+configured `origin/main` tracking ref, never its local HEAD. `wtree status
+--json` then reports backend behind by one. Finish with `wtree update --json`
+to consume that declared revision, restoring all three default checkouts to a
+clean, resolvable, up-to-date state before the later workspace examples.
 
 ## 7. Existing-branch checkout situations
 

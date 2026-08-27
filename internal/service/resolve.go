@@ -65,13 +65,14 @@ type projectSelection struct {
 // repository using explicit selection, local configuration, then Git identity.
 type Resolver struct {
 	git              gitadapter.Git
+	locker           ProjectLocker
 	writeRegistryCAS func(string, store.Registry, func() error) error
 	writeRawCAS      func(string, []byte, func() error) error
 	writeRecoveryCAS func(string, store.RecoveryRecord, func() error) error
 }
 
 func NewResolver() *Resolver {
-	return &Resolver{git: gitadapter.NewAdapter("git"), writeRegistryCAS: store.WriteRegistryCAS, writeRawCAS: store.WriteRawCAS, writeRecoveryCAS: store.WriteRecoveryCAS}
+	return &Resolver{git: gitadapter.NewAdapter("git"), locker: lock.Manager{}, writeRegistryCAS: store.WriteRegistryCAS, writeRawCAS: store.WriteRawCAS, writeRecoveryCAS: store.WriteRecoveryCAS}
 }
 
 // ResolveProject resolves only the project aggregate. Import uses this lighter
@@ -119,9 +120,25 @@ func (r *Resolver) ResolveProject(ctx context.Context, request ResolveRequest) (
 // ReconcileProject records a relocated project only after a mutating command
 // has completed its read-only preflight.
 func (r *Resolver) ReconcileProject(ctx context.Context, dataDir string, project domain.Project) error {
-	if r == nil || r.writeRegistryCAS == nil || r.writeRawCAS == nil || r.writeRecoveryCAS == nil {
+	if r == nil || r.locker == nil || r.writeRegistryCAS == nil || r.writeRawCAS == nil || r.writeRecoveryCAS == nil {
 		return NewError(ErrorInternal, errors.New("project reconciliation publication is not configured"))
 	}
+	// Every resolver-backed mutator funnels through reconciliation before it
+	// publishes registry facts. Keep read-only resolution intentionally outside
+	// this guard so status and doctor can report interrupted updates.
+	// Reconciliation publishes the global registry, so preserve the repository's
+	// established registry -> project ordering. The active-journal recheck still
+	// occurs only after the project lock is held.
+	registryHandle, err := (lock.Manager{}).RegistryLock(ctx, dataDir, time.Second)
+	if err != nil {
+		return NewError(ErrorConflict, fmt.Errorf("acquire project reconciliation registry lock: %w", err))
+	}
+	defer registryHandle.Unlock()
+	handle, err := acquireProjectMutationAuthority(ctx, r.locker, dataDir, project.ID, time.Second)
+	if err != nil {
+		return err
+	}
+	defer handle.Unlock()
 	registry, err := readRegistry(filepath.Join(dataDir, "registry.json"))
 	if err != nil {
 		return err
@@ -199,6 +216,11 @@ func (r *Resolver) resolve(ctx context.Context, request ResolveRequest, reconcil
 		}
 	}
 	project := selection.Project
+	if reconcile {
+		if err := RefuseActiveUpdateJournal(request.DataDir, project.ID); err != nil {
+			return Resolution{}, err
+		}
+	}
 	if localConfig && reconcile {
 		registered, exists := registry.Projects[project.ID]
 		needsReconciliation, err := registryNeedsReconciliation(registered, exists, project)
@@ -808,11 +830,6 @@ func (r *Resolver) reconcileRegistry(ctx context.Context, dataDir string, projec
 	if !needsReconciliation {
 		return nil
 	}
-	registryLock, err := (lock.Manager{}).RegistryLock(ctx, dataDir, time.Second)
-	if err != nil {
-		return err
-	}
-	defer registryLock.Unlock()
 	path := filepath.Join(dataDir, "registry.json")
 	current, err := readRegistry(path)
 	if err != nil {

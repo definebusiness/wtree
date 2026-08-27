@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -116,6 +117,59 @@ func TestExecuteConfigUnsetFallsBackAndListReportsEffectiveSource(t *testing.T) 
 	list := testutil.RunCommand(t, cli.Execute, "config", "-p", project.Path, "list", "--project")
 	if list.Err != nil || !strings.Contains(list.Stdout, "worktrees.root = "+global+" (global)\n") || list.Stderr != "" {
 		t.Fatalf("config list = %#v", list)
+	}
+}
+
+func TestExecuteConfigProjectMutationsRefuseActiveUpdateJournalWithoutMutation(t *testing.T) {
+	for _, command := range [][]string{
+		{"set", "worktrees.root", filepath.Join(t.TempDir(), "blocked-worktrees")},
+		{"unset", "worktrees.root"},
+	} {
+		command := command
+		t.Run(command[0], func(t *testing.T) {
+			paths := isolateCLIPathEnvironment(t)
+			project := testutil.NewPushedGitRepository(t)
+			project.CommitFile("readme", "x\n", "initial")
+			if result := testutil.RunCommand(t, cli.Execute, "init", project.Path); result.Err != nil {
+				t.Fatalf("init = %#v", result)
+			}
+			local, err := config.ReadProjectFile(filepath.Join(project.Path, ".wtree.yml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if command[0] == "unset" {
+				if result := testutil.RunCommand(t, cli.Execute, "config", "-p", project.Path, "set", "worktrees.root", filepath.Join(t.TempDir(), "project-worktrees"), "--project"); result.Err != nil {
+					t.Fatalf("prepare project override = %#v", result)
+				}
+			}
+			writeActiveUpdateJournal(t, paths.DataDir, local.Project.ID)
+			before := captureUpdateDryRunInventory(t, project.Path, paths.DataDir, "", local.Project.ID)
+			globalPath := filepath.Join(paths.ConfigDir, "config.yml")
+			globalBefore, globalErr := os.ReadFile(globalPath)
+			if globalErr != nil && !os.IsNotExist(globalErr) {
+				t.Fatal(globalErr)
+			}
+			arguments := append([]string{"config", "-p", project.Path}, command...)
+			arguments = append(arguments, "--project")
+			result := testutil.RunCommand(t, cli.Execute, arguments...)
+			if result.Err == nil || cli.ExitCode(result.Err) != 8 || result.Stdout != "" || result.Stderr != "" {
+				t.Fatalf("active journal config %v = %#v", command, result)
+			}
+			if after := captureUpdateDryRunInventory(t, project.Path, paths.DataDir, "", local.Project.ID); !reflect.DeepEqual(after, before) {
+				t.Fatalf("active journal config %v mutated project/data/Git inventory:\nbefore=%#v\nafter=%#v", command, before, after)
+			}
+			globalAfter, afterErr := os.ReadFile(globalPath)
+			if (globalErr == nil) != (afterErr == nil) || (globalErr == nil && string(globalAfter) != string(globalBefore)) {
+				t.Fatalf("active journal config %v mutated global config before=%q/%v after=%q/%v", command, globalBefore, globalErr, globalAfter, afterErr)
+			}
+			for _, readOnly := range [][]string{{"get", "worktrees.root"}, {"list"}} {
+				args := append([]string{"config", "-p", project.Path}, readOnly...)
+				args = append(args, "--project")
+				if result := testutil.RunCommand(t, cli.Execute, args...); result.Err != nil || result.Stderr != "" {
+					t.Fatalf("read-only config %v = %#v", readOnly, result)
+				}
+			}
+		})
 	}
 }
 

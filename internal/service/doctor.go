@@ -26,6 +26,9 @@ type DoctorFinding struct {
 	RepositoryID string `json:"repositoryId,omitempty"`
 	Message      string `json:"message"`
 	Fixable      bool   `json:"fixable,omitempty"`
+	// path is private evidence retained while status projects local operation
+	// findings. It deliberately does not change the doctor wire contract.
+	path string
 }
 
 type DoctorRepair struct {
@@ -95,6 +98,9 @@ func (d *DoctorService) Doctor(ctx context.Context, project domain.Project, work
 	if d == nil || d.git == nil {
 		return DoctorReport{}, NewError(ErrorInternal, errors.New("doctor is not configured"))
 	}
+	if err := ctx.Err(); err != nil {
+		return DoctorReport{}, err
+	}
 	if err := project.Validate(); err != nil {
 		return DoctorReport{}, NewError(ErrorValidation, fmt.Errorf("validate project: %w", err))
 	}
@@ -107,6 +113,9 @@ func (d *DoctorService) Doctor(ctx context.Context, project domain.Project, work
 	}
 	for _, repository := range project.ParentFirst() {
 		identity, err := d.git.CommonGitDir(ctx, repository.SourcePath)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return DoctorReport{}, ctxErr
+		}
 		if err != nil || identity != repository.CommonGitDir {
 			report.Findings = append(report.Findings, DoctorFinding{Code: "source-identity-mismatch", Severity: "error", RepositoryID: repository.ID, Message: "configured source checkout is unavailable or has a different Git identity"})
 		}
@@ -149,6 +158,9 @@ func (d *DoctorService) Doctor(ctx context.Context, project domain.Project, work
 			report.Findings = append(report.Findings, DoctorFinding{Code: "mount-mismatch", Severity: "warning", RepositoryID: repository.ID, Message: "Git identity matches at a different persisted path or mount", Fixable: true})
 		}
 		branch, detached, branchErr := d.git.CurrentBranch(ctx, actual)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return DoctorReport{}, ctxErr
+		}
 		if branchErr != nil {
 			return DoctorReport{}, NewError(ErrorGit, fmt.Errorf("read branch for %q: %w", repository.ID, branchErr))
 		}
@@ -156,6 +168,9 @@ func (d *DoctorService) Doctor(ctx context.Context, project domain.Project, work
 			report.Findings = append(report.Findings, DoctorFinding{Code: "branch-mismatch", Severity: "warning", RepositoryID: repository.ID, Message: "actual Git branch or detached state differs from workspace state"})
 		}
 		head, headErr := d.git.Head(ctx, actual)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return DoctorReport{}, ctxErr
+		}
 		if headErr != nil {
 			return DoctorReport{}, NewError(ErrorGit, fmt.Errorf("read HEAD for %q: %w", repository.ID, headErr))
 		}
@@ -172,6 +187,34 @@ func (d *DoctorService) Doctor(ctx context.Context, project domain.Project, work
 	if hasRecovery(dataDir, project.ID, workspace.ID) {
 		report.Findings = append(report.Findings, DoctorFinding{Code: "recovery-record", Severity: "error", Message: "an incomplete rollback recovery record requires manual action"})
 	}
+	if err := ctx.Err(); err != nil {
+		return DoctorReport{}, err
+	}
+	// Shared-drift collection is part of the report's authority. Returning an
+	// error is safer than claiming a successful report after an unreadable or
+	// changing journal/reconciliation generation; context cancellation keeps its
+	// original identity for callers that need to stop promptly.
+	snapshot, snapshotErr := collectLocalDriftSnapshot(ctx, d.git, project, dataDir)
+	if snapshotErr != nil {
+		if errors.Is(snapshotErr, context.Canceled) || errors.Is(snapshotErr, context.DeadlineExceeded) {
+			return DoctorReport{}, snapshotErr
+		}
+		var unavailable doctorTrackedManifestUnavailable
+		if errors.As(snapshotErr, &unavailable) {
+			fallback, fallbackErr := doctorFallbackFindings(ctx, dataDir, project.ID)
+			if fallbackErr != nil {
+				if errors.Is(fallbackErr, context.Canceled) || errors.Is(fallbackErr, context.DeadlineExceeded) {
+					return DoctorReport{}, fallbackErr
+				}
+				return DoctorReport{}, NewError(ErrorConflict, fmt.Errorf("collect doctor operation evidence: %w", fallbackErr))
+			}
+			report.Findings = append(report.Findings, fallback...)
+		} else {
+			return DoctorReport{}, NewError(ErrorConflict, fmt.Errorf("collect doctor drift snapshot: %w", snapshotErr))
+		}
+	} else {
+		report.Findings = append(report.Findings, doctorDriftFindings(snapshot)...)
+	}
 	if workspace.Validate(project) == nil {
 		report.Repositories = doctorRepositories(project, workspace, observed, report.Findings)
 	}
@@ -186,6 +229,7 @@ func (d *DoctorService) Doctor(ctx context.Context, project domain.Project, work
 		}
 		return left < right
 	})
+	report.Findings = uniqueDoctorFindings(report.Findings)
 	return report, nil
 }
 
@@ -237,9 +281,9 @@ func (d *DoctorService) Fix(ctx context.Context, project domain.Project, workspa
 	if d.locker == nil || d.writeWorkspaceCAS == nil || d.writeRawCAS == nil || d.writeRecoveryCAS == nil {
 		return DoctorReport{}, NewError(ErrorInternal, errors.New("doctor repair is not configured"))
 	}
-	handle, err := d.locker.ProjectLock(ctx, request.DataDir, project.ID, time.Second)
+	handle, err := acquireProjectMutationAuthority(ctx, d.locker, request.DataDir, project.ID, time.Second)
 	if err != nil {
-		return DoctorReport{}, NewError(ErrorConflict, fmt.Errorf("acquire project mutation lock: %w", err))
+		return DoctorReport{}, err
 	}
 	defer handle.Unlock()
 	statePath := WorkspaceStatePath(request.DataDir, project.ID, workspace.ID)
@@ -296,6 +340,9 @@ func (d *DoctorService) Fix(ctx context.Context, project domain.Project, workspa
 
 func (d *DoctorService) missingWorktreeRegistration(ctx context.Context, source, path string) (bool, error) {
 	worktrees, err := d.git.ListWorktrees(ctx, source)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, ctxErr
+	}
 	if err != nil {
 		return false, NewError(ErrorGit, fmt.Errorf("list worktrees for %q: %w", source, err))
 	}
@@ -331,10 +378,16 @@ func (d *DoctorService) discover(ctx context.Context, project domain.Project, ro
 			return nil
 		}
 		top, err := d.git.TopLevel(ctx, path)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil || !sameCheckoutPath(top, path) {
 			return nil
 		}
 		identity, err := d.git.CommonGitDir(ctx, path)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return NewError(ErrorGit, fmt.Errorf("read Git identity at %q: %w", path, err))
 		}

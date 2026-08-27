@@ -262,6 +262,30 @@ func TestAdapterSelectedRefFetchExcludesUnrelatedRefsTagsAndObjects(t *testing.T
 	}
 }
 
+func TestAdapterSelectedRefFetchPreservesFETCH_HEAD(t *testing.T) {
+	_, remote := pushedRepository(t, "published")
+	target := filepath.Join(t.TempDir(), "clone")
+	adapter := git.NewAdapter("git")
+	if err := adapter.Clone(context.Background(), remote, target, "mirror"); err != nil {
+		t.Fatal(err)
+	}
+	fetchHead := filepath.Join(target, ".git", "FETCH_HEAD")
+	if err := os.WriteFile(fetchHead, []byte("sentinel fetch head\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(fetchHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.FetchTrackingBranch(context.Background(), target, "mirror", "refs/heads/published"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(fetchHead)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("FETCH_HEAD = %q, %v; want sentinel", after, err)
+	}
+}
+
 func TestAdapterCheckoutUsesFullBranchRefsWhenTagHasSameShortName(t *testing.T) {
 	_, remote := pushedRepository(t, "published")
 	target := filepath.Join(t.TempDir(), "clone")
