@@ -65,11 +65,15 @@ type CloneExecutorDependencies struct {
 	AfterEffect       func(string) error
 }
 
-type CloneExecutor struct{ dependencies CloneExecutorDependencies }
+type CloneExecutor struct {
+	dependencies  CloneExecutorDependencies
+	defaultRename bool
+}
 
 func NewCloneExecutor() *CloneExecutor { return NewCloneExecutorWith(CloneExecutorDependencies{}) }
 
 func NewCloneExecutorWith(dependencies CloneExecutorDependencies) *CloneExecutor {
+	defaultRename := dependencies.Rename == nil
 	if dependencies.Git == nil {
 		dependencies.Git = gitadapter.NewAdapter("git")
 	}
@@ -141,7 +145,7 @@ func NewCloneExecutorWith(dependencies CloneExecutorDependencies) *CloneExecutor
 	if dependencies.EvalSymlinks == nil {
 		dependencies.EvalSymlinks = filepath.EvalSymlinks
 	}
-	return &CloneExecutor{dependencies: dependencies}
+	return &CloneExecutor{dependencies: dependencies, defaultRename: defaultRename}
 }
 
 // Execute materializes only decisions already owned by an immutable M03 plan.
@@ -182,15 +186,18 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 	}
 
 	prefix := "." + filepath.Base(plan.Destination.Path) + ".wtree-clone-"
-	staging, err := executor.dependencies.MkdirTemp(plan.Destination.CanonicalParent, prefix)
+	parentIdentity := ancestorIdentities[len(ancestorIdentities)-1]
+	staging, owned, stagingLease, err := createCloneStaging(
+		plan.Destination.CanonicalParent,
+		prefix,
+		parentIdentity.info,
+		executor.dependencies.MkdirTemp,
+		executor.dependencies.Lstat,
+	)
 	if err != nil {
 		return CloneExecutionResult{}, NewError(ErrorInternal, fmt.Errorf("create private clone staging: %w", err))
 	}
-	staging = filepath.Clean(staging)
-	owned, err := executor.dependencies.Lstat(staging)
-	if err != nil || !owned.IsDir() || owned.Mode().Perm()&0o077 != 0 || filepath.Dir(staging) != plan.Destination.CanonicalParent || !strings.HasPrefix(filepath.Base(staging), prefix) {
-		return CloneExecutionResult{}, cleanCloneError(errors.New("staging creator returned an unsafe path"))
-	}
+	defer stagingLease.closeAll()
 	published := false
 	ownershipCompromised := false
 	identities := map[string]string{}
@@ -203,7 +210,17 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		if ownershipCompromised {
 			return errors.Join(cause, NewError(ErrorRollbackIncomplete, errors.New("clone staging or parent identity changed; preserving all paths")))
 		}
-		if cleanupErr := executor.removeOwnedTree(context.WithoutCancel(ctx), plan, staging, owned, published, inventoryReady, treeInventory, configPublished, expectedFinalIdentities); cleanupErr != nil {
+		if !published {
+			if closeErr := stagingLease.releaseChild(staging, owned, parentIdentity.info, executor.dependencies.Lstat); closeErr != nil {
+				ownershipCompromised = true
+				return errors.Join(cause, NewError(ErrorRollbackIncomplete, fmt.Errorf("clone staging handle validation or close failed; preserving all paths: %w", closeErr)))
+			}
+		}
+		if closeErr := stagingLease.closeAll(); closeErr != nil {
+			ownershipCompromised = true
+			return errors.Join(cause, NewError(ErrorRollbackIncomplete, fmt.Errorf("clone staging handle close failed; preserving all paths: %w", closeErr)))
+		}
+		if cleanupErr := executor.removeOwnedTree(context.WithoutCancel(ctx), plan, staging, owned, parentIdentity.info, published, inventoryReady, treeInventory, configPublished, expectedFinalIdentities); cleanupErr != nil {
 			recoveryErr := error(nil)
 			if published && recordRecovery != nil {
 				recoveryErr = recordRecovery("cleanup", "destination", cleanupErr)
@@ -335,7 +352,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		return CloneExecutionResult{}, cleanup(NewError(ErrorInternal, fmt.Errorf("write local clone config: %w", err)))
 	}
 	configPublished, err = secureCloneFileSnapshot(configPath)
-	if err != nil || !configPublished.exists || !bytes.Equal(configPublished.data, expectedConfigBytes) || configPublished.mode.Perm() != 0o600 {
+	if err != nil || !configPublished.exists || !bytes.Equal(configPublished.data, expectedConfigBytes) || !requestedFilePermissionsMatch(configPublished.mode, 0o600) {
 		return CloneExecutionResult{}, cleanup(NewError(ErrorInternal, errors.New("local clone config bytes, type, identity, or mode differ from plan")))
 	}
 	ignored, err := executor.dependencies.Git.IsIgnoredAt(ctx, basePath, heads[baseRepository.ID], ".wtree.yml")
@@ -447,12 +464,29 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 	if err := executor.revalidateLocal(plan, false); err != nil {
 		return CloneExecutionResult{}, cleanup(classifyCloneExecutionError("destination rename revalidation", err))
 	}
+	if err := stagingLease.releaseChild(staging, owned, parentIdentity.info, executor.dependencies.Lstat); err != nil {
+		ownershipCompromised = true
+		return CloneExecutionResult{}, cleanup(NewError(ErrorConflict, fmt.Errorf("validate private clone staging before publication: %w", err)))
+	}
 	if err := executor.dependencies.Rename(staging, plan.Destination.Path); err != nil {
 		return CloneExecutionResult{}, cleanup(NewError(ErrorConflict, fmt.Errorf("publish clone destination: %w", err)))
 	}
 	published = true
-	if err := translateCloneRootAfterRename(plan.Destination.Path, &treeInventory); err != nil {
+	var renameOwnedInfo os.FileInfo
+	if executor.defaultRename {
+		renameOwnedInfo, err = os.Lstat(plan.Destination.Path)
+		if err != nil {
+			return CloneExecutionResult{}, cleanup(NewError(ErrorConflict, fmt.Errorf("capture platform-owned rename result: %w", err)))
+		}
+	}
+	if err := translateCloneRootAfterRename(plan.Destination.Path, &treeInventory, renameOwnedInfo); err != nil {
 		return CloneExecutionResult{}, cleanup(NewError(ErrorConflict, fmt.Errorf("capture published clone root: %w", err)))
+	}
+	if err := revalidateCloneTree(plan.Destination.Path, treeInventory); err != nil {
+		return CloneExecutionResult{}, cleanup(NewError(ErrorConflict, fmt.Errorf("validate published clone root: %w", err)))
+	}
+	if err := stagingLease.closeAll(); err != nil {
+		return CloneExecutionResult{}, cleanup(NewError(ErrorRollbackIncomplete, fmt.Errorf("close clone staging parent handle: %w", err)))
 	}
 	if err := executor.afterValidated(ctx, progress, "destination-rename", func() error { return revalidateCloneTree(plan.Destination.Path, treeInventory) }); err != nil {
 		return CloneExecutionResult{}, cleanup(err)
@@ -760,12 +794,12 @@ func (executor *CloneExecutor) finalIdentities(ctx context.Context, plan ClonePl
 	return identities, nil
 }
 
-func (executor *CloneExecutor) removeOwnedTree(ctx context.Context, plan ClonePlan, staging string, created os.FileInfo, published, inventoryReady bool, inventory cloneTreeInventory, configSnapshot cloneFileSnapshot, expectedIdentities map[string]string) error {
+func (executor *CloneExecutor) removeOwnedTree(ctx context.Context, plan ClonePlan, staging string, created, parent os.FileInfo, published, inventoryReady bool, inventory cloneTreeInventory, configSnapshot cloneFileSnapshot, expectedIdentities map[string]string) error {
 	target := staging
 	if published {
 		target = plan.Destination.Path
 	}
-	if filepath.Clean(filepath.Dir(target)) != filepath.Clean(plan.Destination.CanonicalParent) {
+	if !clonePathHasParentIdentity(target, parent, executor.dependencies.Lstat) {
 		return errors.New("refuse clone cleanup outside destination parent")
 	}
 	info, err := executor.dependencies.Lstat(target)
@@ -803,6 +837,22 @@ func (executor *CloneExecutor) removeOwnedTree(ctx context.Context, plan ClonePl
 		}
 	}
 	return executor.dependencies.RemoveAll(target)
+}
+
+func cloneStagingPathIsSafe(staging, prefix string, stagingInfo, parentInfo os.FileInfo, privacyProven bool, lstat func(string) (os.FileInfo, error)) bool {
+	if !filepath.IsAbs(staging) || filepath.Clean(staging) != staging || stagingInfo == nil || !stagingInfo.IsDir() ||
+		stagingInfo.Mode()&os.ModeSymlink != 0 || !privacyProven || !strings.HasPrefix(filepath.Base(staging), prefix) {
+		return false
+	}
+	return clonePathHasParentIdentity(staging, parentInfo, lstat)
+}
+
+func clonePathHasParentIdentity(path string, expected os.FileInfo, lstat func(string) (os.FileInfo, error)) bool {
+	if expected == nil || !expected.IsDir() || expected.Mode()&os.ModeSymlink != 0 || lstat == nil {
+		return false
+	}
+	actual, err := lstat(filepath.Dir(path))
+	return err == nil && actual.IsDir() && actual.Mode()&os.ModeSymlink == 0 && os.SameFile(expected, actual)
 }
 
 func (executor *CloneExecutor) writeCloneRecoveryCAS(plan ClonePlan, original cloneFileSnapshot, owned *cloneFileSnapshot, failedStep, retainedStep string, failure error) error {

@@ -10,15 +10,16 @@ import (
 
 func TestWorkspaceValidatesCompleteAndExplicitPartialMembership(t *testing.T) {
 	project := testProject()
+	root := filepath.Join(t.TempDir(), "feature-login")
 	complete := domain.Workspace{
 		Version:  1,
 		ID:       "workspace-1",
 		Name:     "feature/login",
-		RootPath: "/workspaces/feature-login",
+		RootPath: root,
 		Checkouts: []domain.Checkout{
-			{RepositoryID: "root", Branch: "feature/login", Head: "abc", Mount: ".", ResolvedPath: "/workspaces/feature-login"},
-			{RepositoryID: "backend", Branch: "feature/login", Head: "def", Mount: "api", ResolvedPath: "/workspaces/feature-login/api"},
-			{RepositoryID: "shared", Branch: "feature/login", Head: "ghi", Mount: "common", ResolvedPath: "/workspaces/feature-login/api/common"},
+			{RepositoryID: "root", Branch: "feature/login", Head: "abc", Mount: ".", ResolvedPath: root},
+			{RepositoryID: "backend", Branch: "feature/login", Head: "def", Mount: "api", ResolvedPath: filepath.Join(root, "api")},
+			{RepositoryID: "shared", Branch: "feature/login", Head: "ghi", Mount: "common", ResolvedPath: filepath.Join(root, "api", "common")},
 		},
 	}
 	if err := complete.Validate(project); err != nil {

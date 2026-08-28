@@ -507,6 +507,9 @@ func (c *WorkspaceCreator) removeOwnedCreatedWorktree(ctx context.Context, sourc
 	if receipt == nil || !os.SameFile(receipt.info, ownedInfo) || c.worktreeReceiptMatches(ctx, worktreePath, receipt) != nil {
 		return false, fmt.Errorf("preserve created worktree because %q no longer has the transaction ownership receipt", worktreePath)
 	}
+	if !primeFileIdentity(ownedInfo) {
+		return false, fmt.Errorf("capture created worktree directory identity: %q", worktreePath)
+	}
 	quarantineRoot, err := os.MkdirTemp(filepath.Dir(worktreePath), ".wtree-worktree-rollback-*")
 	if err != nil {
 		return false, fmt.Errorf("allocate private worktree quarantine: %w", err)

@@ -1,6 +1,6 @@
 # Documentation status overview
 
-Last reviewed: 2026-08-27
+Last reviewed: 2026-08-28
 
 This document summarizes lifecycle metadata for the idea, specification, and
 implementation-plan documents under `docs/`. Operational documentation,
@@ -11,13 +11,13 @@ ledgers do not use this lifecycle.
 
 | Status | Count |
 |---|---:|
-| `initial` | 6 |
+| `initial` | 8 |
 | `specified` | 4 |
-| `planned` | 3 |
+| `planned` | 4 |
 | `implemented` | 14 |
 | `superseded` | 2 |
 | `abandoned` | 0 |
-| **Total** | **29** |
+| **Total** | **32** |
 
 ## Ideas
 
@@ -30,6 +30,7 @@ ledgers do not use this lifecycle.
 | [Final reviewer](ideas/workflow/final-reviewer.md) | `initial` | None |
 | [Immutable release lock manifests](ideas/release-lock-manifests.md) | `initial` | None |
 | [Logical project roots with a designated base repository](ideas/logical-project-root-base-repository.md) | `specified` | [Portable manifest v2 base-repository format specification](spec/portable-manifest-v2-base-repository-format.md); [logical project root and repository forest specification](spec/logical-project-root-base-repository.md) |
+| [Machine-local and shared workspace lifecycle hooks](ideas/local-workspace-lifecycle-hooks.md) | `initial` | None; complements the planned specification's portable `post-clone` contract |
 | [Archon-based harness for deterministic milestone orchestration](ideas/workflow/creating-a-minimal-harness-to-process-the-statemachine.md) | `specified` | [Archon deterministic milestone harness specification](spec/archon-milestone-harness.md) |
 
 ## Specifications
@@ -41,12 +42,13 @@ ledgers do not use this lifecycle.
 | [Nested mount ignore management specification](spec/nested-mount-ignore-management.md) | `superseded` | Created directly; superseded by the [automatic protection story](ideas/automatic-nested-mount-ignore-protection.md) | [Nested mount ignore management implementation plan](plans/nested-mount-ignore-management.md), also superseded |
 | [Automatic nested mount ignore protection specification](spec/automatic-nested-mount-ignore-protection.md) | `implemented` | [Automatically protect nested repository mounts](ideas/automatic-nested-mount-ignore-protection.md) | [Automatic nested mount ignore protection implementation plan](plans/automatic-nested-mount-ignore-protection.md) |
 | [Archon deterministic milestone harness specification](spec/archon-milestone-harness.md) | `planned` | [Archon-based harness for deterministic milestone orchestration](ideas/workflow/creating-a-minimal-harness-to-process-the-statemachine.md) | [Archon deterministic milestone harness implementation plan](plans/archon-milestone-harness.md) |
-| [Full multi-repository experience capability specification](spec/full-multi-repository-experience.md) | `planned` | Created directly from preserved source material | [Multi-repository composition loop and aggregate operations implementation plan](plans/full-multi-repository-experience.md); first split delivery covers P0/P1, requires post-change repository/workspace usability without older-release compatibility, and leaves later compatibility-gated capabilities to focused specifications and plans |
+| [Full multi-repository experience capability specification](spec/full-multi-repository-experience.md) | `planned` | Created directly from preserved source material | [Multi-repository composition loop and aggregate operations implementation plan](plans/full-multi-repository-experience.md); first split delivery covers P0/P1, while deferred P3 limits directly executable portable hooks to explicitly authorized `post-clone` and delegates local/shared hooks to the focused idea |
 | [Full multi-repository experience P0/P1 traceability](spec/full-multi-repository-experience.traceability.md) | `planned` | Created directly as a companion to the [full multi-repository experience capability specification](spec/full-multi-repository-experience.md) | [Multi-repository composition loop and aggregate operations implementation plan](plans/full-multi-repository-experience.md); maps delivered M00–M09 P0/P1 contracts to focused, integrated, documentation, and CI evidence while retaining exact gates for P2/P3/P4 |
 | [Live-branch clone and upstream-aware human status specification](spec/clone-live-branch-and-upstream-status.md) | `implemented` | Created directly | [Live-branch clone and upstream-aware human status implementation plan](plans/clone-live-branch-and-upstream-status.md) |
 | [Logical project root and repository forest specification](spec/logical-project-root-base-repository.md) | `implemented` | [Logical project roots with a designated base repository](ideas/logical-project-root-base-repository.md) | [Logical project root and repository forest implementation plan](plans/logical-project-root-base-repository.md) |
 | [Portable manifest clone specification](spec/portable-manifest-clone.md) | `implemented` | [Clone and synchronize idea](ideas/cloning-a-multi-repository-project.md) | [Portable manifest clone implementation plan](plans/portable-manifest-clone.md); current format defined by the [portable manifest v2 specification](spec/portable-manifest-v2-base-repository-format.md) |
 | [Portable manifest v2 base-repository format specification](spec/portable-manifest-v2-base-repository-format.md) | `implemented` | [Logical project roots with a designated base repository](ideas/logical-project-root-base-repository.md) | [Portable manifest v2 base-repository format implementation plan](plans/portable-manifest-v2-base-repository-format.md) |
+| [Windows portability and CI hardening specification](spec/windows-portability-and-ci-hardening.md) | `planned` | Created directly; follows the implemented automatic nested mount ignore work | [Windows portability and CI hardening implementation plan](plans/windows-portability-and-ci-hardening.md) |
 
 The logical-project-root specification and its implementation plan are now
 implemented. All milestones M00–M08 are independently approved and verified,
@@ -69,6 +71,7 @@ lifecycle state after producing the specification.
 | [Live-branch clone and upstream-aware human status implementation plan](plans/clone-live-branch-and-upstream-status.md) | `implemented` | [Live-branch clone and upstream-aware human status specification](spec/clone-live-branch-and-upstream-status.md) | All milestones M00–M02 approved; [durable run ledger](ai/runs/clone-live-branch-and-upstream-status.md) is complete; live selected-branch clone, v2 observed/actual output, and upstream-aware human status are implemented and verified |
 | [Portable manifest clone implementation plan](plans/portable-manifest-clone.md) | `implemented` | [Portable manifest clone specification](spec/portable-manifest-clone.md) | All milestones M00–M06 are approved; portable manifest clone is implemented and verified, with the current format supplied by the implemented v2 specification and plan. |
 | [Portable manifest v2 base-repository format implementation plan](plans/portable-manifest-v2-base-repository-format.md) | `implemented` | [Portable manifest v2 base-repository format specification](spec/portable-manifest-v2-base-repository-format.md) | All milestones M00–M02 approved; [durable run ledger](ai/runs/portable-manifest-v2-base-repository-format.md) is complete; strict v2 config, init authoring, and clone verification are implemented and verified. |
+| [Windows portability and CI hardening implementation plan](plans/windows-portability-and-ci-hardening.md) | `initial` | [Windows portability and CI hardening specification](spec/windows-portability-and-ci-hardening.md) | Authorized [durable run](ai/runs/windows-portability-and-ci-hardening.md) has M00–M02 independently approved and verified. M03 is locally complete with the eleven-candidate audit, focused integration coverage, five-package Windows compilation, 549-target exact-once shard audit, and bounded full normal/race suites passing. M03, the plan, and the specification remain non-implemented because a matching Ubuntu/macOS/Windows Actions run cannot represent the uncommitted reviewed tree without separately authorized commit/push/PR activity; the ledger records external blocker B1 and the safe continuation condition. |
 
 ## Maintenance
 

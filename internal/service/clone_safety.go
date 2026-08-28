@@ -64,7 +64,7 @@ func revalidateCloneFileSnapshot(expected cloneFileSnapshot) error {
 }
 
 func cloneSnapshotHasExactBytes(snapshot cloneFileSnapshot, data []byte, mode os.FileMode) bool {
-	return snapshot.exists && snapshot.mode.IsRegular() && snapshot.mode&os.ModeSymlink == 0 && snapshot.mode.Perm() == mode.Perm() && bytes.Equal(snapshot.data, data)
+	return snapshot.exists && snapshot.mode.IsRegular() && snapshot.mode&os.ModeSymlink == 0 && requestedFilePermissionsMatch(snapshot.mode, mode) && bytes.Equal(snapshot.data, data)
 }
 
 func revalidateClonePublicationGeneration(registry, state, recovery cloneFileSnapshot) error {
@@ -100,6 +100,9 @@ func captureCloneTree(root string) (cloneTreeInventory, error) {
 		info, err := os.Lstat(path)
 		if err != nil {
 			return err
+		}
+		if !primeFileIdentity(info) {
+			return fmt.Errorf("capture clone tree identity: %q", path)
 		}
 		item := cloneTreeEntry{path: filepath.ToSlash(relative), mode: info.Mode(), size: info.Size(), mtime: info.ModTime().UnixNano(), info: info}
 		switch {
@@ -149,13 +152,11 @@ func revalidateCloneTree(root string, expected cloneTreeInventory) error {
 	return nil
 }
 
-// translateCloneRootAfterRename records the one transition owned by publishing
-// the staging directory under its final name: its path. The root object itself
-// and every item in its pre-rename inventory remain exact. In particular, do
-// not rebase directory size or modification time from a post-rename Lstat:
-// doing so would attribute a mutation performed after the atomic rename but
-// before this check to the publication itself.
-func translateCloneRootAfterRename(root string, inventory *cloneTreeInventory) error {
+// translateCloneRootAfterRename records only a transition captured by the
+// non-injected rename boundary. Unix retains every root attribute exactly.
+// Windows may translate the root timestamp in the platform-owned observation;
+// injected rename seams and every subsequent inventory check remain exact.
+func translateCloneRootAfterRename(root string, inventory *cloneTreeInventory, renameOwnedInfo os.FileInfo) error {
 	if inventory == nil || len(inventory.entries) == 0 {
 		return errors.New("clone tree inventory is empty")
 	}
@@ -169,16 +170,22 @@ func translateCloneRootAfterRename(root string, inventory *cloneTreeInventory) e
 	if rootIndex == -1 {
 		return errors.New("clone tree inventory has no root")
 	}
-	want := inventory.entries[rootIndex]
-	info, err := os.Lstat(root)
-	if err != nil {
-		return err
+	want := &inventory.entries[rootIndex]
+	info := renameOwnedInfo
+	if info == nil {
+		var err error
+		info, err = os.Lstat(root)
+		if err != nil {
+			return err
+		}
 	}
-	if want.info == nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !os.SameFile(want.info, info) || want.mode != info.Mode() || want.size != info.Size() || want.mtime != info.ModTime().UnixNano() || want.digest != "" {
+	if !reconcileCloneRootAfterRename(want, info, renameOwnedInfo != nil) {
 		return errors.New("published clone root identity or metadata changed")
 	}
 	return nil
 }
+
+func primeFileIdentity(info os.FileInfo) bool { return info != nil && os.SameFile(info, info) }
 
 type clonePathIdentity struct {
 	path string

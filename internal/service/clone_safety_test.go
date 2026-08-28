@@ -24,7 +24,11 @@ func TestTranslateCloneRootAfterRenamePreservesExactRootMetadata(t *testing.T) {
 	if err := os.Rename(staging, destination); err != nil {
 		t.Fatal(err)
 	}
-	if err := translateCloneRootAfterRename(destination, &inventory); err != nil {
+	renameInfo, err := os.Lstat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := translateCloneRootAfterRename(destination, &inventory, renameInfo); err != nil {
 		t.Fatalf("translateCloneRootAfterRename() error = %v", err)
 	}
 	if err := revalidateCloneTree(destination, inventory); err != nil {
@@ -46,7 +50,11 @@ func TestTranslateCloneRootAfterRenameStillRejectsLaterRootMetadataMutation(t *t
 	if err := os.Rename(staging, destination); err != nil {
 		t.Fatal(err)
 	}
-	if err := translateCloneRootAfterRename(destination, &inventory); err != nil {
+	renameInfo, err := os.Lstat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := translateCloneRootAfterRename(destination, &inventory, renameInfo); err != nil {
 		t.Fatal(err)
 	}
 	changed := time.Now().Add(-time.Hour).Round(0)

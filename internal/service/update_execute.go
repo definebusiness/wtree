@@ -2253,7 +2253,7 @@ func (executor *UpdateExecutor) addedRepositoryEffectWithin(request UpdateExecut
 		if err != nil || !publishedInfo.IsDir() || publishedInfo.Mode()&os.ModeSymlink != 0 {
 			return "", errors.New("published repository mount changed")
 		}
-		if err := translateCloneRootAfterRename(observation.Path, &inventory); err != nil {
+		if err := translateCloneRootAfterRename(observation.Path, &inventory, publishedInfo); err != nil {
 			return "", fmt.Errorf("published repository identity changed: %w", err)
 		}
 		commonGitDir, err = executor.dependencies.Git.CommonGitDir(effectCtx, observation.Path)

@@ -529,9 +529,10 @@ func TestPortableManifestRejectsInvalidGraphAndFields(t *testing.T) {
 }
 
 func TestValidateCloneURLClasses(t *testing.T) {
+	localRoot := t.TempDir()
 	for _, input := range []string{
 		"https://example.test/org/repo.git", "http://example.test/org/repo.git", "HTTPS://example.test/org/repo.git", "hTtP://example.test/org/repo.git", "ssh://git@example.test/org/repo.git",
-		"git@example.test:org/repo.git", "example.test:org/repo.git", "/srv/git/repo.git", "/srv/git/my repo.git", `C:\\git\\repo.git`, "file:///srv/git/repo.git",
+		"git@example.test:org/repo.git", "example.test:org/repo.git", filepath.Join(localRoot, "git", "repo.git"), filepath.Join(localRoot, "git", "my repo.git"), `C:\\git\\repo.git`, "file:///srv/git/repo.git",
 	} {
 		if err := config.ValidateCloneURL(input); err != nil {
 			t.Errorf("ValidateCloneURL(%q) error = %v", input, err)
@@ -659,6 +660,7 @@ func TestMarshalPortableManifestSortsInitialCommits(t *testing.T) {
 }
 
 func TestLocalProjectConfigRequiresV2AndRoundTripsRequiredManifest(t *testing.T) {
+	root := t.TempDir()
 	old := []byte("version: 1\nproject:\n  id: p1\n  name: product\nrepositories:\n  root:\n    source: .\n    mount: .\n")
 	if _, err := config.LoadProject(old); err == nil || !strings.Contains(err.Error(), "reinitialization is required") {
 		t.Fatalf("LoadProject(v1) error = %v, want reinitialization diagnostic", err)
@@ -674,7 +676,7 @@ func TestLocalProjectConfigRequiresV2AndRoundTripsRequiredManifest(t *testing.T)
 	if err != nil || string(readBack) != string(old) {
 		t.Fatalf("ReadProjectFile changed rejected v1 data: %q, %v", readBack, err)
 	}
-	loaded := config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{ID: "p1", Name: "product", BaseRepository: "root"}, LogicalRoot: ".", Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: ".", DefaultBranch: "main"}}, Worktrees: config.Worktrees{Root: "/worktrees"}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: "/projects/product/project.wtree.yml"}}
+	loaded := config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{ID: "p1", Name: "product", BaseRepository: "root"}, LogicalRoot: ".", Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: ".", DefaultBranch: "main"}}, Worktrees: config.Worktrees{Root: filepath.Join(root, "worktrees")}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: filepath.Join(root, "project.wtree.yml")}}
 	encoded, err := config.MarshalProject(loaded)
 	if err != nil {
 		t.Fatalf("MarshalProject() error = %v", err)
@@ -697,7 +699,8 @@ func TestLocalProjectConfigRequiresV2AndRoundTripsRequiredManifest(t *testing.T)
 }
 
 func TestValidateManifestSource(t *testing.T) {
-	for _, source := range []string{"/projects/acme/project.wtree.yml", "https://example.test/acme/project.wtree.yml", "HTTPS://example.test/acme/project.wtree.yml", "hTtP://example.test/acme/project.wtree.yml"} {
+	localSource := filepath.Join(t.TempDir(), "projects", "acme", "project.wtree.yml")
+	for _, source := range []string{localSource, "https://example.test/acme/project.wtree.yml", "HTTPS://example.test/acme/project.wtree.yml", "hTtP://example.test/acme/project.wtree.yml"} {
 		if err := config.ValidateManifestSource(source); err != nil {
 			t.Errorf("ValidateManifestSource(%q) error = %v", source, err)
 		}

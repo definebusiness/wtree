@@ -16,6 +16,9 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Disable Windows checkout line-ending conversion
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
@@ -23,14 +26,22 @@ jobs:
           check-latest: true
       - name: Check formatting
         run: |
-          unformatted="$(go list -f '{{.Dir}}' ./... | while IFS= read -r dir; do gofmt -l "$dir"/*.go; done)"
-          test -z "$unformatted" || (printf '%s\n' "$unformatted" && exit 1)
+          set -o pipefail
+          git ls-files -z -- '*.go' | ./scripts/ci-format.sh --stdin
       - name: Vet
         run: go vet ./...
       - name: Test
-        run: go test ./...
+        if: runner.os != 'Windows'
+        run: go test -timeout=30m ./...
+      - name: Test Windows partitions
+        if: runner.os == 'Windows'
+        run: ./scripts/ci-test.sh normal
       - name: Race test
-        run: go test -race ./...
+        if: runner.os != 'Windows'
+        run: go test -race -timeout=45m ./...
+      - name: Race test Windows partitions
+        if: runner.os == 'Windows'
+        run: ./scripts/ci-test.sh race
       - name: Build
         run: go build -o "$RUNNER_TEMP/wtree" ./cmd/wtree
       - name: Cross-platform release layout

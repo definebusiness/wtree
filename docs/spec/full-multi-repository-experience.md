@@ -334,20 +334,30 @@ mutation workflow.
 ### 8.2 Lifecycle hooks
 
 Portable configuration may eventually declare project-level and per-repository
-`post-clone`, `post-checkout`, and `post-update` hooks. Hooks must be argument
-arrays, not implicit shell strings. Their working directory, order, sanitized
+`post-clone` hooks. This is the only directly executable portable event because
+the clone operation must finish acquiring the project before a machine-local
+`.wtree.yml` and its trusted hooks are available. Hooks must be argument arrays,
+not implicit shell strings. Their working directory, order, sanitized
 environment, timeout behavior, and output are part of the portable contract.
 
-Merely obtaining a remote manifest is not consent to execute its code. A
-clone, checkout, or update runs declared hooks only with an explicit
-`--run-hooks` authorization. Dry-run always lists hooks and never executes
-them.
+Merely obtaining a remote manifest is not consent to execute its code. A clone
+runs declared `post-clone` hooks only with explicit `--run-hooks`
+authorization. Clone dry-run always lists them and never executes them.
 
 Hooks run after the core `wtree` transaction commits. Their arbitrary side
 effects are outside core rollback guarantees. A failure must report that the
 project operation succeeded but setup is incomplete, return non-zero, record
 the failed hook and repository, and make a safe explicit retry possible. Hooks
 must never run during rollback.
+
+Portable `post-checkout`, `post-update`, and `post-create` hooks are not
+directly executable. The focused [machine-local and shared lifecycle-hook
+idea](../ideas/local-workspace-lifecycle-hooks.md) defines those events as
+trusted local hooks and defines inert portable `shared_hooks` that a developer
+may explicitly install into local configuration. Shared hooks never execute
+from the portable manifest, including when `--run-hooks` is supplied. Local or
+shared `post-clone` is unsupported because installation occurs only after the
+acquisition event has passed.
 
 ## 9. P4: scale and transport flexibility
 
@@ -503,15 +513,16 @@ human rendering for existing synchronized workspaces must remain unchanged.
 
 The current portable manifest is a strict version-two schema. Existing binaries
 reject unknown fields, unsupported versions, and relative clone URLs. Portable
-hook declarations and new URL-resolution data or semantics therefore cannot be
-added silently while claiming the same schema contract. Machine-local profile
-selection may likewise require a versioned local or global configuration
-change.
+`post-clone`, inert shared-hook declarations, and new URL-resolution data or
+semantics therefore cannot be added silently while claiming the same schema
+contract. Machine-local hook installation or profile selection may likewise
+require a versioned local or global configuration change.
 
 Open questions:
 
-- Do portable hooks, relative URLs, or other portable additions require a
-  manifest version three?
+- Do portable `post-clone`, shared hooks, relative URLs, or other portable
+  additions require a manifest version three or separately versioned companion
+  data?
 - Which URL-profile data is portable, local-project configuration, or global
   configuration, and which schema owns each field?
 - Is compatibility based on a version transition, explicit feature
@@ -570,7 +581,7 @@ documents a stricter order:
 | P0 | update and doctor drift | current init, clone, manifest, ignore, transaction, and recovery contracts are implemented |
 | P1 | exec, fetch/status, push readiness | central resolution and P0 drift classification are available |
 | P2 | release locks and heterogeneous workspaces | focused lock and workspace-state specifications are planned |
-| P3 | migration and hooks | P0 reconciliation exists; hook trust and retry contracts are specified |
+| P3 | migration and hooks | P0 reconciliation exists; portable `post-clone` trust plus local/shared installation and retry contracts are specified |
 | P4 | selection, transport modes, URL profiles | partial state and profile schemas are specified and doctor can diagnose them |
 
 An implementation plan may split these capabilities across multiple plans.

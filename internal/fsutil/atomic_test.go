@@ -33,9 +33,10 @@ func TestWriteFileAtomicModePreservesModeAndPreReplacementFailures(t *testing.T)
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o640 {
+	if err != nil {
 		t.Fatalf("mode = %v, %v", info.Mode(), err)
 	}
+	assertAtomicRequestedMode(t, info.Mode(), 0o640)
 }
 
 func TestWriteFailureHookRunsBeforeWritingTemporary(t *testing.T) {
@@ -156,8 +157,8 @@ func TestAtomicFailureMatrixLeavesCompleteTargetAndCleansTemporary(t *testing.T)
 					if statErr != nil {
 						t.Fatal(statErr)
 					}
-					if existing && info.Mode().Perm() != 0o600 {
-						t.Fatalf("replacement mode = %o, want 0600", info.Mode().Perm())
+					if existing {
+						assertAtomicRequestedMode(t, info.Mode(), 0o600)
 					}
 					if !existing && info.Mode().Perm()&0o111 != 0 {
 						t.Fatalf("created mode = %o, want non-executable", info.Mode().Perm())

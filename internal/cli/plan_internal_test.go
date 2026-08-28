@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/definebusiness/wtree/internal/plan"
@@ -90,7 +91,7 @@ func TestRenderWorkspacePlanAlignsEveryColumn(t *testing.T) {
 		"root        4516c867  feature/customer-search  .        /worktrees/feature-customer-search\n" +
 		"backend     8b7c9ba0  feature/customer-search  backend  /worktrees/feature-customer-search/backend\n\n" +
 		"Automatic ignore protection (execution will ensure):\n" +
-		"  /worktrees/feature-customer-search/.gitignore\n" +
+		"  " + filepath.Join(value.RootPath, ".gitignore") + "\n" +
 		"    /backend/\n\n" +
 		"No changes made. Dry run performs no mutation.\n"
 	if output.String() != want {
