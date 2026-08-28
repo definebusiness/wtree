@@ -10,20 +10,28 @@ import (
 
 type unixCloneStagingLease struct{}
 
-func createCloneStaging(parent, prefix string, parentInfo os.FileInfo, mkdirTemp func(string, string) (string, error), lstat func(string) (os.FileInfo, error)) (string, os.FileInfo, cloneStagingLease, error) {
+func createCloneStaging(parent, prefix string, parentInfo os.FileInfo, mkdirTemp func(string, string) (string, error), lstat func(string) (os.FileInfo, error)) (string, os.FileInfo, os.FileInfo, cloneStagingLease, error) {
 	if mkdirTemp == nil || lstat == nil {
-		return "", nil, nil, errors.New("clone staging dependencies are not configured")
+		return "", nil, nil, nil, errors.New("clone staging dependencies are not configured")
 	}
 	staging, err := mkdirTemp(parent, prefix)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, nil, err
 	}
 	staging = filepath.Clean(staging)
 	owned, statErr := lstat(staging)
 	if statErr != nil || owned == nil || !cloneStagingPathIsSafe(staging, prefix, owned, parentInfo, cloneStagingModeIsPrivate(owned.Mode()), lstat) {
-		return "", nil, nil, errors.Join(errors.New("staging creator returned an unsafe path"), statErr)
+		return "", nil, nil, nil, errors.Join(errors.New("staging creator returned an unsafe path"), statErr)
 	}
-	return staging, owned, unixCloneStagingLease{}, nil
+	return staging, owned, parentInfo, unixCloneStagingLease{}, nil
+}
+
+func (unixCloneStagingLease) prepareChild(_ string, _ string, owned, _ os.FileInfo, _ func(string, os.FileMode) error, _ func(string) (os.FileInfo, error)) (os.FileInfo, error) {
+	return owned, nil
+}
+
+func (unixCloneStagingLease) captureChild(_ string, owned, _ os.FileInfo, _ func(string) (os.FileInfo, error)) (os.FileInfo, error) {
+	return owned, nil
 }
 
 func (unixCloneStagingLease) releaseChild(staging string, owned, parent os.FileInfo, lstat func(string) (os.FileInfo, error)) error {

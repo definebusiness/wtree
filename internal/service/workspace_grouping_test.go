@@ -119,3 +119,66 @@ func TestWorkspaceGroupingRefusesDifferentRealDirectoryReceipt(t *testing.T) {
 		t.Fatalf("replacement missing: %v", err)
 	}
 }
+
+func TestWorkspaceGroupingRevalidationUsesRetainedLiveDirectoryAuthority(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "workspace")
+	g := newWorkspaceGrouping(root, newWorkspaceFilesystem())
+	closed := false
+	matches := 0
+	filesystem := g.filesystem
+	filesystem.retainDirectory = func(string) (workspaceDirectoryAuthority, error) {
+		return workspaceDirectoryAuthorityFunc{
+			matchFunc: func(os.FileInfo) bool {
+				matches++
+				return matches == 1
+			},
+			closeFunc: func() error { closed = true; return nil },
+		}, nil
+	}
+	g.filesystem = filesystem
+	item := plan.RepositoryPlan{ID: "api", Path: filepath.Join(root, "api")}
+	step, _, _ := g.step(item, root)
+	if err := step.Execute(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.revalidate(item, root); err == nil {
+		t.Fatal("revalidation accepted a receipt whose retained live authority changed")
+	}
+	if err := step.Rollback(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !closed {
+		t.Fatal("rollback did not close retained directory authority")
+	}
+}
+
+func TestWorkspaceGroupingReleasesLiveDirectoryAuthorityAfterAddBoundary(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "workspace")
+	g := newWorkspaceGrouping(root, newWorkspaceFilesystem())
+	closed := false
+	filesystem := g.filesystem
+	filesystem.retainDirectory = func(string) (workspaceDirectoryAuthority, error) {
+		return workspaceDirectoryAuthorityFunc{
+			matchFunc: func(os.FileInfo) bool { return true },
+			closeFunc: func() error { closed = true; return nil },
+		}, nil
+	}
+	g.filesystem = filesystem
+	item := plan.RepositoryPlan{ID: "api", Path: filepath.Join(root, "api")}
+	step, _, _ := g.step(item, root)
+	if err := step.Execute(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.releaseCreated(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !closed {
+		t.Fatal("add-worktree boundary did not close retained directory authority")
+	}
+	if err := g.revalidate(item, root); err != nil {
+		t.Fatalf("revalidate after release: %v", err)
+	}
+	if err := step.Rollback(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,19 +24,43 @@ type workspaceGrouping struct {
 }
 
 type groupingReceipt struct {
-	path string
-	info os.FileInfo
+	path      string
+	info      os.FileInfo
+	authority workspaceDirectoryAuthority
+}
+
+// workspaceDirectoryAuthority retains a live directory identity just long
+// enough to bridge creation and the Git operation that will populate it. On
+// Unix, keeping the descriptor open prevents a deleted directory's inode from
+// being reused as a convincing replacement during that boundary.
+type workspaceDirectoryAuthority interface {
+	matches(os.FileInfo) bool
+	close() error
+}
+
+type workspaceDirectoryAuthorityFunc struct {
+	matchFunc func(os.FileInfo) bool
+	closeFunc func() error
+}
+
+func (authority workspaceDirectoryAuthorityFunc) matches(info os.FileInfo) bool {
+	return authority.matchFunc(info)
+}
+
+func (authority workspaceDirectoryAuthorityFunc) close() error {
+	return authority.closeFunc()
 }
 
 type workspaceFilesystem struct {
-	lstat        func(string) (os.FileInfo, error)
-	evalSymlinks func(string) (string, error)
-	mkdir        func(string, os.FileMode) error
-	remove       func(string) error
+	lstat           func(string) (os.FileInfo, error)
+	evalSymlinks    func(string) (string, error)
+	mkdir           func(string, os.FileMode) error
+	remove          func(string) error
+	retainDirectory func(string) (workspaceDirectoryAuthority, error)
 }
 
 func newWorkspaceFilesystem() workspaceFilesystem {
-	return workspaceFilesystem{lstat: os.Lstat, evalSymlinks: filepath.EvalSymlinks, mkdir: os.Mkdir, remove: os.Remove}
+	return workspaceFilesystem{lstat: os.Lstat, evalSymlinks: filepath.EvalSymlinks, mkdir: os.Mkdir, remove: os.Remove, retainDirectory: retainWorkspaceDirectory}
 }
 
 func newWorkspaceGrouping(root string, filesystem workspaceFilesystem) *workspaceGrouping {
@@ -51,6 +76,9 @@ func newWorkspaceGrouping(root string, filesystem workspaceFilesystem) *workspac
 	}
 	if filesystem.remove == nil {
 		filesystem.remove = defaults.remove
+	}
+	if filesystem.retainDirectory == nil {
+		filesystem.retainDirectory = defaults.retainDirectory
 	}
 	return &workspaceGrouping{root: filepath.Clean(root), created: make(map[string][]groupingReceipt), receipts: make(map[string]groupingReceipt), filesystem: filesystem}
 }
@@ -144,8 +172,19 @@ func (g *workspaceGrouping) prepare(id, parent string, directories []string) err
 			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 				return fmt.Errorf("grouping directory %q must be a real directory without symlinks", directory)
 			}
-			g.created[id] = append(g.created[id], groupingReceipt{path: directory, info: info})
-			g.receipts[filepath.Clean(directory)] = groupingReceipt{path: directory, info: info}
+			authority, retainErr := g.filesystem.retainDirectory(directory)
+			if retainErr != nil {
+				return fmt.Errorf("retain created grouping directory %q identity: %w", directory, retainErr)
+			}
+			if authority == nil || !authority.matches(info) {
+				if authority != nil {
+					_ = authority.close()
+				}
+				return fmt.Errorf("retain created grouping directory %q identity", directory)
+			}
+			receipt := groupingReceipt{path: directory, info: info, authority: authority}
+			g.created[id] = append(g.created[id], receipt)
+			g.receipts[filepath.Clean(directory)] = receipt
 			if err := g.validateParent(parent, directory); err != nil {
 				return err
 			}
@@ -251,11 +290,31 @@ func (g *workspaceGrouping) revalidate(repository plan.RepositoryPlan, parent st
 func (g *workspaceGrouping) validateReceipt(directory string) error {
 	if receipt, found := g.receipts[filepath.Clean(directory)]; found {
 		info, err := g.filesystem.lstat(directory)
-		if err != nil || !os.SameFile(receipt.info, info) {
+		if err != nil || !os.SameFile(receipt.info, info) || receipt.authority != nil && !receipt.authority.matches(info) {
 			return fmt.Errorf("grouping directory %q changed after creation", directory)
 		}
 	}
 	return nil
+}
+
+// releaseCreated releases identity descriptors after the corresponding
+// add-worktree boundary. Rollback also calls this for every exit path.
+func (g *workspaceGrouping) releaseCreated(id string) error {
+	var result error
+	for index := range g.created[id] {
+		receipt := &g.created[id][index]
+		if receipt.authority == nil {
+			continue
+		}
+		if err := receipt.authority.close(); err != nil {
+			result = errors.Join(result, fmt.Errorf("release grouping directory %q identity: %w", receipt.path, err))
+		}
+		receipt.authority = nil
+		stored := g.receipts[filepath.Clean(receipt.path)]
+		stored.authority = nil
+		g.receipts[filepath.Clean(receipt.path)] = stored
+	}
+	return result
 }
 
 func (g *workspaceGrouping) recordWorktree(path string) error {
@@ -304,8 +363,11 @@ func (g *workspaceGrouping) validateParent(parent, directory string) error {
 	return nil
 }
 
-func (g *workspaceGrouping) rollback(id string) error {
+func (g *workspaceGrouping) rollback(id string) (result error) {
 	directories := g.created[id]
+	defer func() {
+		result = errors.Join(result, g.releaseCreated(id))
+	}()
 	for index := len(directories) - 1; index >= 0; index-- {
 		receipt := directories[index]
 		info, err := g.filesystem.lstat(receipt.path)

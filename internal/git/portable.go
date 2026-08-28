@@ -249,10 +249,10 @@ func (a *Adapter) Clone(ctx context.Context, url, destination, remote string) er
 	if remote == "" || strings.HasPrefix(remote, "-") {
 		return fmt.Errorf("clone repository: invalid remote name")
 	}
-	if _, err := a.runRemote(ctx, "init", "--quiet", "--", destination); err != nil {
+	if _, err := a.runRemote(ctx, quiescentGitArgs("init", "--quiet", "--", destination)...); err != nil {
 		return err
 	}
-	_, err := a.run(ctx, destination, "remote", "add", "--", remote, url)
+	_, err := a.run(ctx, destination, quiescentGitArgs("remote", "add", "--", remote, url)...)
 	return err
 }
 
@@ -264,7 +264,7 @@ func (a *Adapter) FetchTrackingBranch(ctx context.Context, repository, remote, m
 	if remote == "" || strings.HasPrefix(remote, "-") || remoteBranch == merge || remoteBranch == "" {
 		return fmt.Errorf("fetch selected branch: invalid remote or merge ref")
 	}
-	_, err := a.run(ctx, repository, "fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", "--", remote, "+"+merge+":refs/remotes/"+remote+"/"+remoteBranch)
+	_, err := a.run(ctx, repository, quiescentGitArgs("fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", "--", remote, "+"+merge+":refs/remotes/"+remote+"/"+remoteBranch)...)
 	return err
 }
 
@@ -279,7 +279,7 @@ func (a *Adapter) CheckoutTrackingBranch(ctx context.Context, repository, localB
 	// Command-scope configuration takes precedence over repository, global, and
 	// system config. os.DevNull makes hook suppression portable across POSIX and
 	// Windows without a shell or user-controlled path.
-	if _, err := a.run(ctx, repository, "-c", "core.hooksPath="+os.DevNull, "checkout", "--no-recurse-submodules", "--no-guess", "-B", localBranch, "refs/remotes/"+remote+"/"+remoteBranch); err != nil {
+	if _, err := a.run(ctx, repository, quiescentGitArgs("-c", "core.hooksPath="+os.DevNull, "checkout", "--no-recurse-submodules", "--no-guess", "-B", localBranch, "refs/remotes/"+remote+"/"+remoteBranch)...); err != nil {
 		return "", err
 	}
 	if _, err := a.run(ctx, repository, "config", "branch."+localBranch+".remote", remote); err != nil {
@@ -313,6 +313,14 @@ func (a *Adapter) CheckoutTrackingBranch(ctx context.Context, repository, localB
 		return "", err
 	}
 	return head, nil
+}
+
+// quiescentGitArgs prevents Git's background maintenance from mutating a
+// managed staging checkout between a command and its strict tree inventory.
+// These are command-scoped overrides: no repository or user configuration is
+// changed, and every clone/fetch/checkout call follows the same safe contract.
+func quiescentGitArgs(args ...string) []string {
+	return append([]string{"-c", "maintenance.auto=false", "-c", "gc.auto=0"}, args...)
 }
 
 // runRemote performs a potentially mutating remote operation such as clone.

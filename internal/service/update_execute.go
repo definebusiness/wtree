@@ -425,7 +425,7 @@ func openUpdateJournalForRecovery(path string, request UpdateExecutionRequest) (
 	if err := validateExistingUpdateJournalDirectory(filepath.Dir(path)); err != nil {
 		return UpdateJournal{}, err
 	}
-	if snapshot.mode.Perm() != 0o600 {
+	if !requestedFilePermissionsMatch(snapshot.mode, 0o600) {
 		return UpdateJournal{}, errors.New("update recovery journal is absent or unsafe")
 	}
 	journal, err := decodeStrictUpdateJournal(snapshot.data)
@@ -598,7 +598,7 @@ func restoreTrackedManifestBackup(request UpdateExecutionRequest, target string,
 		return err
 	}
 	blob, err := secureCloneFileSnapshot(filepath.Join(directory, backup.File))
-	if err != nil || !blob.exists || blob.mode.Perm() != 0o600 || int64(len(blob.data)) != backup.Length || sha256String(blob.data) != backup.SHA256 {
+	if err != nil || !blob.exists || !requestedFilePermissionsMatch(blob.mode, 0o600) || int64(len(blob.data)) != backup.Length || sha256String(blob.data) != backup.SHA256 {
 		return errors.New("tracked manifest recovery backup is unsafe")
 	}
 	current, err := secureCloneFileSnapshot(target)
@@ -1062,7 +1062,7 @@ func validateUpdateBackupBlob(path string, backup UpdateJournalBackup) error {
 		return nil
 	}
 	snapshot, err := secureCloneFileSnapshot(path)
-	if err != nil || !snapshot.exists || snapshot.mode.Perm() != 0o600 || int64(len(snapshot.data)) != backup.Length || sha256String(snapshot.data) != backup.SHA256 {
+	if err != nil || !snapshot.exists || !requestedFilePermissionsMatch(snapshot.mode, 0o600) || int64(len(snapshot.data)) != backup.Length || sha256String(snapshot.data) != backup.SHA256 {
 		return errors.New("update backup blob does not match journal metadata")
 	}
 	return nil
@@ -1218,7 +1218,7 @@ func (executor *UpdateExecutor) removeCleaningUpdateBackups(ctx context.Context,
 	if os.IsNotExist(err) {
 		return nil
 	}
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 || validateExistingUpdateJournalDirectory(directory) != nil {
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || validatePrivateUpdateDirectory(directory, info) != nil || validateExistingUpdateJournalDirectory(directory) != nil {
 		return errors.New("update cleaning backup directory is unsafe")
 	}
 	for _, backup := range backups {
@@ -1231,7 +1231,7 @@ func (executor *UpdateExecutor) removeCleaningUpdateBackups(ctx context.Context,
 			return snapshotErr
 		}
 		if snapshot.exists {
-			if !backup.Existed || snapshot.mode.Perm() != 0o600 || int64(len(snapshot.data)) != backup.Length || sha256String(snapshot.data) != backup.SHA256 {
+			if !backup.Existed || !requestedFilePermissionsMatch(snapshot.mode, 0o600) || int64(len(snapshot.data)) != backup.Length || sha256String(snapshot.data) != backup.SHA256 {
 				return errors.New("update cleaning backup blob is unsafe")
 			}
 			if err := executor.dependencies.Remove(path, func() error { return revalidateCloneFileSnapshot(snapshot) }); err != nil {
@@ -1261,7 +1261,7 @@ func (executor *UpdateExecutor) removeCleaningStaging(ctx context.Context, path 
 	}
 	info, err := os.Lstat(staging)
 	if err == nil {
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || validatePrivateUpdateDirectory(staging, info) != nil {
 			return errors.New("update cleaning staging directory is unsafe")
 		}
 		if err := os.Remove(staging); err != nil {
@@ -1560,7 +1560,7 @@ func ensureUpdateJournalParent(path string) error {
 	current := path
 	for count := 0; count != 4; count++ {
 		info, err := os.Lstat(current)
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 {
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || protectPrivateUpdateDirectory(current, info) != nil {
 			return errors.New("unsafe update journal directory")
 		}
 		current = filepath.Dir(current)
@@ -1582,7 +1582,7 @@ func validateExistingUpdateJournalDirectory(path string) error {
 	}
 	for count, current := 0, path; count != depth; count, current = count+1, filepath.Dir(current) {
 		info, err := os.Lstat(current)
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 {
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || validatePrivateUpdateDirectory(current, info) != nil {
 			return errors.New("unsafe update journal directory")
 		}
 	}
@@ -1623,7 +1623,7 @@ func removeOwnedUpdateOperationAuthority(journalPath string, expected os.FileInf
 		if os.IsNotExist(childErr) {
 			continue
 		}
-		if childErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 {
+		if childErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || validatePrivateUpdateDirectory(child, info) != nil {
 			return errors.New("update operation cleanup child is unsafe")
 		}
 		if err := os.Remove(child); err != nil {
@@ -2285,8 +2285,8 @@ func ensurePrivateUpdateDirectory(path string) error {
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("unsafe private update staging directory")
 		}
-		if info.Mode().Perm()&0o077 != 0 {
-			return errors.New("update staging directory is not private")
+		if err := protectPrivateUpdateDirectory(current, info); err != nil {
+			return err
 		}
 		// Stop at the fixed operation authority. The configurable data directory
 		// may itself be beneath a platform symlink such as macOS /var.

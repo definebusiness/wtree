@@ -142,7 +142,7 @@ func TestAdapterChecksNestedCommittedGitignoreWithWinningNegation(t *testing.T) 
 	}
 }
 
-func TestAdapterCommittedIgnoreDoesNotUseTemporaryStorage(t *testing.T) {
+func TestAdapterCommittedIgnorePropagatesCancellationAndGitFailure(t *testing.T) {
 	repository := testutil.NewGitRepository(t)
 	repository.CommitFile(".gitignore", "/child/\n", "ignore child")
 	if err := os.Mkdir(filepath.Join(repository.Path, "child"), 0o700); err != nil {
@@ -151,38 +151,19 @@ func TestAdapterCommittedIgnoreDoesNotUseTemporaryStorage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository.Path, "child", "probe"), []byte("probe\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	temporary := t.TempDir()
-	if err := os.Chmod(temporary, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(temporary, 0o700) })
-	environment := append(os.Environ(), "TMPDIR="+temporary, "TMP="+temporary, "TEMP="+temporary)
-	adapter := git.NewAdapterWithEnv("git", environment)
+	adapter := git.NewAdapter("git")
 
 	ignored, err := adapter.InspectCommittedIgnore(context.Background(), repository.Path, "HEAD", "child")
 	if err != nil || !ignored {
-		t.Fatalf("committed ignore with unwritable temporary storage = %t, %v", ignored, err)
+		t.Fatalf("committed ignore = %t, %v", ignored, err)
 	}
-	entries, err := os.ReadDir(temporary)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("committed ignore temporary delta = %#v, %v", entries, err)
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := adapter.InspectCommittedIgnore(ctx, repository.Path, "HEAD", "child"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("committed ignore cancellation = %v, want context.Canceled", err)
 	}
-	entries, err = os.ReadDir(temporary)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("canceled committed ignore temporary delta = %#v, %v", entries, err)
-	}
-	if _, err := git.NewAdapterWithEnv(filepath.Join(t.TempDir(), "missing-git"), environment).InspectCommittedIgnore(context.Background(), repository.Path, "HEAD", "child"); err == nil {
+	if _, err := git.NewAdapter(filepath.Join(t.TempDir(), "missing-git")).InspectCommittedIgnore(context.Background(), repository.Path, "HEAD", "child"); err == nil {
 		t.Fatal("committed ignore accepted an unavailable Git boundary")
-	}
-	entries, err = os.ReadDir(temporary)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("failed committed ignore temporary delta = %#v, %v", entries, err)
 	}
 }
 

@@ -3,6 +3,8 @@
 Status: initial
 Source specification: [Windows portability and CI hardening specification](../spec/windows-portability-and-ci-hardening.md)
 Implementation context: [Investigation and porting context dump](windows-portability-and-ci-hardening-context.md)
+Follow-up remediation plan: [Windows portability simplification and CI remediation implementation plan](windows-portability-simplification-and-ci-remediation.md)
+Hosted failure context: [Hosted failure and simplification context](windows-portability-simplification-and-ci-remediation-context.md)
 Related implemented work: [Automatic nested mount ignore protection implementation plan](automatic-nested-mount-ignore-protection.md)
 Source branch: `codex/automatic-nested-mount-ignore-protection-ci`, candidate follow-ups `c5f6b51` through `ed1365c`
 Source of truth: [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml); [`internal/fsutil/atomic.go`](../../internal/fsutil/atomic.go); platform sync files under [`internal/fsutil`](../../internal/fsutil); [`internal/service/clone_execute.go`](../../internal/service/clone_execute.go); [`internal/service/clone_safety.go`](../../internal/service/clone_safety.go); [`internal/service/create.go`](../../internal/service/create.go); [`internal/config/paths.go`](../../internal/config/paths.go); current platform and end-to-end tests

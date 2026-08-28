@@ -5,11 +5,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/definebusiness/wtree/internal/pathutil"
 )
+
+type committedIgnoreTemp struct {
+	file    *os.File
+	cleanup func() error
+}
+
+var createCommittedIgnoreTemp = createPrivateCommittedIgnoreTemp
 
 type committedIgnoreFile struct {
 	directory string
@@ -26,9 +34,10 @@ type CommittedIgnoreInspector interface {
 // InspectCommittedIgnore reports whether path is ignored by the winning committed
 // .gitignore rule at ref. It reads ignore sources from Git objects and asks
 // Git itself to evaluate their patterns against the already-observed checkout.
-// It creates no checkout, index, lock, temporary file, directory, object, or
-// ref, and it never accepts info, global, or working-tree ignore sources as
-// committed evidence.
+// It creates no checkout, index, lock, directory, object, or ref. A private
+// temporary exclude file supplies Git's portable command input and is removed
+// after evaluation. Info, global, and working-tree sources are never accepted
+// as committed evidence.
 func (a *Adapter) InspectCommittedIgnore(ctx context.Context, repository, ref, path string) (bool, error) {
 	mount, err := pathutil.NormalizeMount(filepath.ToSlash(path), pathutil.ChildMount)
 	if err != nil || mount != filepath.ToSlash(path) {
@@ -110,48 +119,105 @@ func (a *Adapter) evaluateCommittedIgnore(ctx context.Context, repository string
 		if file.directory != "." {
 			evaluationDirectory = filepath.Join(repository, filepath.FromSlash(file.directory))
 		}
-		output, err := a.runFactInput(ctx, repository, input,
+		excludeFile, cleanup, createErr := committedIgnoreExclude(input)
+		if createErr != nil {
+			return false, createErr
+		}
+		finish := func(primary error) error {
+			if cleanupErr := cleanup(); cleanupErr != nil {
+				if primary != nil {
+					return errors.Join(primary, cleanupErr)
+				}
+				return cleanupErr
+			}
+			return primary
+		}
+		output, err := a.runFact(ctx, repository,
 			"--work-tree="+evaluationDirectory,
-			"-c", "core.excludesFile=/dev/stdin",
+			"-c", "core.excludesFile="+excludeFile,
 			"check-ignore", "-v", "--no-index", "--", relative+"/",
 		)
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return false, ctxErr
+			return false, finish(ctxErr)
 		}
 		if err != nil {
 			var gitError *Error
 			if errors.As(err, &gitError) && gitError.ExitCode == 1 {
+				if cleanupErr := finish(nil); cleanupErr != nil {
+					return false, cleanupErr
+				}
 				ignored = false
 				continue
 			}
-			return false, err
+			return false, finish(err)
 		}
 		metadata, _, found := bytes.Cut(bytes.TrimSpace(output), []byte{'\t'})
 		if !found {
-			return false, fmt.Errorf("parse committed check-ignore output")
+			return false, finish(fmt.Errorf("parse committed check-ignore output"))
 		}
 		source, parseErr := checkIgnoreSource(string(metadata))
 		if parseErr != nil {
-			return false, fmt.Errorf("parse committed check-ignore source")
+			return false, finish(fmt.Errorf("parse committed check-ignore source"))
 		}
-		if filepath.ToSlash(source) == "/dev/stdin" {
+		if filepath.Clean(source) == filepath.Clean(excludeFile) {
+			if cleanupErr := finish(nil); cleanupErr != nil {
+				return false, cleanupErr
+			}
 			ignored = true
 			continue
 		}
 		// A higher-precedence working-tree or repository-local source may be
 		// reported by check-ignore. Re-evaluate with only the committed rules
 		// supplied as command-line exclude input so that source cannot qualify.
-		isolated, isolatedErr := a.runFactInput(ctx, repository, input,
+		isolated, isolatedErr := a.runFact(ctx, repository,
 			"--work-tree="+evaluationDirectory,
-			"ls-files", "--others", "--ignored", "--directory", "--no-empty-directory",
-			"--exclude-from=/dev/stdin", "--", relative+"/",
+			"ls-files", "--others", "--ignored", "--directory", "--no-empty-directory", "--exclude-from="+excludeFile, "--", relative+"/",
 		)
 		if isolatedErr != nil {
-			return false, isolatedErr
+			return false, finish(isolatedErr)
+		}
+		if cleanupErr := finish(nil); cleanupErr != nil {
+			return false, cleanupErr
 		}
 		ignored = len(bytes.TrimSpace(isolated)) != 0
 	}
 	return ignored, nil
+}
+
+func committedIgnoreExclude(contents []byte) (string, func() error, error) {
+	temporary, err := createCommittedIgnoreTemp("wtree-committed-ignore-")
+	if err != nil {
+		return "", nil, fmt.Errorf("create committed ignore exclude: %w", err)
+	}
+	if temporary == nil || temporary.file == nil || temporary.cleanup == nil {
+		return "", nil, errors.New("create committed ignore exclude: incomplete private temporary file")
+	}
+	file := temporary.file
+	path := file.Name()
+	closed := false
+	cleaned := false
+	cleanup := func() error {
+		if cleaned {
+			return nil
+		}
+		cleaned = true
+		var result error
+		if !closed {
+			result = errors.Join(result, file.Close())
+			closed = true
+		}
+		result = errors.Join(result, temporary.cleanup())
+		return result
+	}
+	if _, err := file.Write(contents); err != nil {
+		return "", nil, errors.Join(fmt.Errorf("write committed ignore exclude: %w", err), cleanup())
+	}
+	if err := file.Close(); err != nil {
+		closed = true
+		return "", nil, errors.Join(fmt.Errorf("close committed ignore exclude: %w", err), temporary.cleanup())
+	}
+	closed = true
+	return path, cleanup, nil
 }
 
 var _ CommittedIgnoreInspector = (*Adapter)(nil)
