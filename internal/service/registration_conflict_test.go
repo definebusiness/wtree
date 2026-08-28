@@ -105,7 +105,7 @@ func TestInitializerReportsSortedPathAndIdentityConflictsWithoutArtifacts(t *tes
 	}
 	configPath := filepath.Join(canonicalRoot, ".wtree.yml")
 	unrelatedConfig := filepath.Join(data, "unrelated", ".wtree.yml")
-	if err := config.WriteProjectFile(unrelatedConfig, config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{ID: "unrelated", Name: "healthy", BaseRepository: "root"}, LogicalRoot: ".", Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: ".", DefaultBranch: "main"}}, Worktrees: config.Worktrees{}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: "/manifests/project.wtree.yml"}}); err != nil {
+	if err := config.WriteProjectFile(unrelatedConfig, config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{ID: "unrelated", Name: "healthy", BaseRepository: "root"}, LogicalRoot: ".", Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: ".", DefaultBranch: "main"}}, Worktrees: config.Worktrees{}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: filepath.Join(data, "manifests", "project.wtree.yml")}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.WriteWorkspace(filepath.Join(data, "state", "unrelated", "default.json"), store.WorkspaceState{Version: store.Version, ID: "default", Name: "default", Repositories: map[string]store.CheckoutState{}}); err != nil {

@@ -345,9 +345,10 @@ func pushPublicReopenAuthority(t *testing.T, fixture publicPushFixture) {
 		t.Fatalf("reopen journal = %#v, %v", journal, err)
 	}
 	backup, err := os.Stat(fixture.backupPath)
-	if err != nil || backup.Mode().Perm() != 0o600 || backup.Size() != journal.Backups[0].Length {
+	if err != nil || backup.Size() != journal.Backups[0].Length {
 		t.Fatalf("reopen backup = %#v, %v", backup, err)
 	}
+	assertPrivateBackupFile(t, fixture.backupPath, backup)
 	bytes, err := os.ReadFile(fixture.backupPath)
 	if err != nil || fmt.Sprintf("%x", sha256.Sum256(bytes)) != journal.Backups[0].SHA256 {
 		t.Fatalf("reopen backup bytes = %v", err)

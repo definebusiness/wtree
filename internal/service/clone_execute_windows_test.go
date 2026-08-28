@@ -127,6 +127,17 @@ func TestWindowsCloneStagingLetsGitCreateAbsentDestination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	replacement := staging + "-replacement"
+	if err := os.Rename(staging, replacement); err == nil {
+		t.Fatal("retained staging handle allowed rename before Git operation")
+	}
+	command = exec.Command("git", "-C", staging, "status", "--porcelain")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git operation with captured staging child: %v\n%s", err, output)
+	}
+	if err := os.Rename(staging, replacement); err == nil {
+		t.Fatal("retained staging handle allowed rename after Git operation")
+	}
 	if err := lease.releaseChild(staging, owned, stagingParent, os.Lstat); err != nil {
 		t.Fatal(err)
 	}

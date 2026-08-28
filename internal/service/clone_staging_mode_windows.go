@@ -136,6 +136,28 @@ func windowsCloneStagingLeaf(prefix string) (string, error) {
 }
 
 func openWindowsCloneStagingDirectory(parent windows.Handle, leaf string, disposition uint32, descriptor *windows.SECURITY_DESCRIPTOR) (windows.Handle, windows.IO_STATUS_BLOCK, error) {
+	return openWindowsCloneStagingDirectoryWithAccess(
+		parent,
+		leaf,
+		disposition,
+		descriptor,
+		uint32(windowsFileAllAccess),
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+	)
+}
+
+func openWindowsCloneStagingChild(parent windows.Handle, leaf string) (windows.Handle, windows.IO_STATUS_BLOCK, error) {
+	return openWindowsCloneStagingDirectoryWithAccess(
+		parent,
+		leaf,
+		windows.FILE_OPEN,
+		nil,
+		windows.FILE_READ_ATTRIBUTES|windows.READ_CONTROL|windows.SYNCHRONIZE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+	)
+}
+
+func openWindowsCloneStagingDirectoryWithAccess(parent windows.Handle, leaf string, disposition uint32, descriptor *windows.SECURITY_DESCRIPTOR, access uint32, share uint32) (windows.Handle, windows.IO_STATUS_BLOCK, error) {
 	name, err := windows.NewNTUnicodeString(leaf)
 	if err != nil {
 		return 0, windows.IO_STATUS_BLOCK{}, err
@@ -152,12 +174,12 @@ func openWindowsCloneStagingDirectory(parent windows.Handle, leaf string, dispos
 	allocationSize := int64(0)
 	err = windows.NtCreateFile(
 		&handle,
-		uint32(windowsFileAllAccess),
+		access,
 		attributes,
 		&status,
 		&allocationSize,
 		windows.FILE_ATTRIBUTE_DIRECTORY,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		share,
 		disposition,
 		windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
 		0,
@@ -244,7 +266,7 @@ func (lease *windowsCloneStagingLease) captureChild(staging string, owned, paren
 	if err := lease.validateContainer(lstat); err != nil {
 		return nil, err
 	}
-	handle, _, err := openWindowsCloneStagingDirectory(windows.Handle(lease.container.Fd()), filepath.Base(staging), windows.FILE_OPEN, nil)
+	handle, _, err := openWindowsCloneStagingChild(windows.Handle(lease.container.Fd()), filepath.Base(staging))
 	if err != nil {
 		return nil, fmt.Errorf("open Git-created private clone staging root: %w", err)
 	}

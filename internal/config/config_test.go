@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -8,7 +10,9 @@ import (
 )
 
 func TestLoadProjectConfigStrictlyDecodesVersionTwoTopology(t *testing.T) {
-	loaded, err := config.LoadProject([]byte("version: 2\nproject:\n  id: p1\n  name: product\n  base_repository: root\nlogical_root: .\nrepositories:\n  root:\n    source: .\n    parent: \"\"\n    mount: .\n    default_branch: main\nworktrees:\n  root: /worktrees\nmanifest:\n  path: project.wtree.yml\n  source: /projects/product/project.wtree.yml\n"))
+	manifestSource := filepath.Join(t.TempDir(), "projects", "product", "project.wtree.yml")
+	input := strings.Replace(projectConfigV2Fixture(manifestSource), "worktrees: {}", "worktrees:\n  root: "+filepath.Join(t.TempDir(), "worktrees"), 1)
+	loaded, err := config.LoadProject([]byte(input))
 	if err != nil {
 		t.Fatalf("LoadProject() error = %v", err)
 	}
@@ -27,16 +31,17 @@ func TestLoadProjectConfigStrictlyDecodesVersionTwoTopology(t *testing.T) {
 }
 
 func TestLoadProjectConfigV2RequiresTopologyFieldsAndCleanPaths(t *testing.T) {
-	valid := "version: 2\nproject:\n  id: p1\n  name: product\n  base_repository: root\nlogical_root: .\nrepositories:\n  root:\n    source: .\n    parent: \"\"\n    mount: .\n    default_branch: main\nworktrees: {}\nmanifest:\n  path: project.wtree.yml\n  source: /projects/product/project.wtree.yml\n"
+	manifestSource := filepath.Join(t.TempDir(), "projects", "product", "project.wtree.yml")
+	valid := projectConfigV2Fixture(manifestSource)
 	for _, test := range []struct {
 		name, input, want string
 	}{
 		{"missing logical root", strings.Replace(valid, "logical_root: .\n", "", 1), "logical_root"},
 		{"missing base", strings.Replace(valid, "  base_repository: root\n", "", 1), "base_repository"},
 		{"missing repository parent", strings.Replace(valid, "    parent: \"\"\n", "", 1), "parent"},
-		{"missing manifest", strings.Replace(valid, "manifest:\n  path: project.wtree.yml\n  source: /projects/product/project.wtree.yml\n", "", 1), "manifest"},
+		{"missing manifest", strings.Replace(valid, fmt.Sprintf("manifest:\n  path: project.wtree.yml\n  source: %s\n", manifestSource), "", 1), "manifest"},
 		{"unclean logical root", strings.Replace(valid, "logical_root: .", "logical_root: base/..", 1), "clean"},
-		{"absolute source", strings.Replace(valid, "    source: .", "    source: /outside", 1), "relative"},
+		{"absolute source", strings.Replace(valid, "    source: .", "    source: "+filepath.Join(t.TempDir(), "outside"), 1), "relative"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := config.LoadProject([]byte(test.input)); err == nil || !strings.Contains(err.Error(), test.want) {
@@ -47,11 +52,12 @@ func TestLoadProjectConfigV2RequiresTopologyFieldsAndCleanPaths(t *testing.T) {
 }
 
 func TestWorktreeRootPrecedenceAndExpansion(t *testing.T) {
-	got, err := config.EffectiveWorktreeRoot("~/cli", "~/project", "~/global", "/default", "/home/test")
-	if err != nil || got != "/home/test/cli" {
+	home, defaultRoot := t.TempDir(), filepath.Join(t.TempDir(), "default")
+	got, err := config.EffectiveWorktreeRoot("~/cli", "~/project", "~/global", defaultRoot, home)
+	if err != nil || got != filepath.Join(home, "cli") {
 		t.Fatalf("EffectiveWorktreeRoot() = %q, %v", got, err)
 	}
-	if _, err := config.EffectiveWorktreeRoot("", "", "", "", "/home/test"); err == nil || !strings.Contains(err.Error(), "root") {
+	if _, err := config.EffectiveWorktreeRoot("", "", "", "", home); err == nil || !strings.Contains(err.Error(), "root") {
 		t.Fatalf("missing default error = %v", err)
 	}
 }
@@ -59,15 +65,20 @@ func TestWorktreeRootPrecedenceAndExpansion(t *testing.T) {
 func TestWorktreeRootUsesProjectGlobalAndDefaultPrecedence(t *testing.T) {
 	project := config.ProjectConfig{Worktrees: config.Worktrees{Root: "~/project"}}
 	global := config.GlobalConfig{Version: 1, Worktrees: config.Worktrees{Root: "~/global"}}
-	got, err := config.ResolveWorktreeRoot("", project, global, "/os-default", "/home/test")
-	if err != nil || got != "/home/test/project" {
+	home, defaultRoot := t.TempDir(), filepath.Join(t.TempDir(), "os-default")
+	got, err := config.ResolveWorktreeRoot("", project, global, defaultRoot, home)
+	if err != nil || got != filepath.Join(home, "project") {
 		t.Fatalf("project precedence = %q, %v", got, err)
 	}
 	project.Worktrees.Root = ""
-	got, err = config.ResolveWorktreeRoot("", project, global, "/os-default", "/home/test")
-	if err != nil || got != "/home/test/global" {
+	got, err = config.ResolveWorktreeRoot("", project, global, defaultRoot, home)
+	if err != nil || got != filepath.Join(home, "global") {
 		t.Fatalf("global precedence = %q, %v", got, err)
 	}
+}
+
+func projectConfigV2Fixture(manifestSource string) string {
+	return fmt.Sprintf("version: 2\nproject:\n  id: p1\n  name: product\n  base_repository: root\nlogical_root: .\nrepositories:\n  root:\n    source: .\n    parent: \"\"\n    mount: .\n    default_branch: main\nworktrees: {}\nmanifest:\n  path: project.wtree.yml\n  source: %s\n", manifestSource)
 }
 
 func TestGlobalRequiresVersionAndYAMLHasOneDocument(t *testing.T) {

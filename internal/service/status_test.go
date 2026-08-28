@@ -203,7 +203,9 @@ func TestStatusReportsStaleState(t *testing.T) {
 func TestStatusIgnoresManagedChildCheckoutWithSpacesAndUnicodeMount(t *testing.T) {
 	project, _, _, data := createFixture(t)
 	target := filepath.Join(t.TempDir(), "workspace")
-	mount := filepath.Join("api space", "δοκιμή")
+	// Mounts are portable logical paths, so their spelling remains slash-based
+	// even when the workspace target itself is a native filesystem path.
+	mount := "api space/δοκιμή"
 	if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{
 		WorkspaceName: "feature/status", TargetPath: target, DataDir: data,
 		Mounts: []service.MountOverride{{RepositoryID: "backend", Mount: mount}},

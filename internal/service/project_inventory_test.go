@@ -340,7 +340,7 @@ func TestProjectInventoryDiagnosesConfigAndStateFailuresAndCanonicalAliases(t *t
 func writeInventoryConfig(t *testing.T, data, id, name string) string {
 	t.Helper()
 	path := filepath.Join(data, "projects with spaces", id, ".wtree.yml")
-	if err := config.WriteProjectFile(path, config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{ID: id, Name: name, BaseRepository: "root"}, LogicalRoot: ".", Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: ".", DefaultBranch: "main"}}, Worktrees: config.Worktrees{}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: "/manifests/project.wtree.yml"}}); err != nil {
+	if err := config.WriteProjectFile(path, config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{ID: id, Name: name, BaseRepository: "root"}, LogicalRoot: ".", Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: ".", DefaultBranch: "main"}}, Worktrees: config.Worktrees{}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: filepath.Join(data, "manifests", "project.wtree.yml")}}); err != nil {
 		t.Fatal(err)
 	}
 	manifest, err := config.MarshalPortableManifest(config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: id, Name: name, BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: "https://example.test/project.git"}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{"0123456789012345678901234567890123456789"}}, Mount: ".", DefaultBranch: "main"}}})

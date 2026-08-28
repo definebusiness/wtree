@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/definebusiness/wtree/internal/testutil"
@@ -70,6 +71,42 @@ func TestCommittedIgnoreTemporaryExcludeSourceSpelling(t *testing.T) {
 	source, err := checkIgnoreSource(string(metadata))
 	if err != nil || filepath.Clean(source) != filepath.Clean(path) {
 		t.Fatalf("exclude source = %q, %v; want %q", source, err, path)
+	}
+}
+
+func TestCheckIgnoreSourceDecodesGitQuotedNativePath(t *testing.T) {
+	want := `C:\Users\runneradmin\AppData\Local\Temp\wtree committed ignore\exclude`
+	metadata := strconv.Quote(want) + ":17:/child/"
+	source, err := checkIgnoreSource(metadata)
+	if err != nil || source != want {
+		t.Fatalf("checkIgnoreSource(%q) = %q, %v; want %q", metadata, source, err, want)
+	}
+}
+
+func TestCheckIgnoreSourceParsesCompleteGitQuotedToken(t *testing.T) {
+	want := "C:\\root:17:\\café\\quoted\"\\backslash\\\\exclude"
+	metadata := `"C:\\root:17:\\caf\303\251\\quoted\"\\backslash\\\\exclude":42:/child/`
+	source, err := checkIgnoreSource(metadata)
+	if err != nil || source != want {
+		t.Fatalf("checkIgnoreSource(%q) = %q, %v; want %q", metadata, source, err, want)
+	}
+}
+
+func TestCheckIgnoreSourceRejectsQuotedTokenWithoutLineDelimiter(t *testing.T) {
+	for _, metadata := range []string{
+		`"C:\\root:17:\\exclude"/child/`,
+		`"C:\\root:17:\\exclude":x:/child/`,
+		`"C:\\root:17:\\exclude":17/child/`,
+	} {
+		if source, err := checkIgnoreSource(metadata); err == nil {
+			t.Fatalf("checkIgnoreSource(%q) = %q, nil; want delimiter error", metadata, source)
+		}
+	}
+}
+
+func TestCheckIgnoreSourceRejectsMalformedGitQuotedPath(t *testing.T) {
+	if source, err := checkIgnoreSource(`"C:\broken:17:/child/`); err == nil {
+		t.Fatalf("checkIgnoreSource() = %q, nil; want malformed quote error", source)
 	}
 }
 

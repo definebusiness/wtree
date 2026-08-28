@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -288,19 +289,49 @@ func (a *Adapter) IsIgnoredWorkingTree(ctx context.Context, repository, path str
 }
 
 func checkIgnoreSource(metadata string) (string, error) {
+	if strings.HasPrefix(metadata, `"`) {
+		end := quotedCheckIgnoreSourceEnd(metadata)
+		if end < 0 {
+			return "", fmt.Errorf("malformed quoted ignore source")
+		}
+		if !checkIgnoreLineDelimiter(metadata, end) {
+			return "", fmt.Errorf("missing ignore source line delimiter")
+		}
+		decoded, err := strconv.Unquote(metadata[:end])
+		if err != nil {
+			return "", fmt.Errorf("decode quoted ignore source: %w", err)
+		}
+		return decoded, nil
+	}
 	for index := 0; index < len(metadata); index++ {
-		if metadata[index] != ':' {
-			continue
-		}
-		end := index + 1
-		for end < len(metadata) && metadata[end] >= '0' && metadata[end] <= '9' {
-			end++
-		}
-		if end > index+1 && end < len(metadata) && metadata[end] == ':' {
+		if checkIgnoreLineDelimiter(metadata, index) {
 			return metadata[:index], nil
 		}
 	}
 	return "", fmt.Errorf("missing ignore source")
+}
+
+func quotedCheckIgnoreSourceEnd(metadata string) int {
+	for index := 1; index < len(metadata); index++ {
+		switch metadata[index] {
+		case '\\':
+			index++
+		case '"':
+			return index + 1
+		}
+	}
+	return -1
+}
+
+func checkIgnoreLineDelimiter(metadata string, index int) bool {
+	if index >= len(metadata) || metadata[index] != ':' {
+		return false
+	}
+	end := index + 1
+	for end < len(metadata) && metadata[end] >= '0' && metadata[end] <= '9' {
+		end++
+	}
+	return end > index+1 && end < len(metadata) && metadata[end] == ':'
 }
 
 func isRootGitIgnoreSource(source, root string) bool {
@@ -476,6 +507,7 @@ func (a *Adapter) runWithEnvironmentInput(ctx context.Context, repository string
 	if repository != "" {
 		commandArgs = append([]string{"-C", repository}, commandArgs...)
 	}
+	commandArgs = platformGitCommandArgs(commandArgs)
 	command := exec.CommandContext(ctx, a.binary, commandArgs...)
 	command.Env = environment
 	if input != nil {

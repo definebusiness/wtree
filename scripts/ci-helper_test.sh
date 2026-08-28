@@ -237,6 +237,42 @@ for target in TestA ExampleB FuzzC; do
 done
 assert_empty_dir "$test_temp"
 
+known_subprocess_helpers=(
+  TestDirectProcessHelper
+  TestDirectProcessLargeOutputHelper
+  TestDirectProcessExitHelper
+  TestDirectProcessSecretOutputHelper
+  TestDirectProcessDescendantHelper
+  TestDirectProcessTrailingOutputHelper
+  TestDirectProcessInheritedPipeParentHelper
+  TestDirectProcessInheritedPipeChildHelper
+  TestDirectProcessDelayedWriteHelper
+  TestExecProcessHelper
+  TestExecFailureHelper
+  TestExecBlockingHelper
+  TestExecLargeSecretHelper
+  TestExecMarkerHelper
+  TestExecEarlyFailureHelper
+)
+printf '%s\n' "${known_subprocess_helpers[@]}" TestCredentialHelper TestFutureHelper TestReal >"$targets"
+: >"$go_calls"
+if ci_output=$(CI_TEST_GO="$fake_bin/go" CI_TEST_TEE="$fake_bin/tee" \
+  FAKE_PACKAGES="$packages" FAKE_SERVICE_TARGETS="$targets" FAKE_GO_CALLS="$go_calls" \
+  CI_TEST_TEMP_PARENT="$test_temp" bash scripts/ci-test.sh normal 2>&1); then
+  :
+else
+  fail "helper-target filtering run failed: $ci_output"
+fi
+helper_calls=$(<"$go_calls")
+for target in TestCredentialHelper TestFutureHelper TestReal; do
+  count=$({ grep -o -- "$target" "$go_calls" || true; } | wc -l | tr -d ' ')
+  assert_equals "$count" 1
+done
+for target in "${known_subprocess_helpers[@]}"; do
+  [[ $helper_calls != *"$target"* ]] || fail "known subprocess helper entered a service shard: $target"
+done
+assert_empty_dir "$test_temp"
+
 : >"$go_calls"
 if ci_output=$(CI_TEST_GO="$fake_bin/go" CI_TEST_TEE="$fake_bin/tee" \
   FAKE_PACKAGES="$packages" FAKE_SERVICE_TARGETS="$targets" FAKE_GO_CALLS="$go_calls" \

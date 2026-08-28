@@ -2025,7 +2025,7 @@ func TestUpdateExecutPreparesPrivateRetainedFactsWithoutTouchingCheckout(t *test
 		t.Fatalf("snapshot=%#v err=%v", snapshot.Failures(), err)
 	}
 	facts, err := updateRetainedFacts(snapshot, sha256String(candidate))
-	if err != nil || !reflect.DeepEqual(facts, []UpdateRetainedFact{{RepositoryID: "old", Path: "/tree/old", CommonGitDir: "/git/old", CandidateSHA256: sha256String(candidate)}}) {
+	if err != nil || !reflect.DeepEqual(facts, []UpdateRetainedFact{{RepositoryID: "old", Path: driftFixturePath("/tree/old"), CommonGitDir: driftFixturePath("/git/old"), CandidateSHA256: sha256String(candidate)}}) {
 		t.Fatalf("facts=%#v err=%v", facts, err)
 	}
 }
@@ -2064,11 +2064,11 @@ func TestUpdateExecutOpaqueBackupsAreExactPrivateAndTamperEvident(t *testing.T) 
 	if err != nil || !bytes.Equal(got, manifest) {
 		t.Fatalf("backup exact bytes=%q err=%v", got, err)
 	}
-	if info, err := os.Stat(backupPath); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("backup mode=%v err=%v", info, err)
+	if info, err := os.Stat(backupPath); err != nil || !requestedFilePermissionsMatch(info.Mode(), 0o600) {
+		t.Fatalf("backup protection=%v err=%v", info, err)
 	}
-	if info, err := os.Stat(directory); err != nil || info.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("backup directory mode=%v err=%v", info, err)
+	if info, err := os.Stat(directory); err != nil || validatePrivateUpdateDirectory(directory, info) != nil {
+		t.Fatalf("backup directory protection=%v err=%v", info, err)
 	}
 	journal := UpdateJournal{Version: UpdateJournalVersion, OperationID: request.OperationID, ProjectID: request.ProjectID, PlanDigest: strings.Repeat("a", 64), Generations: UpdatePlanGenerations{CurrentManifestSHA256: strings.Repeat("a", 64), CandidateManifestSHA256: strings.Repeat("b", 64), LocalConfigSHA256: strings.Repeat("c", 64), RegistrySHA256: strings.Repeat("d", 64), DefaultStateSHA256: strings.Repeat("e", 64)}, Backups: metadata, RollbackState: "active", Progress: []UpdateJournalEffect{}}
 	encoded, err := json.Marshal(journal)
@@ -2349,7 +2349,7 @@ func updateExecutorPlan(t *testing.T) UpdatePlan {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := BuildUpdatePlan(snapshot, LoadedManifestSource{Kind: ManifestSourceLocal, Source: "/candidate/project.wtree.yml", data: manifest})
+	plan, err := BuildUpdatePlan(snapshot, LoadedManifestSource{Kind: ManifestSourceLocal, Source: driftFixturePath("/candidate/project.wtree.yml"), data: manifest})
 	if err != nil {
 		t.Fatal(err)
 	}
