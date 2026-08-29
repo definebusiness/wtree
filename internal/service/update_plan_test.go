@@ -62,15 +62,15 @@ func TestUpdatePlanLoadsHermeticHTTPOverrideWithoutCredentials(t *testing.T) {
 	if _, err := planner.LoadCandidate(context.Background(), "/stored/project.wtree.yml", "https://user:secret@example.invalid/project.wtree.yml"); err == nil || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("credential source error = %v", err)
 	}
-	localDirectory := t.TempDir() + "/releases@2"
+	localDirectory := filepath.Join(t.TempDir(), "releases@2")
 	if err := os.Mkdir(localDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	localPath := localDirectory + "/project.wtree.yml"
+	localPath := filepath.Join(localDirectory, "project.wtree.yml")
 	if err := os.WriteFile(localPath, []byte("local @ candidate"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if loaded, err := planner.LoadCandidate(context.Background(), localPath, ""); err != nil || loaded.Source != localPath {
+	if loaded, err := planner.LoadCandidate(context.Background(), localPath, ""); err != nil || loaded.Source != filepath.Clean(localPath) {
 		t.Fatalf("local @ source = %#v, %v", loaded, err)
 	}
 	if loaded, err := planner.LoadCandidate(context.Background(), "/stored/project.wtree.yml", server.URL+"/releases@2/project.wtree.yml"); err != nil || loaded.Source != server.URL+"/releases@2/project.wtree.yml" {
@@ -94,7 +94,7 @@ func TestUpdatePlanBuildsStablePrivateParentFirstPlan(t *testing.T) {
 	if err != nil || !snapshot.MayUpdate() {
 		t.Fatalf("snapshot = %#v, %v", snapshot.Failures(), err)
 	}
-	source := LoadedManifestSource{Kind: ManifestSourceLocal, Source: "/candidate/releases@2/project.wtree.yml", data: append([]byte(nil), candidate...)}
+	source := LoadedManifestSource{Kind: ManifestSourceLocal, Source: driftFixturePath("/candidate/releases@2/project.wtree.yml"), data: append([]byte(nil), candidate...)}
 	first, err := BuildUpdatePlan(snapshot, source)
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +165,7 @@ func TestUpdatePlanRejectsTamperingAndCredentialBearingSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := BuildUpdatePlan(snapshot, LoadedManifestSource{Kind: ManifestSourceLocal, Source: "/candidate/project.wtree.yml", data: manifest})
+	plan, err := BuildUpdatePlan(snapshot, LoadedManifestSource{Kind: ManifestSourceLocal, Source: driftFixturePath("/candidate/project.wtree.yml"), data: manifest})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestUpdatePlanUnchangedIsStableAcrossObservationPermutations(t *testing.T) 
 		if err != nil || !snapshot.MayUpdate() {
 			t.Fatalf("snapshot = %#v, %v", snapshot.Failures(), err)
 		}
-		plan, err := BuildUpdatePlan(snapshot, LoadedManifestSource{Kind: ManifestSourceLocal, Source: "/candidate/project.wtree.yml", data: manifest})
+		plan, err := BuildUpdatePlan(snapshot, LoadedManifestSource{Kind: ManifestSourceLocal, Source: driftFixturePath("/candidate/project.wtree.yml"), data: manifest})
 		if err != nil {
 			t.Fatal(err)
 		}

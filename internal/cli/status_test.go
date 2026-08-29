@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -347,6 +348,52 @@ func installStatusDefaultIdentityGitWrapper(t *testing.T, defaultPath, identity 
 	directory := t.TempDir()
 	wrapper := filepath.Join(directory, "git")
 	counter := filepath.Join(directory, "default-common-count")
+	if runtime.GOOS == "windows" {
+		wrapper += ".exe"
+		source := filepath.Join(directory, "main.go")
+		program := fmt.Sprintf(`package main
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+func main() {
+	args := os.Args[1:]
+	repository, common := "", false
+	for index, argument := range args {
+		if index > 0 && args[index-1] == "-C" { repository = argument }
+		if argument == "--git-common-dir" { common = true }
+		if argument == "fetch" || argument == "ls-remote" { os.Exit(97) }
+	}
+	observed, observedErr := filepath.EvalSymlinks(repository)
+	want, wantErr := filepath.EvalSymlinks(%q)
+	if common && observedErr == nil && wantErr == nil && strings.EqualFold(filepath.Clean(observed), filepath.Clean(want)) {
+		count := 0
+		if data, err := os.ReadFile(%q); err == nil { count, _ = strconv.Atoi(strings.TrimSpace(string(data))) }
+		count++
+		_ = os.WriteFile(%q, []byte(strconv.Itoa(count)+"\n"), 0600)
+		if count%%2 == 0 { fmt.Println(%q); return }
+	}
+	command := exec.Command(%q, args...)
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := command.Run(); err != nil {
+		if exit, ok := err.(*exec.ExitError); ok { os.Exit(exit.ExitCode()) }
+		os.Exit(1)
+	}
+}
+`, defaultPath, counter, counter, identity, realGit)
+		if err := os.WriteFile(source, []byte(program), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command("go", "build", "-o", wrapper, source).CombinedOutput(); err != nil {
+			t.Fatalf("build status identity Git wrapper: %v\n%s", err, output)
+		}
+		t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+		return
+	}
 	script := fmt.Sprintf(`#!/bin/sh
 repository=
 previous=

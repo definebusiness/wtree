@@ -714,7 +714,14 @@ func runConcurrentCreates(project domain.Project, first, second service.Workspac
 		go func() {
 			defer group.Done()
 			<-start
-			_, err := service.NewWorkspaceCreator().Create(context.Background(), project, request, nil)
+			coordinator := service.NewWorkspaceTransaction()
+			// These integration calls intentionally serialize real Git worktree
+			// mutations. Windows Git can hold the first project lease for several
+			// seconds, so the fixture must wait for its legitimate peer rather than
+			// testing the one-second interactive contention policy.
+			coordinator.LockTimeout = 30 * time.Second
+			creator := service.NewWorkspaceCreatorWith(gitadapter.NewAdapter("git"), coordinator)
+			_, err := creator.Create(context.Background(), project, request, nil)
 			results <- err
 		}()
 	}

@@ -304,7 +304,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		if err := executor.dependencies.Git.Clone(ctx, repository.CloneURL, path, repository.CloneRemote); err != nil {
 			return CloneExecutionResult{}, cleanup(NewError(ErrorGit, fmt.Errorf("clone repository %q: %w", repository.ID, err)))
 		}
-		owned, err = stagingLease.captureChild(staging, owned, stagingParent, executor.dependencies.Lstat)
+		owned, err = stagingLease.captureChild(staging, path, owned, stagingParent, executor.dependencies.Lstat)
 		if err != nil {
 			ownershipCompromised = true
 			return CloneExecutionResult{}, cleanup(NewError(ErrorConflict, fmt.Errorf("capture private clone staging root: %w", err)))

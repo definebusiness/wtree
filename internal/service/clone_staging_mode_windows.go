@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -20,8 +21,11 @@ type windowsCloneStagingLease struct {
 	parent        *os.File
 	container     *os.File
 	child         *os.File
+	guard         *os.File
 	parentInfo    os.FileInfo
 	containerInfo os.FileInfo
+	guardInfo     os.FileInfo
+	guardPath     string
 	containerPath string
 	prefix        string
 	user          string
@@ -232,6 +236,11 @@ func (lease *windowsCloneStagingLease) validateChild(staging string, owned, pare
 	if !cloneStagingPathIsSafe(staging, lease.prefix, owned, parentInfo, true, lstat) {
 		return errors.New("private clone staging child path is unsafe")
 	}
+	if lease.guard != nil {
+		if err := lease.validateGuard(lstat); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -259,8 +268,11 @@ func (lease *windowsCloneStagingLease) prepareChild(staging, checkout string, ow
 	return lease.adoptChild(handle, staging, parentInfo, lstat)
 }
 
-func (lease *windowsCloneStagingLease) captureChild(staging string, owned, parentInfo os.FileInfo, lstat func(string) (os.FileInfo, error)) (os.FileInfo, error) {
+func (lease *windowsCloneStagingLease) captureChild(staging, checkout string, owned, parentInfo os.FileInfo, lstat func(string) (os.FileInfo, error)) (os.FileInfo, error) {
 	if owned != nil {
+		if err := lease.captureGuard(staging, checkout, lstat); err != nil {
+			return nil, err
+		}
 		return owned, lease.validateChild(staging, owned, parentInfo, lstat)
 	}
 	if err := lease.validateContainer(lstat); err != nil {
@@ -270,7 +282,22 @@ func (lease *windowsCloneStagingLease) captureChild(staging string, owned, paren
 	if err != nil {
 		return nil, fmt.Errorf("open Git-created private clone staging root: %w", err)
 	}
-	return lease.adoptChild(handle, staging, parentInfo, lstat)
+	owned, err = lease.adoptChild(handle, staging, parentInfo, lstat)
+	if err != nil {
+		return nil, err
+	}
+	if err := lease.captureGuard(staging, checkout, lstat); err != nil {
+		_ = lease.child.Close()
+		lease.child = nil
+		return nil, err
+	}
+	if err := lease.validateChild(staging, owned, parentInfo, lstat); err != nil {
+		_ = lease.closeGuard()
+		_ = lease.child.Close()
+		lease.child = nil
+		return nil, err
+	}
+	return owned, nil
 }
 
 func (lease *windowsCloneStagingLease) adoptChild(handle windows.Handle, staging string, parentInfo os.FileInfo, lstat func(string) (os.FileInfo, error)) (os.FileInfo, error) {
@@ -293,11 +320,112 @@ func (lease *windowsCloneStagingLease) adoptChild(handle windows.Handle, staging
 	return owned, nil
 }
 
+func (lease *windowsCloneStagingLease) captureGuard(staging, checkout string, lstat func(string) (os.FileInfo, error)) error {
+	if lease.guard != nil {
+		return nil
+	}
+	// checkout is the first parent-first repository path derived from the
+	// validated clone plan. A forest's staging root can be grouping-only, so
+	// bind directly to that checkout's Git authority without discovering a
+	// different nested repository or submodule.
+	objects := filepath.Join(checkout, ".git", "objects")
+	handle, err := lease.openGuardRelative(staging, checkout)
+	if err != nil {
+		return fmt.Errorf("retain Git object authority: %w", err)
+	}
+	lease.guard = os.NewFile(uintptr(handle), objects)
+	if lease.guard == nil {
+		windows.CloseHandle(handle)
+		return errors.New("adopt Git object authority handle")
+	}
+	lease.guardPath = objects
+	lease.guardInfo, err = lease.guard.Stat()
+	if err != nil {
+		_ = lease.closeGuard()
+		return fmt.Errorf("stat Git object authority handle: %w", err)
+	}
+	if err := lease.validateGuard(lstat); err != nil {
+		_ = lease.closeGuard()
+		return err
+	}
+	return nil
+}
+
+func (lease *windowsCloneStagingLease) openGuardRelative(staging, checkout string) (windows.Handle, error) {
+	relative, err := filepath.Rel(staging, checkout)
+	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return 0, errors.Join(errors.New("Git object authority is outside private clone staging"), err)
+	}
+	components := []string{}
+	if relative != "." {
+		components = append(components, strings.Split(relative, string(filepath.Separator))...)
+	}
+	components = append(components, ".git", "objects")
+	parent := windows.Handle(lease.child.Fd())
+	var opened windows.Handle
+	for _, component := range components {
+		handle, _, openErr := openWindowsCloneStagingDirectoryWithAccess(
+			parent,
+			component,
+			windows.FILE_OPEN,
+			nil,
+			windows.FILE_READ_ATTRIBUTES|windows.READ_CONTROL|windows.SYNCHRONIZE,
+			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		)
+		if openErr != nil || !windowsDirectoryHandleIsPlain(handle) {
+			if openErr == nil {
+				windows.CloseHandle(handle)
+				openErr = errors.New("Git object authority component is not a plain directory")
+			}
+			if opened != 0 {
+				_ = windows.CloseHandle(opened)
+			}
+			return 0, openErr
+		}
+		if opened != 0 {
+			if closeErr := windows.CloseHandle(opened); closeErr != nil {
+				_ = windows.CloseHandle(handle)
+				return 0, closeErr
+			}
+		}
+		opened = handle
+		parent = handle
+	}
+	return opened, nil
+}
+
+func (lease *windowsCloneStagingLease) validateGuard(lstat func(string) (os.FileInfo, error)) error {
+	if lease.guard == nil || lease.guardInfo == nil || lease.guardPath == "" || lstat == nil {
+		return errors.New("private clone staging Git object authority is incomplete")
+	}
+	handleInfo, err := lease.guard.Stat()
+	if err != nil || !windowsDirectoryHandleIsPlain(windows.Handle(lease.guard.Fd())) || !os.SameFile(lease.guardInfo, handleInfo) {
+		return errors.Join(errors.New("clone staging Git object handle changed"), err)
+	}
+	pathInfo, err := lstat(lease.guardPath)
+	if err != nil || !pathInfo.IsDir() || pathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(lease.guardInfo, pathInfo) || !os.SameFile(handleInfo, pathInfo) {
+		return errors.Join(errors.New("clone staging Git object path changed"), err)
+	}
+	return nil
+}
+
+func (lease *windowsCloneStagingLease) closeGuard() error {
+	if lease == nil || lease.guard == nil {
+		return nil
+	}
+	guard := lease.guard
+	lease.guard, lease.guardInfo, lease.guardPath = nil, nil, ""
+	return guard.Close()
+}
+
 func (lease *windowsCloneStagingLease) releaseChild(staging string, owned, parentInfo os.FileInfo, lstat func(string) (os.FileInfo, error)) error {
 	if lease == nil || lease.child == nil {
 		return nil
 	}
 	if err := lease.validateChild(staging, owned, parentInfo, lstat); err != nil {
+		return err
+	}
+	if err := lease.closeGuard(); err != nil {
 		return err
 	}
 	child := lease.child
@@ -308,6 +436,9 @@ func (lease *windowsCloneStagingLease) releaseChild(staging string, owned, paren
 func (lease *windowsCloneStagingLease) closeAll() error {
 	if lease == nil {
 		return nil
+	}
+	if err := lease.closeGuard(); err != nil {
+		return errors.Join(fmt.Errorf("close clone staging Git object authority: %w", err), lease.closeHandles())
 	}
 	if lease.child != nil {
 		child := lease.child
@@ -336,6 +467,7 @@ func (lease *windowsCloneStagingLease) closeHandles() error {
 		return nil
 	}
 	var result error
+	result = errors.Join(result, lease.closeGuard())
 	if lease.child != nil {
 		result = errors.Join(result, lease.child.Close())
 		lease.child = nil

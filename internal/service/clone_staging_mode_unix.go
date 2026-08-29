@@ -30,7 +30,7 @@ func (unixCloneStagingLease) prepareChild(_ string, _ string, owned, _ os.FileIn
 	return owned, nil
 }
 
-func (unixCloneStagingLease) captureChild(_ string, owned, _ os.FileInfo, _ func(string) (os.FileInfo, error)) (os.FileInfo, error) {
+func (unixCloneStagingLease) captureChild(_, _ string, owned, _ os.FileInfo, _ func(string) (os.FileInfo, error)) (os.FileInfo, error) {
 	return owned, nil
 }
 

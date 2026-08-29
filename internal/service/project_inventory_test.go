@@ -406,7 +406,7 @@ func snapshotInventoryTree(t *testing.T, root string) map[string]inventoryTreeEn
 		if err != nil {
 			return err
 		}
-		value := inventoryTreeEntry{Mode: info.Mode(), ModTime: info.ModTime().UnixNano()}
+		value := inventoryTreeEntry{Mode: info.Mode(), ModTime: inventorySnapshotModTime(entry, info)}
 		if !entry.IsDir() {
 			value.Contents, err = os.ReadFile(path)
 			if err != nil {

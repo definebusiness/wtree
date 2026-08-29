@@ -77,7 +77,8 @@ func TestWindowsCloneStagingCreationOverridesPermissiveParentDACL(t *testing.T) 
 	if err := os.Mkdir(staging, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	owned, err = lease.captureChild(staging, nil, stagingParent, os.Lstat)
+	createWindowsCloneGitObjects(t, staging)
+	owned, err = lease.captureChild(staging, staging, nil, stagingParent, os.Lstat)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +124,7 @@ func TestWindowsCloneStagingLetsGitCreateAbsentDestination(t *testing.T) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git init absent staging child: %v\n%s", err, output)
 	}
-	owned, err = lease.captureChild(staging, nil, stagingParent, os.Lstat)
+	owned, err = lease.captureChild(staging, staging, nil, stagingParent, os.Lstat)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +165,8 @@ func TestWindowsCloneStagingLeaseRejectsDACLMutationAndRenameSubstitution(t *tes
 	if err := os.Mkdir(staging, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	owned, err = lease.captureChild(staging, nil, stagingParent, os.Lstat)
+	createWindowsCloneGitObjects(t, staging)
+	owned, err = lease.captureChild(staging, staging, nil, stagingParent, os.Lstat)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,6 +176,46 @@ func TestWindowsCloneStagingLeaseRejectsDACLMutationAndRenameSubstitution(t *tes
 	setWindowsTestDACL(t, staging, "D:P(A;OICI;FA;;;WD)")
 	if err := lease.releaseChild(staging, owned, stagingParent, os.Lstat); err == nil {
 		t.Fatal("staging lease accepted a changed DACL")
+	}
+}
+
+func TestWindowsCloneStagingGuardBindsAuthorizedCheckoutGitObjects(t *testing.T) {
+	parent := t.TempDir()
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staging, _, stagingParent, leaseValue, err := createCloneStaging(parent, ".clone.wtree-clone-", parentInfo, os.MkdirTemp, os.Lstat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*windowsCloneStagingLease)
+	t.Cleanup(func() {
+		_ = os.RemoveAll(staging)
+		_ = lease.closeAll()
+	})
+	checkout := filepath.Join(staging, "services", "base")
+	if err := os.MkdirAll(filepath.Join(checkout, ".git", "objects"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(staging, "decoy", ".git", "objects"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lease.openGuardRelative(staging, filepath.Join(parent, "outside")); err == nil {
+		t.Fatal("accepted Git object authority outside private clone staging")
+	}
+	if _, err := lease.captureChild(staging, checkout, nil, stagingParent, os.Lstat); err != nil {
+		t.Fatalf("capture exact checkout Git authority: %v", err)
+	}
+	if lease.guardPath != filepath.Join(checkout, ".git", "objects") {
+		t.Fatalf("guard path = %q, want exact checkout authority", lease.guardPath)
+	}
+}
+
+func createWindowsCloneGitObjects(t *testing.T, staging string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(staging, ".git", "objects"), 0o700); err != nil {
+		t.Fatal(err)
 	}
 }
 

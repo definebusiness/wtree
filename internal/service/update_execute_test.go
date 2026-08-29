@@ -1640,7 +1640,7 @@ func (fixture updateExecutionCrashFixture) assertRestored(t *testing.T) {
 	if err != nil || !bytes.Equal(manifest, fixture.current) {
 		t.Fatalf("tracked manifest after recovery=%q err=%v", manifest, err)
 	}
-	if info, err := os.Stat(filepath.Join(fixture.paths["root"], "project.wtree.yml")); err != nil || info.Mode().Perm() != 0o644 {
+	if info, err := os.Stat(filepath.Join(fixture.paths["root"], "project.wtree.yml")); err != nil || !requestedFilePermissionsMatch(info.Mode(), 0o644) {
 		t.Fatalf("tracked manifest mode after recovery=%v err=%v", info, err)
 	}
 	if sha256String(manifest) != sha256String(fixture.current) {
@@ -2132,12 +2132,12 @@ func TestUpdateExecutOpaqueBackupScansCompleteLargeGenerations(t *testing.T) {
 }
 
 func TestUpdateExecutRetainedAuthorityRejectsCompleteSecretShapes(t *testing.T) {
-	for _, path := range []string{"/work/project?token=secret/old", "/work/https://user:secret@example.test/old"} {
+	for _, path := range []string{driftFixturePath("/work/project?token=secret/old"), driftFixturePath("/work/https://user:secret@example.test/old")} {
 		if safeRetainedUpdateAuthorityPath(path) {
 			t.Fatalf("accepted secret-shaped retained authority %q", path)
 		}
 	}
-	if !safeRetainedUpdateAuthorityPath("/work/space ü/old repository/.git") {
+	if !safeRetainedUpdateAuthorityPath(driftFixturePath("/work/space ü/old repository/.git")) {
 		t.Fatal("rejected safe Unicode/spaced retained authority")
 	}
 }

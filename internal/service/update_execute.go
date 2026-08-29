@@ -1557,8 +1557,12 @@ func ensureUpdateJournalParent(path string) error {
 	// The configurable data directory can legitimately sit below a platform
 	// alias (for example /var on macOS).  Validate the fixed operation suffix,
 	// rather than rejecting that pre-existing authority path.
+	depth := 4 // operation, update, project, projects
+	if filepath.Base(path) == "backups" {
+		depth++ // the private blob directory is below the operation authority
+	}
 	current := path
-	for count := 0; count != 4; count++ {
+	for count := 0; count != depth; count++ {
 		info, err := os.Lstat(current)
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || protectPrivateUpdateDirectory(current, info) != nil {
 			return errors.New("unsafe update journal directory")

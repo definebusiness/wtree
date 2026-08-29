@@ -21,8 +21,8 @@ import (
 
 func TestUpdateReconciliationRoundTripIsSortedAndSecretFree(t *testing.T) {
 	facts := []UpdateRetainedFact{
-		{RepositoryID: "web", Path: "/work/web", CommonGitDir: "/git/web"},
-		{RepositoryID: "api", Path: "/work/api", CommonGitDir: "/git/api"},
+		{RepositoryID: "web", Path: driftFixturePath("/work/web"), CommonGitDir: driftFixturePath("/git/web")},
+		{RepositoryID: "api", Path: driftFixturePath("/work/api"), CommonGitDir: driftFixturePath("/git/api")},
 	}
 	encoded, err := EncodeUpdateReconciliation(facts)
 	if err != nil {
