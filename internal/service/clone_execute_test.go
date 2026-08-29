@@ -1675,7 +1675,8 @@ func findCloneStaging(t *testing.T, plan ClonePlan) string {
 	prefix := "." + filepath.Base(plan.Destination.Path) + ".wtree-clone-"
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), prefix) {
-			return filepath.Join(plan.Destination.Parent, entry.Name())
+			candidate := filepath.Join(plan.Destination.Parent, entry.Name())
+			return cloneTestLogicalRoot(candidate, prefix)
 		}
 	}
 	t.Fatal("clone staging directory not found")
