@@ -17,6 +17,8 @@ import (
 
 const windowsFileAllAccess windows.ACCESS_MASK = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
 
+const windowsCloneObservationAccess = windows.FILE_READ_ATTRIBUTES | windows.READ_CONTROL | windows.SYNCHRONIZE
+
 type windowsCloneStagingLease struct {
 	parent        *os.File
 	container     *os.File
@@ -156,7 +158,7 @@ func openWindowsCloneStagingChild(parent windows.Handle, leaf string) (windows.H
 		leaf,
 		windows.FILE_OPEN,
 		nil,
-		windows.FILE_READ_ATTRIBUTES|windows.READ_CONTROL|windows.SYNCHRONIZE,
+		windowsCloneObservationAccess,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
 	)
 }
@@ -257,7 +259,18 @@ func (lease *windowsCloneStagingLease) prepareChild(staging, checkout string, ow
 	if filepath.Clean(checkout) == filepath.Clean(staging) {
 		return nil, nil
 	}
-	handle, status, err := openWindowsCloneStagingDirectory(windows.Handle(lease.container.Fd()), filepath.Base(staging), windows.FILE_CREATE, nil)
+	// Creating a child is authorized by the retained container handle. Retain
+	// only observation access on the resulting child so legitimate Git and
+	// inventory opens remain compatible while the no-delete share continues to
+	// prevent rename or substitution of the logical root.
+	handle, status, err := openWindowsCloneStagingDirectoryWithAccess(
+		windows.Handle(lease.container.Fd()),
+		filepath.Base(staging),
+		windows.FILE_CREATE,
+		nil,
+		windowsCloneObservationAccess,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("create private clone logical root: %w", err)
 	}
@@ -369,7 +382,7 @@ func (lease *windowsCloneStagingLease) openGuardRelative(staging, checkout strin
 			component,
 			windows.FILE_OPEN,
 			nil,
-			windows.FILE_READ_ATTRIBUTES|windows.READ_CONTROL|windows.SYNCHRONIZE,
+			windowsCloneObservationAccess,
 			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
 		)
 		if openErr != nil || !windowsDirectoryHandleIsPlain(handle) {

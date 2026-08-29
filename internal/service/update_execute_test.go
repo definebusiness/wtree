@@ -1968,23 +1968,36 @@ func TestUpdateExecutTerminalCleanupBoundariesRetainExactEvidence(t *testing.T) 
 		t.Run(step, func(t *testing.T) {
 			plan, data := updateExecutorPlan(t), t.TempDir()
 			request := UpdateExecutionRequest{DataDir: data, ProjectID: "project", OperationID: "operation-boundary-" + strings.ReplaceAll(strings.TrimPrefix(step, "terminal-cleanup-"), "_", "-"), Plan: plan}
+			reached := false
 			executor := NewUpdateExecutorWith(UpdateExecutorDependencies{Before: func(actual string) error {
 				if actual == "journal-terminal-cleanup-start-after" {
 					operation, pathErr := UpdateJournalPath(data, request.ProjectID, request.OperationID)
 					if pathErr != nil {
 						return pathErr
 					}
-					if err := os.MkdirAll(filepath.Join(filepath.Dir(operation), "backups"), 0o700); err != nil {
+					if err := ensureUpdateJournalParent(filepath.Join(filepath.Dir(operation), "backups")); err != nil {
 						return err
 					}
-					return os.MkdirAll(filepath.Join(filepath.Dir(operation), "staging"), 0o700)
+					staging := filepath.Join(filepath.Dir(operation), "staging")
+					if err := os.MkdirAll(staging, 0o700); err != nil {
+						return err
+					}
+					info, err := os.Lstat(staging)
+					if err != nil {
+						return err
+					}
+					return protectPrivateUpdateDirectory(staging, info)
 				}
 				if actual == step {
+					reached = true
 					return errors.New("terminal cleanup boundary")
 				}
 				return nil
 			}})
 			_, err := executeUpdateForTest(context.Background(), executor, request, updateExecutorRecapture(t), []updateEffect{{Name: "root", Execute: func(context.Context) (string, error) { return "head", nil }, Rollback: func(context.Context) error { return nil }}})
+			if !reached {
+				t.Fatalf("terminal cleanup did not reach injected boundary %q: %v", step, err)
+			}
 			if step == "terminal-cleanup-summary-remove-after" {
 				if err != nil {
 					t.Fatalf("after owned summary removal is a committed cleanup, err=%v", err)
@@ -2132,7 +2145,7 @@ func TestUpdateExecutOpaqueBackupScansCompleteLargeGenerations(t *testing.T) {
 }
 
 func TestUpdateExecutRetainedAuthorityRejectsCompleteSecretShapes(t *testing.T) {
-	for _, path := range []string{driftFixturePath("/work/project?token=secret/old"), driftFixturePath("/work/https://user:secret@example.test/old")} {
+	for _, path := range []string{"/work/project?token=secret/old", "/work/https://user:secret@example.test/old"} {
 		if safeRetainedUpdateAuthorityPath(path) {
 			t.Fatalf("accepted secret-shaped retained authority %q", path)
 		}

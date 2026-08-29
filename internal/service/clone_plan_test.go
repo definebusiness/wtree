@@ -315,7 +315,8 @@ func TestClonePlanDefaultDestinationAndDestinationSafety(t *testing.T) {
 	if _, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: filepath.Join(symlinkParent, "child"), CWD: base, DataDir: dataDir}); err == nil || !strings.Contains(err.Error(), "real directory") {
 		t.Fatalf("symlink parent error = %v", err)
 	}
-	if _, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: string(filepath.Separator), CWD: base, DataDir: dataDir}); err == nil || !strings.Contains(err.Error(), "too broad") {
+	broadDestination := filepath.VolumeName(base) + string(filepath.Separator)
+	if _, err := planner.Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: broadDestination, CWD: base, DataDir: dataDir}); err == nil || !strings.Contains(err.Error(), "too broad") {
 		t.Fatalf("broad destination error = %v", err)
 	}
 }

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/definebusiness/wtree/internal/config"
-	"github.com/definebusiness/wtree/internal/fsutil"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
 	"github.com/definebusiness/wtree/internal/lock"
 	"github.com/definebusiness/wtree/internal/store"
@@ -321,21 +320,33 @@ func TestCloneExecuteRevalidatesGroupingAfterPublicCloneStartedCallback(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = NewCloneExecutor().Execute(context.Background(), plan, func(event transaction.Event) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var callbackErr error
+	_, err = NewCloneExecutor().Execute(ctx, plan, func(event transaction.Event) {
 		if event.Kind != transaction.ExecuteStarted || event.Step != "repository-child-clone" {
 			return
 		}
 		staging := findCloneStaging(t, plan)
 		packages := filepath.Join(staging, "packages")
 		if removeErr := os.RemoveAll(packages); removeErr != nil {
-			t.Fatal(removeErr)
+			callbackErr = removeErr
+			cancel()
+			return
 		}
 		if linkErr := os.Symlink(external, packages); linkErr != nil {
-			t.Fatal(linkErr)
+			callbackErr = linkErr
+			cancel()
 		}
 	})
-	if err == nil || !strings.Contains(err.Error(), "grouping directory") {
+	if callbackErr != nil && !cloneGroupingReplacementRefused(callbackErr) {
+		t.Fatalf("callback grouping replacement failed unexpectedly: %v", callbackErr)
+	}
+	if callbackErr == nil && (err == nil || !strings.Contains(err.Error(), "grouping directory")) {
 		t.Errorf("callback grouping replacement execution error = %v", err)
+	}
+	if callbackErr != nil && err == nil {
+		t.Fatal("clone succeeded after Windows refused the callback replacement")
 	}
 	assertCloneExecutionAbsent(t, plan)
 	contents, readErr := os.ReadFile(marker)
@@ -1295,24 +1306,11 @@ func TestCloneExecutePostIdentityMetadataAndIdentityChangesAreRetained(t *testin
 						ownedPath = filepath.Join(findCloneStaging(t, plan), "owned.txt")
 						return os.WriteFile(ownedPath, []byte("owned\n"), 0o600)
 					case "final-identity":
-						if mutation == "exact-config-inode" {
-							path := filepath.Join(plan.Destination.Path, ".wtree.yml")
-							data, err := os.ReadFile(path)
-							if err != nil {
-								return err
-							}
-							return fsutil.WriteFileAtomicMode(path, data, 0o600)
-						}
 						path := filepath.Join(plan.Destination.Path, "owned.txt")
-						switch mutation {
-						case "byte-identical-inode":
-							return fsutil.WriteFileAtomicMode(path, []byte("owned\n"), 0o600)
-						case "mtime-only":
-							future := time.Now().Add(time.Hour)
-							return os.Chtimes(path, future, future)
-						case "mode-only":
-							return os.Chmod(path, 0o640)
+						if mutation == "exact-config-inode" {
+							path = filepath.Join(plan.Destination.Path, ".wtree.yml")
 						}
+						return mutateClonePostIdentity(path, mutation)
 					}
 					return nil
 				},
