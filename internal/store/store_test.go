@@ -19,13 +19,7 @@ func TestStoreRoundTripsVersionedStateAtomicallyWithPrivatePermissions(t *testin
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("ReadWorkspace() = %#v, %v", got, err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		t.Errorf("mode = %o, want restrictive", info.Mode().Perm())
-	}
+	assertPrivateStoreFile(t, path)
 	if _, err := store.ReadWorkspace(filepath.Join(t.TempDir(), "missing.json")); err == nil {
 		t.Fatal("missing state read succeeded")
 	}

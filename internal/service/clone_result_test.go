@@ -45,8 +45,13 @@ func TestClonePlanningResultSuccessOwnsValidatedPlanAndStableJSON(t *testing.T) 
 		t.Fatalf("unexpected success JSON schema/order: %s", jsonText)
 	}
 	var directTopology map[string]json.RawMessage
-	if err := json.Unmarshal(first, &directTopology); err != nil || string(directTopology["logicalRoot"]) != `"`+result.LogicalRoot+`"` || string(directTopology["baseRepository"]) != `"root"` {
-		t.Fatalf("planned result direct topology = %s, decode=%v", first, err)
+	var directLogicalRoot, directBaseRepository string
+	decodeErr := json.Unmarshal(first, &directTopology)
+	if decodeErr == nil {
+		decodeErr = errors.Join(json.Unmarshal(directTopology["logicalRoot"], &directLogicalRoot), json.Unmarshal(directTopology["baseRepository"], &directBaseRepository))
+	}
+	if decodeErr != nil || directLogicalRoot != result.LogicalRoot || directBaseRepository != "root" {
+		t.Fatalf("planned result direct topology = %s, decode=%v", first, decodeErr)
 	}
 	var decoded CloneResult
 	if err := json.Unmarshal(first, &decoded); err != nil || decoded.Validate() != nil {

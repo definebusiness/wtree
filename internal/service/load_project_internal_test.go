@@ -16,7 +16,7 @@ import (
 
 func TestLoadProjectThreadsV2BaseAndLogicalRoot(t *testing.T) {
 	repository := testutil.NewGitRepository(t)
-	configuration := strictOneRootLocalConfig("project", "Project")
+	configuration := strictOneRootLocalConfig(t, "project", "Project")
 	path := filepath.Join(repository.Path, ".wtree.yml")
 	if err := config.WriteProjectFile(path, configuration); err != nil {
 		t.Fatal(err)
@@ -42,7 +42,7 @@ func TestLoadProjectThreadsV2BaseAndLogicalRoot(t *testing.T) {
 
 func TestLoadProjectRequiresCoLocatedPortableManifest(t *testing.T) {
 	repository := testutil.NewGitRepository(t)
-	configuration := strictOneRootLocalConfig("project", "Project")
+	configuration := strictOneRootLocalConfig(t, "project", "Project")
 	path := filepath.Join(repository.Path, ".wtree.yml")
 	if err := config.WriteProjectFile(path, configuration); err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ func TestLoadProjectRequiresCoLocatedPortableManifest(t *testing.T) {
 
 func TestLoadProjectRejectsPortableProjectIdentityMismatch(t *testing.T) {
 	repository := testutil.NewGitRepository(t)
-	configuration := strictOneRootLocalConfig("project", "Project")
+	configuration := strictOneRootLocalConfig(t, "project", "Project")
 	path := filepath.Join(repository.Path, ".wtree.yml")
 	if err := config.WriteProjectFile(path, configuration); err != nil {
 		t.Fatal(err)
@@ -274,7 +274,7 @@ func TestResolverForestRelocationReconcilesOnlyAfterReadOnlyResolution(t *testin
 
 func TestLoadProjectRejectsBaseLogicalRootInversionMismatch(t *testing.T) {
 	repository := testutil.NewGitRepository(t)
-	configuration := strictOneRootLocalConfig("project", "Project")
+	configuration := strictOneRootLocalConfig(t, "project", "Project")
 	configuration.LogicalRoot = ".."
 	path := filepath.Join(repository.Path, ".wtree.yml")
 	if err := config.WriteProjectFile(path, configuration); err != nil {
@@ -303,13 +303,14 @@ func portableRepository(mount string) config.PortableRepository {
 	return config.PortableRepository{Clone: config.CloneSource{Remote: "origin", URL: "https://example.test/project.git"}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{"0123456789012345678901234567890123456789"}}, Mount: mount, DefaultBranch: "main"}
 }
 
-func strictOneRootLocalConfig(id, name string) config.ProjectConfig {
+func strictOneRootLocalConfig(t *testing.T, id, name string) config.ProjectConfig {
+	t.Helper()
 	return config.ProjectConfig{
 		Version:      config.ProjectConfigVersion,
 		Project:      config.Project{ID: id, Name: name, BaseRepository: "root"},
 		LogicalRoot:  ".",
 		Repositories: map[string]config.Repository{"root": {Source: ".", Parent: "", DefaultMount: ".", DefaultBranch: "main"}},
-		Manifest:     config.ManifestMetadata{Path: "project.wtree.yml", Source: "/manifests/project.wtree.yml"},
+		Manifest:     config.ManifestMetadata{Path: "project.wtree.yml", Source: filepath.Join(t.TempDir(), "manifests", "project.wtree.yml")},
 	}
 }
 
@@ -340,7 +341,7 @@ func newRegisteredForest(t *testing.T) registeredForest {
 	configuration := config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{ID: "forest", Name: "Forest", BaseRepository: "api"}, LogicalRoot: "..", Repositories: map[string]config.Repository{
 		"api": {Source: "api", Parent: "", DefaultMount: "api", DefaultBranch: "main"},
 		"web": {Source: "web", Parent: "", DefaultMount: "web", DefaultBranch: "main"},
-	}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: "/manifests/project.wtree.yml"}}
+	}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: filepath.Join(logicalRoot, "manifests", "project.wtree.yml")}}
 	configPath := filepath.Join(apiPath, ".wtree.yml")
 	if err := config.WriteProjectFile(configPath, configuration); err != nil {
 		t.Fatal(err)

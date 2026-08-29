@@ -360,6 +360,9 @@ func (c *WorkspaceCreator) createSteps(project domain.Project, value plan.Worksp
 					if err := grouping.recordWorktree(item.Path); err != nil {
 						return NewError(ErrorValidation, err)
 					}
+					if err := grouping.releaseCreated(repository.ID); err != nil {
+						return NewError(ErrorValidation, err)
+					}
 					return nil
 				},
 				Rollback:              rollbackWorktree,

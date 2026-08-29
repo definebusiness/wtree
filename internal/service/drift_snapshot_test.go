@@ -78,7 +78,7 @@ func TestDriftSnapshotRejectsStructuralAndWorkspaceStateChangesWithoutMutation(t
 	candidate := driftManifest(t, map[string]config.PortableRepository{"root": driftRepository("", "."), "added": driftRepository("root", "added")})
 	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "main", CommonGitDir: "/git/root", SourcePath: "/tree"}})
 	workspace := driftWorkspace(project)
-	raw, err := store.WorkspaceBytes(store.WorkspaceState{ID: "feature", Name: "feature", Path: "/feature", Repositories: map[string]store.CheckoutState{"root": {Branch: "main", Mount: ".", ResolvedPath: "/feature", Head: driftOID('0')}}})
+	raw, err := store.WorkspaceBytes(store.WorkspaceState{ID: "feature", Name: "feature", Path: driftFixturePath("/feature"), Repositories: map[string]store.CheckoutState{"root": {Branch: "main", Mount: ".", ResolvedPath: driftFixturePath("/feature"), Head: driftOID('0')}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestUpdateClassificationRejectsCandidateContractAndIgnoreDrift(t *testing.T
 func TestDriftSnapshotRejectsImportedPartialWorkspaceAndRedactsOperationDiagnostics(t *testing.T) {
 	current := driftManifest(t, map[string]config.PortableRepository{"root": driftRepository("", ".")})
 	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "main", CommonGitDir: "/git/root", SourcePath: "/tree"}})
-	partial, err := store.WorkspaceBytes(store.WorkspaceState{ID: "imported", Name: "imported", Path: "/imported", Partial: true, MissingRepositoryIDs: []string{"root"}, Repositories: map[string]store.CheckoutState{}})
+	partial, err := store.WorkspaceBytes(store.WorkspaceState{ID: "imported", Name: "imported", Path: driftFixturePath("/imported"), Partial: true, MissingRepositoryIDs: []string{"root"}, Repositories: map[string]store.CheckoutState{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,8 @@ func TestDriftSnapshotNamedWorkspaceAllowsFastForwardButRejectsSetChange(t *test
 	current := driftManifest(t, map[string]config.PortableRepository{"root": driftRepository("", ".")})
 	withAdded := driftManifest(t, map[string]config.PortableRepository{"root": driftRepository("", "."), "added": driftRepository("root", "added")})
 	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "main", CommonGitDir: "/git/root", SourcePath: "/tree"}})
-	named, err := store.WorkspaceBytes(store.WorkspaceState{ID: "feature", Name: "feature", Path: "/feature", Repositories: map[string]store.CheckoutState{"root": {Branch: "main", Mount: ".", ResolvedPath: "/feature", Head: driftOID('0')}}})
+	featurePath := driftFixturePath("/feature")
+	named, err := store.WorkspaceBytes(store.WorkspaceState{ID: "feature", Name: "feature", Path: featurePath, Repositories: map[string]store.CheckoutState{"root": {Branch: "main", Mount: ".", ResolvedPath: featurePath, Head: driftOID('0')}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +271,7 @@ func TestDriftSnapshotClassifiesRemovedRetainedInParentFirstOrder(t *testing.T) 
 		t.Fatalf("removed classification = %q", repositories[1].Classification)
 	}
 	retained := snapshot.RetainedUnmanaged()
-	if len(retained) != 1 || retained[0].RepositoryID != "child" || retained[0].Path != "/tree/child" {
+	if len(retained) != 1 || retained[0].RepositoryID != "child" || retained[0].Path != driftFixturePath("/tree/child") {
 		t.Fatalf("prospective retained fact = %#v", retained)
 	}
 }
@@ -279,7 +280,7 @@ func TestDriftSnapshotRejectsInvalidRemovedRetentionAndRecordsUnionFacts(t *test
 	current := driftManifest(t, map[string]config.PortableRepository{"root": driftRepository("", "."), "child": driftRepository("root", "child")})
 	candidate := driftManifest(t, map[string]config.PortableRepository{"root": driftRepository("", ".")})
 	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "main", CommonGitDir: "/git/root", SourcePath: "/tree"}, {ID: "child", ParentID: "root", DefaultMount: "child", DefaultBranch: "main", CommonGitDir: "/git/child", SourcePath: "/tree/child"}})
-	state, err := store.WorkspaceBytes(store.WorkspaceState{ID: "ghost", Name: "ghost", Path: "/ghost", Repositories: map[string]store.CheckoutState{"state-only": {Branch: "main", Mount: ".", ResolvedPath: "/ghost", Head: driftOID('0')}}})
+	state, err := store.WorkspaceBytes(store.WorkspaceState{ID: "ghost", Name: "ghost", Path: driftFixturePath("/ghost"), Repositories: map[string]store.CheckoutState{"state-only": {Branch: "main", Mount: ".", ResolvedPath: driftFixturePath("/ghost"), Head: driftOID('0')}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,15 +348,16 @@ func TestDriftSnapshotHistoricalRetentionDoesNotBlockLaterFastForward(t *testing
 		t.Fatal(err)
 	}
 	retained := first.RetainedUnmanaged()
-	if len(retained) != 1 || retained[0] != (RetainedUnmanagedFact{RepositoryID: "old", Path: "/tree/old", CommonGitDir: "/git/old"}) {
+	if len(retained) != 1 || retained[0] != (RetainedUnmanagedFact{RepositoryID: "old", Path: driftFixturePath("/tree/old"), CommonGitDir: driftFixturePath("/git/old")}) {
 		t.Fatalf("A -> B retained evidence = %#v", retained)
 	}
 
 	workspaceBytes := func(t *testing.T, partial bool) []byte {
 		t.Helper()
-		state := store.WorkspaceState{ID: "feature", Name: "feature", Path: "/feature", Repositories: map[string]store.CheckoutState{"root": {Branch: "main", Mount: ".", ResolvedPath: "/feature", Head: driftOID('0')}}}
+		featurePath := driftFixturePath("/feature")
+		state := store.WorkspaceState{ID: "feature", Name: "feature", Path: featurePath, Repositories: map[string]store.CheckoutState{"root": {Branch: "main", Mount: ".", ResolvedPath: featurePath, Head: driftOID('0')}}}
 		if partial {
-			state = store.WorkspaceState{ID: "imported", Name: "imported", Path: "/imported", Partial: true, MissingRepositoryIDs: []string{"root"}, Repositories: map[string]store.CheckoutState{}}
+			state = store.WorkspaceState{ID: "imported", Name: "imported", Path: driftFixturePath("/imported"), Partial: true, MissingRepositoryIDs: []string{"root"}, Repositories: map[string]store.CheckoutState{}}
 		}
 		data, marshalErr := store.WorkspaceBytes(state)
 		if marshalErr != nil {
@@ -374,8 +376,8 @@ func TestDriftSnapshotHistoricalRetentionDoesNotBlockLaterFastForward(t *testing
 				PersistedWorkspaces: []PersistedWorkspaceGeneration{{Path: "/data/state/project/" + test.name + ".json", Bytes: persisted}},
 				RetainedUnmanaged:   retained,
 			})
-			root := DriftRepositoryObservation{RepositoryID: "root", Path: "/tree", CommonGitDir: "/git/root", Branch: "main", Head: driftOID('0'), Clean: true, IdentityKnown: true, IdentityMatches: true, UpstreamKnown: true, Upstream: gitadapter.Upstream{LocalBranch: "main", Remote: "origin", Merge: "refs/heads/main", FetchURL: "https://example.test/project.git"}, AdvertisedCommit: driftOID('1'), CanFastForward: true, TrackedManifestExact: true}
-			old := DriftRepositoryObservation{RepositoryID: "old", Path: "/tree/old", CommonGitDir: "/git/old", Branch: "changed", Head: driftOID('9'), Clean: false, Detached: true, IdentityKnown: true, IdentityMatches: true}
+			root := DriftRepositoryObservation{RepositoryID: "root", Path: driftFixturePath("/tree"), CommonGitDir: driftFixturePath("/git/root"), Branch: "main", Head: driftOID('0'), Clean: true, IdentityKnown: true, IdentityMatches: true, UpstreamKnown: true, Upstream: gitadapter.Upstream{LocalBranch: "main", Remote: "origin", Merge: "refs/heads/main", FetchURL: "https://example.test/project.git"}, AdvertisedCommit: driftOID('1'), CanFastForward: true, TrackedManifestExact: true}
+			old := DriftRepositoryObservation{RepositoryID: "old", Path: driftFixturePath("/tree/old"), CommonGitDir: driftFixturePath("/git/old"), Branch: "changed", Head: driftOID('9'), Clean: false, Detached: true, IdentityKnown: true, IdentityMatches: true}
 			var wantRepositories []DriftRepository
 			var wantDifferences []DriftSetDifference
 			for index, observations := range [][]DriftRepositoryObservation{{root, old}, {old, root}} {
@@ -443,9 +445,9 @@ func TestDriftSnapshotRejectsActualRepositorySetChangesForAllNamedWorkspaceKinds
 		{name: "removal-imported-partial", current: manifestA, candidate: manifestB, project: projectA, partial: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			state := store.WorkspaceState{ID: "feature", Name: "feature", Path: "/feature", Repositories: map[string]store.CheckoutState{"root": {Branch: "main", Mount: ".", ResolvedPath: "/feature", Head: driftOID('0')}}}
+			state := store.WorkspaceState{ID: "feature", Name: "feature", Path: driftFixturePath("/feature"), Repositories: map[string]store.CheckoutState{"root": {Branch: "main", Mount: ".", ResolvedPath: driftFixturePath("/feature"), Head: driftOID('0')}}}
 			if test.partial {
-				state = store.WorkspaceState{ID: "imported", Name: "imported", Path: "/imported", Partial: true, MissingRepositoryIDs: []string{"root"}, Repositories: map[string]store.CheckoutState{}}
+				state = store.WorkspaceState{ID: "imported", Name: "imported", Path: driftFixturePath("/imported"), Partial: true, MissingRepositoryIDs: []string{"root"}, Repositories: map[string]store.CheckoutState{}}
 			}
 			persisted, err := store.WorkspaceBytes(state)
 			if err != nil {
@@ -479,7 +481,7 @@ func TestDriftSnapshotRequiresPositiveIdentityAndCopiesCapturedEvidence(t *testi
 		t.Fatalf("zero identity was accepted: %#v, %v", snapshot.Failures(), err)
 	}
 	input = driftCompleteInput(t, DriftSnapshotInput{Project: project, DefaultWorkspace: driftWorkspace(project), CurrentManifest: manifest, CandidateManifest: manifest, Observations: []DriftRepositoryObservation{{RepositoryID: "root", Path: "/tree", CommonGitDir: "/git/root", Branch: "main", Head: driftOID('0'), Clean: true, AdvertisedCommit: driftOID('0'), TrackedManifestExact: true}}})
-	input.Reconciliation = DriftFileGeneration{Path: "/data/projects/project/reconciliation.json", Bytes: []byte("captured")}
+	input.Reconciliation = DriftFileGeneration{Path: driftFixturePath("/data/projects/project/reconciliation.json"), Bytes: []byte("captured")}
 	snapshot, err = BuildDriftSnapshot(input)
 	if err != nil {
 		t.Fatal(err)
@@ -499,7 +501,7 @@ func TestDriftSnapshotBindsLocalConfigLogicalRootAndSourcePath(t *testing.T) {
 	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "main", CommonGitDir: "/git/root", SourcePath: "/tree"}})
 	project.ConfigPath, project.LogicalRoot = "/tree/config/.wtree.yml", "/tree"
 	input := driftCompleteInput(t, DriftSnapshotInput{Project: project, DefaultWorkspace: driftWorkspace(project), CurrentManifest: manifest, CandidateManifest: manifest, Observations: []DriftRepositoryObservation{{RepositoryID: "root", Path: "/tree", CommonGitDir: "/git/root", Branch: "main", Head: driftOID('0'), Clean: true, AdvertisedCommit: driftOID('0'), TrackedManifestExact: true}}})
-	local := driftLocalConfig(project)
+	local := driftLocalConfig(input.Project)
 	local.LogicalRoot = ".."
 	local.Repositories["root"] = config.Repository{Source: "wrong", Parent: "", DefaultMount: ".", DefaultBranch: "main"}
 	data, err := config.MarshalProject(local)
@@ -525,7 +527,7 @@ func TestDriftSnapshotRequiresAuthoritativeConfigPathAndManifestBinding(t *testi
 		t.Fatalf("empty config path = %#v", err)
 	}
 	input = driftCompleteInput(t, base)
-	input.CurrentManifestPath = "/other/project.wtree.yml"
+	input.CurrentManifestPath = driftFixturePath("/other/project.wtree.yml")
 	snapshot, err := BuildDriftSnapshot(input)
 	if err != nil || !snapshot.HasFailure("project", "local-config") {
 		t.Fatalf("manifest path mismatch = %#v, %v", snapshot.Failures(), err)
@@ -619,7 +621,7 @@ func TestDriftSnapshotPriorRetainedMismatchAlwaysKeepsOneRowAndDifference(t *tes
 func TestDriftSnapshotRetainedUnionIsStableAcrossPermutationsAndMixedState(t *testing.T) {
 	manifest := driftManifest(t, map[string]config.PortableRepository{"root": driftRepository("", ".")})
 	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "main", CommonGitDir: "/git/root", SourcePath: "/tree"}})
-	stateBytes, err := store.WorkspaceBytes(store.WorkspaceState{Version: store.Version, ID: "named", Name: "named", Path: "/named", Repositories: map[string]store.CheckoutState{"old": {Branch: "changed", Mount: ".", ResolvedPath: "/retained/old", Head: driftOID('9')}}})
+	stateBytes, err := store.WorkspaceBytes(store.WorkspaceState{Version: store.Version, ID: "named", Name: "named", Path: driftFixturePath("/named"), Repositories: map[string]store.CheckoutState{"old": {Branch: "changed", Mount: ".", ResolvedPath: driftFixturePath("/retained/old"), Head: driftOID('9')}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -710,15 +712,15 @@ func TestDriftSnapshotReadersCollectEachAuthorityOnceAndDeepCopy(t *testing.T) {
 			count()
 			return base.Project, base.DefaultWorkspace, base.Observations, nil
 		},
-		Inventory: DriftInventoryReader{DataDir: "/data", ReadDir: func(_ context.Context, path string) ([]DriftDirectoryEntry, error) {
-			if path == WorkspaceStateDirectory("/data", project.ID) {
+		Inventory: DriftInventoryReader{DataDir: driftFixturePath("/data"), ReadDir: func(_ context.Context, path string) ([]DriftDirectoryEntry, error) {
+			if path == WorkspaceStateDirectory(driftFixturePath("/data"), project.ID) {
 				return []DriftDirectoryEntry{{Name: "default.json", Regular: true}}, nil
 			}
 			return nil, os.ErrNotExist
 		}, Lstat: func(context.Context, string) (DriftDirectoryEntry, error) {
 			return DriftDirectoryEntry{}, os.ErrNotExist
 		}, ReadFile: func(_ context.Context, path string) ([]byte, error) {
-			if path == WorkspaceStatePath("/data", project.ID, "default") {
+			if path == WorkspaceStatePath(driftFixturePath("/data"), project.ID, "default") {
 				return append([]byte(nil), base.DefaultState.Bytes...), nil
 			}
 			return nil, os.ErrNotExist
@@ -741,13 +743,14 @@ func TestDriftSnapshotReadersUseFixedAuthoritiesAndOneDefaultGeneration(t *testi
 	manifest := driftManifest(t, map[string]config.PortableRepository{"root": driftRepository("", ".")})
 	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "main", CommonGitDir: "/git/root", SourcePath: "/tree"}})
 	base := driftCompleteInput(t, DriftSnapshotInput{Project: project, DefaultWorkspace: driftWorkspace(project), CurrentManifest: manifest, CandidateManifest: manifest, Observations: []DriftRepositoryObservation{{RepositoryID: "root", Path: "/tree", CommonGitDir: "/git/root", Branch: "main", Head: driftOID('0'), Clean: true, AdvertisedCommit: driftOID('0'), TrackedManifestExact: true}}})
-	workspaceDirectory := WorkspaceStateDirectory("/data", project.ID)
-	defaultPath := WorkspaceStatePath("/data", project.ID, "default")
-	reconciliationPath := filepath.Join("/data", "projects", project.ID, "reconciliation.json")
-	recoveryDirectory := filepath.Join("/data", "projects", project.ID, "recovery")
+	dataDir := driftFixturePath("/data")
+	workspaceDirectory := WorkspaceStateDirectory(dataDir, project.ID)
+	defaultPath := WorkspaceStatePath(dataDir, project.ID, "default")
+	reconciliationPath := filepath.Join(dataDir, "projects", project.ID, "reconciliation.json")
+	recoveryDirectory := filepath.Join(dataDir, "projects", project.ID, "recovery")
 	recoveryPath := filepath.Join(recoveryDirectory, "workspace.json")
-	updateDirectory := filepath.Join("/data", "projects", project.ID, "update")
-	oldRetainedDirectory := filepath.Join("/data", "projects", project.ID, "retained")
+	updateDirectory := filepath.Join(dataDir, "projects", project.ID, "update")
+	oldRetainedDirectory := filepath.Join(dataDir, "projects", project.ID, "retained")
 	readDirs := []string{}
 	files := map[string][]byte{defaultPath: base.DefaultState.Bytes, reconciliationPath: []byte("reconciliation"), recoveryPath: []byte("recovery")}
 	directories := map[string][]DriftDirectoryEntry{
@@ -768,7 +771,7 @@ func TestDriftSnapshotReadersUseFixedAuthoritiesAndOneDefaultGeneration(t *testi
 			return base.Project, base.DefaultWorkspace, base.Observations, nil
 		},
 		Inventory: DriftInventoryReader{
-			DataDir: "/data",
+			DataDir: dataDir,
 			ReadDir: func(_ context.Context, path string) ([]DriftDirectoryEntry, error) {
 				readDirs = append(readDirs, path)
 				entries, ok := directories[path]
@@ -788,7 +791,7 @@ func TestDriftSnapshotReadersUseFixedAuthoritiesAndOneDefaultGeneration(t *testi
 				if path != reconciliationPath || string(data) != "reconciliation" {
 					t.Fatalf("decoder received %q %q", path, data)
 				}
-				return []RetainedUnmanagedFact{{RepositoryID: "old", Path: "/old", CommonGitDir: "/git/old"}}, nil
+				return []RetainedUnmanagedFact{{RepositoryID: "old", Path: driftFixturePath("/old"), CommonGitDir: driftFixturePath("/git/old")}}, nil
 			},
 			DecodeOperation: func(path string, data []byte) (DriftOperationRecord, error) {
 				if path != recoveryPath || string(data) != "recovery" {
@@ -841,7 +844,7 @@ func TestCollectDriftSnapshotTurnsReaderFailureIntoRedactedTypedFailure(t *testi
 		ReadObservations: func(context.Context) (domain.Project, domain.Workspace, []DriftRepositoryObservation, error) {
 			return domain.Project{}, domain.Workspace{}, nil, nil
 		},
-		Inventory: DriftInventoryReader{DataDir: "/data", ReadDir: func(context.Context, string) ([]DriftDirectoryEntry, error) { return nil, nil }, Lstat: func(context.Context, string) (DriftDirectoryEntry, error) {
+		Inventory: DriftInventoryReader{DataDir: driftFixturePath("/data"), ReadDir: func(context.Context, string) ([]DriftDirectoryEntry, error) { return nil, nil }, Lstat: func(context.Context, string) (DriftDirectoryEntry, error) {
 			return DriftDirectoryEntry{}, os.ErrNotExist
 		}, ReadFile: func(context.Context, string) ([]byte, error) { return nil, nil }, DecodeReconciliation: func(string, []byte) ([]RetainedUnmanagedFact, error) { return nil, nil }, DecodeOperation: func(string, []byte) (DriftOperationRecord, error) { return DriftOperationRecord{}, nil }},
 	})
@@ -852,7 +855,7 @@ func TestCollectDriftSnapshotTurnsReaderFailureIntoRedactedTypedFailure(t *testi
 }
 
 func TestDriftSnapshotInventoryRejectsUnexpectedOrUnreadableEntriesBeforeClassification(t *testing.T) {
-	reader := DriftInventoryReader{DataDir: "/data", ReadDir: func(context.Context, string) ([]DriftDirectoryEntry, error) {
+	reader := DriftInventoryReader{DataDir: driftFixturePath("/data"), ReadDir: func(context.Context, string) ([]DriftDirectoryEntry, error) {
 		return []DriftDirectoryEntry{{Name: "hidden", Regular: true}}, nil
 	}, Lstat: func(context.Context, string) (DriftDirectoryEntry, error) {
 		return DriftDirectoryEntry{}, os.ErrNotExist
@@ -909,7 +912,7 @@ func TestDriftSnapshotInventoryRejectsMembershipAndTypeRaces(t *testing.T) {
 			t.Run(authority.name+" "+mutation.name, func(t *testing.T) {
 				calls := 0
 				reader := DriftInventoryReader{
-					DataDir: "/data",
+					DataDir: driftFixturePath("/data"),
 					ReadDir: func(context.Context, string) ([]DriftDirectoryEntry, error) {
 						calls++
 						if calls == 1 {
@@ -931,7 +934,7 @@ func TestDriftSnapshotInventoryRejectsMembershipAndTypeRaces(t *testing.T) {
 }
 
 func TestDriftSnapshotReconciliationRejectsTypeReadDecodeAndReplacementRaces(t *testing.T) {
-	path := filepath.Join("/data", "projects", "project", "reconciliation.json")
+	path := filepath.Join(driftFixturePath("/data"), "projects", "project", "reconciliation.json")
 	regular := DriftDirectoryEntry{Name: "reconciliation.json", Regular: true}
 	tests := []struct {
 		name        string
@@ -952,7 +955,7 @@ func TestDriftSnapshotReconciliationRejectsTypeReadDecodeAndReplacementRaces(t *
 		t.Run(test.name, func(t *testing.T) {
 			statIndex, readIndex := 0, 0
 			reader := DriftInventoryReader{
-				DataDir: "/data",
+				DataDir: driftFixturePath("/data"),
 				Lstat: func(context.Context, string) (DriftDirectoryEntry, error) {
 					index := statIndex
 					statIndex++
@@ -982,7 +985,7 @@ func TestDriftSnapshotReconciliationRejectsTypeReadDecodeAndReplacementRaces(t *
 			}
 		})
 	}
-	reader := DriftInventoryReader{DataDir: "/data", Lstat: func(context.Context, string) (DriftDirectoryEntry, error) {
+	reader := DriftInventoryReader{DataDir: driftFixturePath("/data"), Lstat: func(context.Context, string) (DriftDirectoryEntry, error) {
 		return DriftDirectoryEntry{}, fmt.Errorf("optional: %w", os.ErrNotExist)
 	}}
 	generation, facts, err := reader.reconciliationInventory(context.Background(), "project")
@@ -1011,9 +1014,9 @@ func TestDriftSnapshotReadersRejectDefaultReplacementBetweenCaptures(t *testing.
 			return base.Project, base.DefaultWorkspace, base.Observations, nil
 		},
 		Inventory: DriftInventoryReader{
-			DataDir: "/data",
+			DataDir: driftFixturePath("/data"),
 			ReadDir: func(_ context.Context, path string) ([]DriftDirectoryEntry, error) {
-				if path == WorkspaceStateDirectory("/data", project.ID) {
+				if path == WorkspaceStateDirectory(driftFixturePath("/data"), project.ID) {
 					return []DriftDirectoryEntry{{Name: "default.json", Regular: true}}, nil
 				}
 				return nil, os.ErrNotExist
@@ -1063,7 +1066,7 @@ func TestDriftSnapshotClassifiesUnexpectedDiskAndDuplicateObservation(t *testing
 func TestUpdateClassificationRejectsActualUpstreamMismatch(t *testing.T) {
 	current := driftRepository("", ".")
 	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "main", CommonGitDir: "/git/root", SourcePath: "/tree"}})
-	fact := classifyExistingDriftRepository("root", current, current, DriftRepositoryObservation{RepositoryID: "root", Path: "/tree", CommonGitDir: "/git/root", Branch: "main", Head: driftOID('0'), Clean: true, IdentityKnown: true, IdentityMatches: true, AdvertisedCommit: driftOID('0'), TrackedManifestExact: true, UpstreamKnown: true, Upstream: gitadapter.Upstream{LocalBranch: "main", Remote: "origin", Merge: "refs/heads/main", FetchURL: "https://other.test/project.git"}}, project, true)
+	fact := classifyExistingDriftRepository("root", current, current, DriftRepositoryObservation{RepositoryID: "root", Path: driftFixturePath("/tree"), CommonGitDir: driftFixturePath("/git/root"), Branch: "main", Head: driftOID('0'), Clean: true, IdentityKnown: true, IdentityMatches: true, AdvertisedCommit: driftOID('0'), TrackedManifestExact: true, UpstreamKnown: true, Upstream: gitadapter.Upstream{LocalBranch: "main", Remote: "origin", Merge: "refs/heads/main", FetchURL: "https://other.test/project.git"}}, project, true)
 	if fact.Classification != UpdateClassificationStructurallyInconsistent || len(fact.Failures) != 1 || fact.Failures[0].Check != "upstream" {
 		t.Fatalf("upstream classification = %#v", fact)
 	}
@@ -1121,6 +1124,44 @@ func TestDriftSnapshotUsesActualUpstreamBeforeAnyUpdateAndRefusesDeletion(t *tes
 	}
 }
 
+func TestDriftFixtureBoundaryConvertsEveryFilesystemIdentity(t *testing.T) {
+	manifest := driftManifest(t, map[string]config.PortableRepository{"root": driftRepository("", ".")})
+	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "main", CommonGitDir: "/git/root", SourcePath: "/tree"}})
+	input := driftCompleteInput(t, DriftSnapshotInput{
+		Project:             project,
+		DefaultWorkspace:    driftWorkspace(project),
+		CurrentManifest:     manifest,
+		CurrentManifestPath: "/manifest/project.wtree.yml",
+		CandidateManifest:   manifest,
+		PersistedWorkspaces: []PersistedWorkspaceGeneration{{Path: "/data/state/project/named.json", Bytes: []byte("captured")}},
+		RetainedUnmanaged:   []RetainedUnmanagedFact{{RepositoryID: "old", Path: "/retained/old", CommonGitDir: "/git/old"}},
+		Operations:          []DriftOperationRecord{{Path: "/data/projects/project/update/one", Operation: "update"}},
+		Observations:        []DriftRepositoryObservation{{RepositoryID: "root", Path: "/tree", CommonGitDir: "/git/root"}},
+	})
+	paths := []struct {
+		name, got, fixture string
+	}{
+		{name: "data directory", got: input.DataDir, fixture: "/data"},
+		{name: "project source", got: input.Project.Repositories[0].SourcePath, fixture: "/tree"},
+		{name: "project Git identity", got: input.Project.Repositories[0].CommonGitDir, fixture: "/git/root"},
+		{name: "observation path", got: input.Observations[0].Path, fixture: "/tree"},
+		{name: "observation Git identity", got: input.Observations[0].CommonGitDir, fixture: "/git/root"},
+		{name: "retained path", got: input.RetainedUnmanaged[0].Path, fixture: "/retained/old"},
+		{name: "retained Git identity", got: input.RetainedUnmanaged[0].CommonGitDir, fixture: "/git/old"},
+		{name: "persisted generation", got: input.PersistedWorkspaces[0].Path, fixture: "/data/state/project/named.json"},
+		{name: "operation", got: input.Operations[0].Path, fixture: "/data/projects/project/update/one"},
+		{name: "manifest generation", got: input.CurrentManifestPath, fixture: "/manifest/project.wtree.yml"},
+	}
+	for _, path := range paths {
+		if path.got != driftFixturePath(path.fixture) || !filepath.IsAbs(path.got) || filepath.Clean(path.got) != path.got {
+			t.Errorf("%s = %q; want native clean absolute fixture %q", path.name, path.got, driftFixturePath(path.fixture))
+		}
+	}
+	if input.Project.Repositories[0].DefaultMount != "." || input.LocalConfig.Repositories["root"].Source != "." || input.LocalConfig.Worktrees.Root != "/worktrees" {
+		t.Fatalf("configured path spelling changed: mount=%q source=%q worktrees=%q", input.Project.Repositories[0].DefaultMount, input.LocalConfig.Repositories["root"].Source, input.LocalConfig.Worktrees.Root)
+	}
+}
+
 func driftManifest(t *testing.T, repositories map[string]config.PortableRepository) []byte {
 	t.Helper()
 	data, err := config.MarshalPortableManifest(config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "project", Name: "Project", BaseRepository: "root"}, Repositories: repositories})
@@ -1133,8 +1174,12 @@ func driftRepository(parent, mount string) config.PortableRepository {
 	return config.PortableRepository{Clone: config.CloneSource{Remote: "origin", URL: "https://example.test/project.git"}, Upstream: config.Upstream{Remote: "origin", Branch: "main", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{driftOID('a')}}, Parent: parent, Mount: mount, DefaultBranch: "main"}
 }
 func driftProject(repositories []domain.Repository) domain.Project {
-	logicalRoot := "/tree"
-	for _, repository := range repositories {
+	repositories = append([]domain.Repository(nil), repositories...)
+	logicalRoot := driftFixturePath("/tree")
+	for index := range repositories {
+		repositories[index].SourcePath = driftFixturePath(repositories[index].SourcePath)
+		repositories[index].CommonGitDir = driftFixturePath(repositories[index].CommonGitDir)
+		repository := repositories[index]
 		if repository.ID == "root" {
 			logicalRoot = repository.SourcePath
 			break
@@ -1147,7 +1192,7 @@ func driftWorkspace(project domain.Project) domain.Workspace {
 	for _, repository := range project.Repositories {
 		checkouts = append(checkouts, domain.Checkout{RepositoryID: repository.ID, Branch: "main", Head: driftOID('0'), Mount: repository.DefaultMount, ResolvedPath: repository.SourcePath})
 	}
-	return domain.Workspace{Version: domain.CurrentVersion, ID: "default", Name: "default", RootPath: "/tree", Checkouts: checkouts}
+	return domain.Workspace{Version: domain.CurrentVersion, ID: "default", Name: "default", RootPath: project.LogicalRoot, Checkouts: checkouts}
 }
 
 // driftBuild supplies the complete authority capture required by production
@@ -1160,8 +1205,37 @@ func driftBuild(t *testing.T, input DriftSnapshotInput) (DriftSnapshot, error) {
 
 func driftCompleteInput(t *testing.T, input DriftSnapshotInput) DriftSnapshotInput {
 	t.Helper()
+	for index := range input.Project.Repositories {
+		input.Project.Repositories[index].SourcePath = driftFixturePath(input.Project.Repositories[index].SourcePath)
+		input.Project.Repositories[index].CommonGitDir = driftFixturePath(input.Project.Repositories[index].CommonGitDir)
+	}
+	input.Project.LogicalRoot = driftFixturePath(input.Project.LogicalRoot)
+	input.Project.ConfigPath = driftFixturePath(input.Project.ConfigPath)
+	input.DefaultWorkspace.RootPath = driftFixturePath(input.DefaultWorkspace.RootPath)
+	for index := range input.DefaultWorkspace.Checkouts {
+		input.DefaultWorkspace.Checkouts[index].ResolvedPath = driftFixturePath(input.DefaultWorkspace.Checkouts[index].ResolvedPath)
+	}
+	for index := range input.Observations {
+		input.Observations[index].Path = driftFixturePath(input.Observations[index].Path)
+		input.Observations[index].CommonGitDir = driftFixturePath(input.Observations[index].CommonGitDir)
+	}
+	for index := range input.PersistedWorkspaces {
+		input.PersistedWorkspaces[index].Path = driftFixturePath(input.PersistedWorkspaces[index].Path)
+	}
+	for index := range input.RetainedUnmanaged {
+		input.RetainedUnmanaged[index].Path = driftFixturePath(input.RetainedUnmanaged[index].Path)
+		input.RetainedUnmanaged[index].CommonGitDir = driftFixturePath(input.RetainedUnmanaged[index].CommonGitDir)
+	}
+	for index := range input.Operations {
+		input.Operations[index].Path = driftFixturePath(input.Operations[index].Path)
+	}
+	input.DefaultState.Path = driftFixturePath(input.DefaultState.Path)
+	input.Reconciliation.Path = driftFixturePath(input.Reconciliation.Path)
+	input.CurrentManifestPath = driftFixturePath(input.CurrentManifestPath)
 	if input.DataDir == "" {
-		input.DataDir = "/data"
+		input.DataDir = driftFixturePath("/data")
+	} else {
+		input.DataDir = driftFixturePath(input.DataDir)
 	}
 	input.Collection = DriftCollectionEvidence{
 		CurrentManifestKnown: true, CandidateManifestKnown: true,

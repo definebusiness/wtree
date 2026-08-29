@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -203,7 +204,9 @@ func TestStatusReportsStaleState(t *testing.T) {
 func TestStatusIgnoresManagedChildCheckoutWithSpacesAndUnicodeMount(t *testing.T) {
 	project, _, _, data := createFixture(t)
 	target := filepath.Join(t.TempDir(), "workspace")
-	mount := filepath.Join("api space", "δοκιμή")
+	// Mounts are portable logical paths, so their spelling remains slash-based
+	// even when the workspace target itself is a native filesystem path.
+	mount := "api space/δοκιμή"
 	if _, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{
 		WorkspaceName: "feature/status", TargetPath: target, DataDir: data,
 		Mounts: []service.MountOverride{{RepositoryID: "backend", Mount: mount}},
@@ -833,7 +836,40 @@ func assertStatusWorktreeRefsUnchanged(t *testing.T, before map[string]string, w
 
 func newRemoteRejectingGitWrapper(t *testing.T) string {
 	t.Helper()
-	wrapper := filepath.Join(t.TempDir(), "git-wrapper")
+	directory := t.TempDir()
+	wrapper := filepath.Join(directory, "git-wrapper")
+	if runtime.GOOS == "windows" {
+		wrapper += ".exe"
+		realGit, err := exec.LookPath("git")
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := filepath.Join(directory, "main.go")
+		program := `package main
+import (
+	"os"
+	"os/exec"
+)
+func main() {
+	for _, argument := range os.Args[1:] {
+		if argument == "fetch" || argument == "ls-remote" { os.Exit(97) }
+	}
+	command := exec.Command(` + strconv.Quote(realGit) + `, os.Args[1:]...)
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := command.Run(); err != nil {
+		if exit, ok := err.(*exec.ExitError); ok { os.Exit(exit.ExitCode()) }
+		os.Exit(1)
+	}
+}
+`
+		if err := os.WriteFile(source, []byte(program), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command("go", "build", "-o", wrapper, source).CombinedOutput(); err != nil {
+			t.Fatalf("build remote-rejecting Git wrapper: %v\n%s", err, output)
+		}
+		return wrapper
+	}
 	const script = `#!/bin/sh
 for argument in "$@"; do
 	case "$argument" in
@@ -857,9 +893,9 @@ type defaultIdentityMismatchingGit struct {
 }
 
 func (git defaultIdentityMismatchingGit) CommonGitDir(ctx context.Context, repository string) (string, error) {
-	observed, observedErr := filepath.EvalSymlinks(repository)
-	want, wantErr := filepath.EvalSymlinks(git.path)
-	if observedErr == nil && wantErr == nil && filepath.Clean(observed) == filepath.Clean(want) {
+	observed, observedErr := os.Stat(repository)
+	want, wantErr := os.Stat(git.path)
+	if observedErr == nil && wantErr == nil && os.SameFile(observed, want) {
 		return git.identity, nil
 	}
 	return git.Git.CommonGitDir(ctx, repository)

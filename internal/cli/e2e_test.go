@@ -192,7 +192,9 @@ import (
 func main() {
   args := os.Args[1:]
   repo, rest := "", args
-  if len(args) >= 2 && args[0] == "-C" { repo, rest = args[1], args[2:] }
+  for len(rest) >= 2 && rest[0] == "-c" { rest = rest[2:] }
+  if len(rest) >= 2 && rest[0] == "-C" { repo, rest = rest[1], rest[2:] }
+  for len(rest) >= 2 && rest[0] == "-c" { rest = rest[2:] }
   resolved, _ := filepath.EvalSymlinks(repo)
   if resolved == %q && len(rest) >= 2 && ((rest[0] == "worktree" && rest[1] == "add") || (rest[0] == "branch" && rest[1] == "-D")) {
     fmt.Fprintln(os.Stderr, "injected Git failure")

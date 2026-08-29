@@ -288,7 +288,7 @@ func TestProjectPruneLockedRacesFailBeforeWriter(t *testing.T) {
 		}},
 		{name: "eligibility changed", mutate: func(t *testing.T, data string) {
 			path := filepath.Join(data, "projects with spaces", "keeper", ".wtree.yml")
-			if err := config.WriteProjectFile(path, config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{ID: "stale", Name: "stale", BaseRepository: "root"}, LogicalRoot: ".", Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: ".", DefaultBranch: "main"}}, Worktrees: config.Worktrees{}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: "/manifests/project.wtree.yml"}}); err != nil {
+			if err := config.WriteProjectFile(path, config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{ID: "stale", Name: "stale", BaseRepository: "root"}, LogicalRoot: ".", Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: ".", DefaultBranch: "main"}}, Worktrees: config.Worktrees{}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: filepath.Join(data, "manifests", "project.wtree.yml")}}); err != nil {
 				t.Fatal(err)
 			}
 		}},

@@ -428,7 +428,9 @@ func newPushEscalationFixture(t *testing.T) pushEscalationFixture {
 	local := config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{ID: "push-escalation", Name: "push escalation", BaseRepository: "root"}, LogicalRoot: ".", Repositories: map[string]config.Repository{
 		"root":   {Source: ".", DefaultMount: ".", DefaultBranch: "main"},
 		"middle": {Source: "middle", Parent: "root", DefaultMount: "middle", DefaultBranch: "main"},
-		"leaf":   {Source: filepath.Join("middle", "leaf"), Parent: "middle", DefaultMount: "leaf", DefaultBranch: "main"},
+		// Repository sources are portable logical paths, not host filesystem
+		// paths, so preserve their slash spelling on Windows.
+		"leaf": {Source: "middle/leaf", Parent: "middle", DefaultMount: "leaf", DefaultBranch: "main"},
 	}, Worktrees: config.Worktrees{Root: filepath.Join(t.TempDir(), "worktrees")}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: filepath.Join(root.Path, "project.wtree.yml")}}
 	if err := config.WriteProjectFile(configPath, local); err != nil {
 		t.Fatal(err)

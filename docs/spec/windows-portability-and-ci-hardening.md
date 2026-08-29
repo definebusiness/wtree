@@ -2,7 +2,8 @@
 
 Status: planned
 Source idea: none (created directly)
-Implementation plan: [Windows portability and CI hardening implementation plan](../plans/windows-portability-and-ci-hardening.md)
+Implementation plans: [Windows portability and CI hardening implementation plan](../plans/windows-portability-and-ci-hardening.md); [Windows portability simplification and CI remediation implementation plan](../plans/windows-portability-simplification-and-ci-remediation.md)
+Remediation context: [Hosted failure and simplification context](../plans/windows-portability-simplification-and-ci-remediation-context.md)
 Related specification: [Automatic nested mount ignore protection specification](automatic-nested-mount-ignore-protection.md)
 Source branch: `codex/automatic-nested-mount-ignore-protection-ci`, follow-up commits after `097a235` through `89ce325`
 
@@ -80,11 +81,20 @@ letter casing, separators, or other native normalization differences.
 The implementation must preserve these contracts wherever they remain
 applicable in current `main`:
 
+- retain an open directory descriptor or handle across a substitution-sensitive
+  unlink/rename window when a later path-only `os.FileInfo` comparison could
+  accept identity reuse; keep that authority local to the boundary, compare it
+  with the current path at final validation, and close it deterministically;
 - capture or prime stable `os.FileInfo` identity before an owned path is
-  renamed or quarantined when Windows resolves identity lazily;
+  renamed or quarantined when Windows resolves identity lazily and no retained
+  authority is required;
 - prove that clone staging and cleanup targets retain the expected parent
-  directory identity, are absolute clean paths, are not symlinks, and remain
-  within owned boundaries;
+  directory identity, are absolute clean paths, are not symlinks or Windows
+  reparse points, and remain within owned boundaries;
+- protect a private same-volume staging container while leaving the Git
+  destination child absent until Git creates it; validate the child and its
+  inherited privacy after Git returns rather than pre-creating the exact Git
+  destination with an open handle that can block Git for Windows;
 - reconcile only metadata changes that are demonstrably caused by the Windows
   rename operation, while continuing to reject concurrent mutations;
 - validate requested file protection through portable observable properties
@@ -102,6 +112,28 @@ These rules must be adapted to the current clone, logical-root, forest,
 workspace, rollback, and recovery implementations. They must not restore an
 older clone algorithm or remove newer safety checks.
 
+## 4.1 Portable Git inputs and stable staging state
+
+Committed-ignore evaluation must use inputs that Git can consume on Ubuntu,
+macOS, and Windows. A securely owned temporary exclude file is permitted and
+preferred when it provides the smallest portable isolation boundary. Its
+contents must be exact, its access restricted to the effective user where the
+platform supports that property, and its close/removal behavior deterministic
+on success and failure. Avoiding temporary storage is not a product or security
+requirement.
+
+The implementation must not pass POSIX-only device paths such as `/dev/stdin`
+as a portable Git configuration value or filename. Committed-tree evaluation
+must remain isolated from repository, global, and user exclude configuration
+and must preserve requested-ref and winning-negation semantics.
+
+Git commands that mutate private clone or update staging must reach a quiescent
+state before stable ownership inventory is captured. Managed invocations may
+disable automatic maintenance and garbage collection for the command. The
+inventory must not require transient maintenance lock files to remain present,
+and any volatile-path exception must be narrow, evidence-backed, and unable to
+hide unowned content.
+
 ## 5. Portable and diagnostic CI
 
 The GitHub Actions matrix remains Ubuntu, macOS, and Windows. It must provide
@@ -115,23 +147,27 @@ The workflow and any supporting script must satisfy all of the following:
 - format-check every tracked `*.go` file with NUL-safe filename handling and
   propagate `gofmt`, pipeline, and enumeration failures;
 - apply explicit, bounded timeouts to normal and race suites;
-- partition the slow Windows service suite into deterministic, disjoint
-  shards while running every discovered top-level test, example, and fuzz
-  target exactly once per mode;
+- prefer monolithic Windows normal and race commands when measured native
+  execution fits the authoritative bound; use deterministic, disjoint shards
+  only when recorded native evidence shows they are necessary;
 - run all non-service packages once per normal/race mode;
 - preserve the exit status of both the test command and log transport;
-- continue running remaining Windows shards after an individual shard fails,
-  then return failure for the job;
-- emit useful GitHub annotations for test failures, panics, timeouts, data
-  races, compilation errors, inventory failures, and transport failures;
-- fail closed on empty, duplicate, or incompletely assigned test inventory;
+- when sharding is necessary, continue remaining shards after an individual
+  failure, return failure for the job, and fail closed on empty, duplicate, or
+  incompletely assigned inventory;
+- provide useful raw logs and basic actionable annotations without requiring a
+  bespoke failure-excerpt taxonomy when the hosting platform already exposes
+  the same evidence;
   and
 - retain build, release-layout, release-reuse, manifest, vet, and formatting
   gates.
 
-The partition helper must be testable outside GitHub Actions. Its inventory,
-assignment, exit-code, escaping, and annotation behavior require focused
-shell-level tests or an equally deterministic repository-native harness.
+Any retained partition helper must be testable outside GitHub Actions. Its
+inventory, assignment, exit-code, cleanup, and essential annotation behavior
+require focused shell-level tests or an equally deterministic repository-
+native harness. If native measurements justify monolithic execution, remove
+the unused helper and its maintenance contract instead of preserving it for
+historical symmetry.
 
 ## 6. Compatibility and safety boundaries
 
@@ -163,11 +199,14 @@ Verification must include:
 
 - focused atomic, directory-sync, identity, mode, clone safety, rollback,
   configuration-path, and automatic-ignore tests;
-- deterministic tests of the CI partition and failure-reporting helper;
+- deterministic tests of any retained CI partition and failure-reporting
+  helper, or recorded native timing and complete-inventory evidence supporting
+  its removal;
 - full normal and race suites, vet, formatting, build, release, tutorial, and
   diff checks on the implementation platform;
 - Windows compilation for platform-specific files before remote CI; and
-- one matching GitHub Actions run in which Ubuntu, macOS, and Windows all pass
+- the failed exact-tree run `33168555356` as the hosted RED baseline and one
+  later matching GitHub Actions run in which Ubuntu, macOS, and Windows all pass
   the normal, race, build, release-layout, and repository quality gates.
 
 If a matching remote run cannot be started without separately authorized

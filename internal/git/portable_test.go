@@ -373,6 +373,42 @@ func TestAdapterCloneCheckoutSuppressesHooksAndPreservesTracking(t *testing.T) {
 	}
 }
 
+func TestAdapterManagedCloneCommandsDisableAutomaticMaintenance(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("shell wrapper fixture is POSIX-only")
+	}
+	source, remote := pushedRepository(t, "published")
+	_ = source
+	observed := filepath.Join(t.TempDir(), "commands")
+	wrapper := filepath.Join(t.TempDir(), "git-wrapper")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + observed + "\nexec git \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adapter := git.NewAdapter(wrapper)
+	target := filepath.Join(t.TempDir(), "clone")
+	if err := adapter.Clone(context.Background(), remote, target, "mirror"); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.FetchTrackingBranch(context.Background(), target, "mirror", "refs/heads/published"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.CheckoutTrackingBranch(context.Background(), target, "main", "mirror", "refs/heads/published"); err != nil {
+		t.Fatal(err)
+	}
+	commands, err := os.ReadFile(observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range strings.Split(strings.TrimSpace(string(commands)), "\n") {
+		if strings.Contains(command, " init ") || strings.HasPrefix(command, "init ") || strings.Contains(command, " remote add ") || strings.Contains(command, " fetch ") || strings.Contains(command, " checkout ") {
+			if !strings.Contains(command, "-c maintenance.auto=false") || !strings.Contains(command, "-c gc.auto=0") {
+				t.Fatalf("managed clone command lacks maintenance quiescence: %q", command)
+			}
+		}
+	}
+}
+
 func TestAdapterFailsWhenSelectedBranchIsDeletedBeforeExecutionFetch(t *testing.T) {
 	source, remote := pushedRepository(t, "published")
 	adapter := git.NewAdapter("git")

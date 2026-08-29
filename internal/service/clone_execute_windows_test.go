@@ -5,6 +5,7 @@ package service
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,17 +59,31 @@ func TestWindowsCloneStagingCreationOverridesPermissiveParentDACL(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	staging, owned, leaseValue, err := createCloneStaging(parent, ".clone.wtree-clone-", parentInfo, os.MkdirTemp, os.Lstat)
+	staging, owned, stagingParent, leaseValue, err := createCloneStaging(parent, ".clone.wtree-clone-", parentInfo, os.MkdirTemp, os.Lstat)
 	if err != nil {
 		t.Fatal(err)
 	}
 	lease := leaseValue.(*windowsCloneStagingLease)
 	t.Cleanup(func() {
-		_ = lease.closeAll()
 		_ = os.RemoveAll(staging)
+		_ = lease.closeAll()
 	})
-	if err := validateWindowsPrivateDirectoryHandle(windows.Handle(lease.child.Fd()), lease.user, true); err != nil {
-		t.Fatalf("staging root DACL: %v", err)
+	if owned != nil {
+		t.Fatal("Git destination child exists before Git")
+	}
+	if err := validateWindowsPrivateDirectoryHandle(windows.Handle(lease.container.Fd()), lease.user, true); err != nil {
+		t.Fatalf("staging container DACL: %v", err)
+	}
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	createWindowsCloneGitObjects(t, staging)
+	owned, err = lease.captureChild(staging, staging, nil, stagingParent, os.Lstat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateWindowsPrivateDirectoryHandle(windows.Handle(lease.child.Fd()), lease.user, false); err != nil {
+		t.Fatalf("staging child DACL: %v", err)
 	}
 	descendant := filepath.Join(staging, "descendant")
 	if err := os.Mkdir(descendant, 0o700); err != nil {
@@ -82,7 +97,90 @@ func TestWindowsCloneStagingCreationOverridesPermissiveParentDACL(t *testing.T) 
 	if err := windows.CloseHandle(descendantHandle); err != nil {
 		t.Fatal(err)
 	}
-	if err := lease.releaseChild(staging, owned, parentInfo, os.Lstat); err != nil {
+	if err := lease.releaseChild(staging, owned, stagingParent, os.Lstat); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWindowsCloneStagingLetsGitCreateAbsentDestination(t *testing.T) {
+	parent := t.TempDir()
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staging, owned, stagingParent, leaseValue, err := createCloneStaging(parent, ".clone.wtree-clone-", parentInfo, os.MkdirTemp, os.Lstat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*windowsCloneStagingLease)
+	t.Cleanup(func() {
+		_ = os.RemoveAll(staging)
+		_ = lease.closeAll()
+	})
+	if owned != nil {
+		t.Fatal("Git destination child exists before Git")
+	}
+	command := exec.Command("git", "init", "--quiet", "--", staging)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init absent staging child: %v\n%s", err, output)
+	}
+	owned, err = lease.captureChild(staging, staging, nil, stagingParent, os.Lstat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := staging + "-replacement"
+	if err := os.Rename(staging, replacement); err == nil {
+		t.Fatal("retained staging handle allowed rename before Git operation")
+	}
+	command = exec.Command("git", "-C", staging, "status", "--porcelain")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git operation with captured staging child: %v\n%s", err, output)
+	}
+	if err := os.Rename(staging, replacement); err == nil {
+		t.Fatal("retained staging handle allowed rename after Git operation")
+	}
+	if err := lease.releaseChild(staging, owned, stagingParent, os.Lstat); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWindowsClonePrecreatedForestRootAllowsInventoryAndBlocksRename(t *testing.T) {
+	parent := t.TempDir()
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staging, owned, stagingParent, leaseValue, err := createCloneStaging(parent, ".clone.wtree-clone-", parentInfo, os.MkdirTemp, os.Lstat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*windowsCloneStagingLease)
+	t.Cleanup(func() {
+		_ = lease.closeAll()
+		_ = os.RemoveAll(staging)
+	})
+	checkout := filepath.Join(staging, "services", "base")
+	owned, err = lease.prepareChild(staging, checkout, owned, stagingParent, os.Mkdir, os.Lstat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(checkout, ".git", "objects"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "owned.txt"), []byte("owned\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	owned, err = lease.captureChild(staging, checkout, owned, stagingParent, os.Lstat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := captureCloneTree(staging); err != nil {
+		t.Fatalf("inventory with retained precreated forest root: %v", err)
+	}
+	if err := os.Rename(staging, staging+"-replacement"); err == nil {
+		t.Fatal("retained precreated forest root allowed rename")
+	}
+	if err := lease.releaseChild(staging, owned, stagingParent, os.Lstat); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -93,21 +191,72 @@ func TestWindowsCloneStagingLeaseRejectsDACLMutationAndRenameSubstitution(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	staging, owned, leaseValue, err := createCloneStaging(parent, ".clone.wtree-clone-", parentInfo, os.MkdirTemp, os.Lstat)
+	staging, owned, stagingParent, leaseValue, err := createCloneStaging(parent, ".clone.wtree-clone-", parentInfo, os.MkdirTemp, os.Lstat)
 	if err != nil {
 		t.Fatal(err)
 	}
 	lease := leaseValue.(*windowsCloneStagingLease)
 	t.Cleanup(func() {
-		_ = lease.closeAll()
 		_ = os.RemoveAll(staging)
+		_ = lease.closeAll()
 	})
+	if owned != nil {
+		t.Fatal("Git destination child exists before Git")
+	}
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	createWindowsCloneGitObjects(t, staging)
+	owned, err = lease.captureChild(staging, staging, nil, stagingParent, os.Lstat)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Rename(staging, staging+"-replacement"); err == nil {
 		t.Fatal("retained staging handle unexpectedly allowed rename substitution")
 	}
 	setWindowsTestDACL(t, staging, "D:P(A;OICI;FA;;;WD)")
-	if err := lease.releaseChild(staging, owned, parentInfo, os.Lstat); err == nil {
+	if err := lease.releaseChild(staging, owned, stagingParent, os.Lstat); err == nil {
 		t.Fatal("staging lease accepted a changed DACL")
+	}
+}
+
+func TestWindowsCloneStagingGuardBindsAuthorizedCheckoutGitObjects(t *testing.T) {
+	parent := t.TempDir()
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staging, _, stagingParent, leaseValue, err := createCloneStaging(parent, ".clone.wtree-clone-", parentInfo, os.MkdirTemp, os.Lstat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*windowsCloneStagingLease)
+	t.Cleanup(func() {
+		_ = os.RemoveAll(staging)
+		_ = lease.closeAll()
+	})
+	checkout := filepath.Join(staging, "services", "base")
+	if err := os.MkdirAll(filepath.Join(checkout, ".git", "objects"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(staging, "decoy", ".git", "objects"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lease.openGuardRelative(staging, filepath.Join(parent, "outside")); err == nil {
+		t.Fatal("accepted Git object authority outside private clone staging")
+	}
+	if _, err := lease.captureChild(staging, checkout, nil, stagingParent, os.Lstat); err != nil {
+		t.Fatalf("capture exact checkout Git authority: %v", err)
+	}
+	if lease.guardPath != filepath.Join(checkout, ".git", "objects") {
+		t.Fatalf("guard path = %q, want exact checkout authority", lease.guardPath)
+	}
+}
+
+func createWindowsCloneGitObjects(t *testing.T, staging string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(staging, ".git", "objects"), 0o700); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -124,7 +273,7 @@ func TestWindowsCloneStagingCreationFailureDeletesOnlyThroughOwnedHandle(t *test
 		}
 		return os.Lstat(path)
 	}
-	if _, _, _, err := createCloneStaging(parent, prefix, parentInfo, os.MkdirTemp, lstat); err == nil {
+	if _, _, _, _, err := createCloneStaging(parent, prefix, parentInfo, os.MkdirTemp, lstat); err == nil {
 		t.Fatal("staging creation unexpectedly survived path observation failure")
 	}
 	entries, err := os.ReadDir(parent)
@@ -136,6 +285,49 @@ func TestWindowsCloneStagingCreationFailureDeletesOnlyThroughOwnedHandle(t *test
 			t.Fatalf("exact-handle cleanup left staging residue %q", entry.Name())
 		}
 	}
+}
+
+func TestWindowsCloneStagingDispositionFailurePreservesReplacement(t *testing.T) {
+	parent := t.TempDir()
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, leaseValue, err := createCloneStaging(parent, ".clone.wtree-clone-", parentInfo, os.MkdirTemp, os.Lstat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*windowsCloneStagingLease)
+	container := lease.containerPath
+	lease.deleteHandle = func(windows.Handle) error { return errors.New("injected exact disposition failure") }
+	if err := lease.closeAll(); err == nil || !strings.Contains(err.Error(), "injected exact disposition failure") {
+		t.Fatalf("closeAll() error = %v", err)
+	}
+	if _, err := os.Lstat(container); err != nil {
+		t.Fatalf("owned container was not preserved: %v", err)
+	}
+	preserved := container + "-preserved"
+	if err := os.Rename(container, preserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(container, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(container, "replacement")
+	if err := os.WriteFile(marker, []byte("unowned replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.closeAll(); err != nil {
+		t.Fatalf("repeat closeAll() after disposition failure: %v", err)
+	}
+	if contents, err := os.ReadFile(marker); err != nil || string(contents) != "unowned replacement" {
+		t.Fatalf("replacement after disposition failure = %q, %v", contents, err)
+	}
+	if _, err := os.Lstat(preserved); err != nil {
+		t.Fatalf("preserved owned container disappeared: %v", err)
+	}
+	_ = os.RemoveAll(container)
+	_ = os.RemoveAll(preserved)
 }
 
 func TestWindowsCloneRootRenameDistinguishesOwnedTimestampFromInjectedMutation(t *testing.T) {

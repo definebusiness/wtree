@@ -1,6 +1,6 @@
 # Documentation status overview
 
-Last reviewed: 2026-08-28
+Last reviewed: 2026-08-29
 
 This document summarizes lifecycle metadata for the idea, specification, and
 implementation-plan documents under `docs/`. Operational documentation,
@@ -14,10 +14,10 @@ ledgers do not use this lifecycle.
 | `initial` | 8 |
 | `specified` | 4 |
 | `planned` | 4 |
-| `implemented` | 14 |
+| `implemented` | 15 |
 | `superseded` | 2 |
 | `abandoned` | 0 |
-| **Total** | **32** |
+| **Total** | **33** |
 
 ## Ideas
 
@@ -48,7 +48,7 @@ ledgers do not use this lifecycle.
 | [Logical project root and repository forest specification](spec/logical-project-root-base-repository.md) | `implemented` | [Logical project roots with a designated base repository](ideas/logical-project-root-base-repository.md) | [Logical project root and repository forest implementation plan](plans/logical-project-root-base-repository.md) |
 | [Portable manifest clone specification](spec/portable-manifest-clone.md) | `implemented` | [Clone and synchronize idea](ideas/cloning-a-multi-repository-project.md) | [Portable manifest clone implementation plan](plans/portable-manifest-clone.md); current format defined by the [portable manifest v2 specification](spec/portable-manifest-v2-base-repository-format.md) |
 | [Portable manifest v2 base-repository format specification](spec/portable-manifest-v2-base-repository-format.md) | `implemented` | [Logical project roots with a designated base repository](ideas/logical-project-root-base-repository.md) | [Portable manifest v2 base-repository format implementation plan](plans/portable-manifest-v2-base-repository-format.md) |
-| [Windows portability and CI hardening specification](spec/windows-portability-and-ci-hardening.md) | `planned` | Created directly; follows the implemented automatic nested mount ignore work | [Windows portability and CI hardening implementation plan](plans/windows-portability-and-ci-hardening.md) |
+| [Windows portability and CI hardening specification](spec/windows-portability-and-ci-hardening.md) | `planned` | Created directly; follows the implemented automatic nested mount ignore work | [Windows portability and CI hardening implementation plan](plans/windows-portability-and-ci-hardening.md); [Windows portability simplification and CI remediation implementation plan](plans/windows-portability-simplification-and-ci-remediation.md) |
 
 The logical-project-root specification and its implementation plan are now
 implemented. All milestones M00–M08 are independently approved and verified,
@@ -71,7 +71,8 @@ lifecycle state after producing the specification.
 | [Live-branch clone and upstream-aware human status implementation plan](plans/clone-live-branch-and-upstream-status.md) | `implemented` | [Live-branch clone and upstream-aware human status specification](spec/clone-live-branch-and-upstream-status.md) | All milestones M00–M02 approved; [durable run ledger](ai/runs/clone-live-branch-and-upstream-status.md) is complete; live selected-branch clone, v2 observed/actual output, and upstream-aware human status are implemented and verified |
 | [Portable manifest clone implementation plan](plans/portable-manifest-clone.md) | `implemented` | [Portable manifest clone specification](spec/portable-manifest-clone.md) | All milestones M00–M06 are approved; portable manifest clone is implemented and verified, with the current format supplied by the implemented v2 specification and plan. |
 | [Portable manifest v2 base-repository format implementation plan](plans/portable-manifest-v2-base-repository-format.md) | `implemented` | [Portable manifest v2 base-repository format specification](spec/portable-manifest-v2-base-repository-format.md) | All milestones M00–M02 approved; [durable run ledger](ai/runs/portable-manifest-v2-base-repository-format.md) is complete; strict v2 config, init authoring, and clone verification are implemented and verified. |
-| [Windows portability and CI hardening implementation plan](plans/windows-portability-and-ci-hardening.md) | `initial` | [Windows portability and CI hardening specification](spec/windows-portability-and-ci-hardening.md) | Authorized [durable run](ai/runs/windows-portability-and-ci-hardening.md) has M00–M02 independently approved and verified. M03 is locally complete with the eleven-candidate audit, focused integration coverage, five-package Windows compilation, 549-target exact-once shard audit, and bounded full normal/race suites passing. M03, the plan, and the specification remain non-implemented because a matching Ubuntu/macOS/Windows Actions run cannot represent the uncommitted reviewed tree without separately authorized commit/push/PR activity; the ledger records external blocker B1 and the safe continuation condition. |
+| [Windows portability and CI hardening implementation plan](plans/windows-portability-and-ci-hardening.md) | `implemented` | [Windows portability and CI hardening specification](spec/windows-portability-and-ci-hardening.md) | All milestones M00–M03 are independently approved and verified. Exact implementation run [`33229459008`](https://github.com/definebusiness/wtree/actions/runs/33229459008) passed every format, vet, normal, race, build, release-layout, reuse, and manifest gate on Ubuntu (7m24s), macOS (25m40s), and Windows (1h13m43s) at `b0f62fe`. Windows completed all eight exact-once normal and race service shards in 35m56s and 35m24s. The [durable run](ai/runs/windows-portability-and-ci-hardening.md) records the complete remediation and acceptance evidence with no unresolved finding. The source specification remains `planned` because the focused [simplification and CI remediation plan](plans/windows-portability-simplification-and-ci-remediation.md) remains an initial supporting plan, not a separately active run. |
+| [Windows portability simplification and CI remediation implementation plan](plans/windows-portability-simplification-and-ci-remediation.md) | `initial` | [Windows portability and CI hardening specification](spec/windows-portability-and-ci-hardening.md) | Not started; M00–M05 are unchecked. The plan is based on the exact-tree failed run [`33168555356`](https://github.com/definebusiness/wtree/actions/runs/33168555356) and the companion [hosted failure and simplification context](plans/windows-portability-simplification-and-ci-remediation-context.md). It removes the non-portable `/dev/stdin` input and pre-created Git destination design, narrows retained-handle use, stabilizes Git inventory, repairs native contracts, and makes CI complexity evidence-driven. |
 
 ## Maintenance
 

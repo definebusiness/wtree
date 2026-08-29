@@ -44,7 +44,14 @@ func TestWorkspaceDefaultRootRollbackCleansOwnedAncestors(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			boundary := t.TempDir()
+			// Keep the default-root path itself short enough to exercise Git's
+			// rollback behavior rather than Git-for-Windows' internal GIT_DIR
+			// buffer limit for deeply named Go test temp directories.
+			boundary, err := os.MkdirTemp("", "wtree-rb-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(boundary) })
 			marker := filepath.Join(boundary, "keep.txt")
 			markerBytes := []byte("nearest pre-existing boundary\n")
 			if err := os.WriteFile(marker, markerBytes, 0o600); err != nil {

@@ -1,12 +1,17 @@
 .PHONY: test test-race vet build release release-test tutorial-test check fmt-check
 
-TEST_TIMEOUT ?= 15m
+# TEST_TIMEOUT remains a compatibility override for callers that intentionally
+# want one bound for both test modes. The mode-specific defaults match CI's
+# authoritative complete-suite bounds.
+TEST_TIMEOUT ?=
+TEST_NORMAL_TIMEOUT ?= $(if $(TEST_TIMEOUT),$(TEST_TIMEOUT),30m)
+TEST_RACE_TIMEOUT ?= $(if $(TEST_TIMEOUT),$(TEST_TIMEOUT),45m)
 
 test:
-	go test -timeout=$(TEST_TIMEOUT) ./...
+	go test -timeout=$(TEST_NORMAL_TIMEOUT) ./...
 
 test-race:
-	go test -race -timeout=$(TEST_TIMEOUT) ./...
+	go test -race -timeout=$(TEST_RACE_TIMEOUT) ./...
 
 vet:
 	go vet ./...

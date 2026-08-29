@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -16,19 +17,30 @@ import (
 
 const windowsFileAllAccess windows.ACCESS_MASK = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
 
+const windowsCloneObservationAccess = windows.FILE_READ_ATTRIBUTES | windows.READ_CONTROL | windows.SYNCHRONIZE
+
 type windowsCloneStagingLease struct {
-	parent *os.File
-	child  *os.File
-	user   string
+	parent        *os.File
+	container     *os.File
+	child         *os.File
+	guard         *os.File
+	parentInfo    os.FileInfo
+	containerInfo os.FileInfo
+	guardInfo     os.FileInfo
+	guardPath     string
+	containerPath string
+	prefix        string
+	user          string
+	deleteHandle  func(windows.Handle) error
 }
 
-func createCloneStaging(parent, prefix string, parentInfo os.FileInfo, _ func(string, string) (string, error), lstat func(string) (os.FileInfo, error)) (string, os.FileInfo, cloneStagingLease, error) {
+func createCloneStaging(parent, prefix string, parentInfo os.FileInfo, _ func(string, string) (string, error), lstat func(string) (os.FileInfo, error)) (string, os.FileInfo, os.FileInfo, cloneStagingLease, error) {
 	if lstat == nil || parentInfo == nil {
-		return "", nil, nil, errors.New("clone staging dependencies are not configured")
+		return "", nil, nil, nil, errors.New("clone staging dependencies are not configured")
 	}
 	parentPath, err := windows.UTF16PtrFromString(parent)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, nil, err
 	}
 	parentHandle, err := windows.CreateFile(
 		parentPath,
@@ -40,105 +52,85 @@ func createCloneStaging(parent, prefix string, parentInfo os.FileInfo, _ func(st
 		0,
 	)
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("open clone staging parent: %w", err)
+		return "", nil, nil, nil, fmt.Errorf("open clone staging parent: %w", err)
 	}
 	parentFile := os.NewFile(uintptr(parentHandle), parent)
 	if parentFile == nil {
 		windows.CloseHandle(parentHandle)
-		return "", nil, nil, errors.New("adopt clone staging parent handle")
+		return "", nil, nil, nil, errors.New("adopt clone staging parent handle")
 	}
-	lease := &windowsCloneStagingLease{parent: parentFile}
-	fail := func(cause error, path string, _ os.FileInfo) (string, os.FileInfo, cloneStagingLease, error) {
+	lease := &windowsCloneStagingLease{
+		parent:       parentFile,
+		parentInfo:   parentInfo,
+		prefix:       prefix,
+		deleteHandle: deleteWindowsCloneStagingHandle,
+	}
+	fail := func(cause error) (string, os.FileInfo, os.FileInfo, cloneStagingLease, error) {
 		var cleanupErr error
-		if path != "" && lease.child != nil {
-			cleanupErr = deleteWindowsCloneStagingHandle(windows.Handle(lease.child.Fd()))
+		if lease.container != nil {
+			cleanupErr = lease.deleteHandle(windows.Handle(lease.container.Fd()))
 			if cleanupErr != nil {
-				cleanupErr = fmt.Errorf("preserve clone staging after exact handle deletion failed: %w", cleanupErr)
+				cleanupErr = fmt.Errorf("preserve clone staging container after exact handle deletion failed: %w", cleanupErr)
 			}
 		}
-		closeErr := lease.closeAll()
-		return "", nil, nil, errors.Join(cause, closeErr, cleanupErr)
+		closeErr := lease.closeHandles()
+		return "", nil, nil, nil, errors.Join(cause, closeErr, cleanupErr)
 	}
 
 	parentHandleInfo, err := parentFile.Stat()
 	if err != nil || !windowsDirectoryHandleIsPlain(parentHandle) || !os.SameFile(parentInfo, parentHandleInfo) {
-		return fail(errors.Join(errors.New("clone staging parent handle identity or type differs"), err), "", nil)
+		return fail(errors.Join(errors.New("clone staging parent handle identity or type differs"), err))
 	}
 	parentPathInfo, err := lstat(parent)
 	if err != nil || !parentPathInfo.IsDir() || parentPathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(parentInfo, parentPathInfo) || !os.SameFile(parentHandleInfo, parentPathInfo) {
-		return fail(errors.Join(errors.New("clone staging parent path identity differs"), err), "", nil)
+		return fail(errors.Join(errors.New("clone staging parent path identity differs"), err))
 	}
 
 	user, err := windows.GetCurrentThreadEffectiveToken().GetTokenUser()
 	if err != nil || user == nil || user.User.Sid == nil {
-		return fail(errors.Join(errors.New("read effective Windows token user"), err), "", nil)
+		return fail(errors.Join(errors.New("read effective Windows token user"), err))
 	}
 	lease.user = user.User.Sid.String()
 	descriptor, err := windows.SecurityDescriptorFromString("O:" + lease.user + "D:P(A;OICI;FA;;;" + lease.user + ")")
 	if err != nil {
-		return fail(fmt.Errorf("build private clone staging descriptor: %w", err), "", nil)
+		return fail(fmt.Errorf("build private clone staging descriptor: %w", err))
 	}
 
 	for attempt := 0; attempt < 128; attempt++ {
 		leaf, err := windowsCloneStagingLeaf(prefix)
 		if err != nil {
-			return fail(err, "", nil)
+			return fail(err)
 		}
-		name, err := windows.NewNTUnicodeString(leaf)
-		if err != nil {
-			return fail(err, "", nil)
-		}
-		attributes := &windows.OBJECT_ATTRIBUTES{
-			Length:             uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})),
-			RootDirectory:      parentHandle,
-			ObjectName:         name,
-			Attributes:         windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE,
-			SecurityDescriptor: descriptor,
-		}
-		var childHandle windows.Handle
-		var status windows.IO_STATUS_BLOCK
-		allocationSize := int64(0)
-		err = windows.NtCreateFile(
-			&childHandle,
-			uint32(windowsFileAllAccess),
-			attributes,
-			&status,
-			&allocationSize,
-			windows.FILE_ATTRIBUTE_DIRECTORY,
-			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
-			windows.FILE_CREATE,
-			windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
-			0,
-			0,
-		)
+		containerHandle, status, err := openWindowsCloneStagingDirectory(parentHandle, leaf, windows.FILE_CREATE, descriptor)
 		if errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) || errors.Is(err, windows.STATUS_OBJECT_NAME_EXISTS) {
 			continue
 		}
 		if err != nil {
-			return fail(fmt.Errorf("create private clone staging relative to parent: %w", err), "", nil)
+			return fail(fmt.Errorf("create private clone staging container relative to parent: %w", err))
 		}
-		staging := filepath.Clean(filepath.Join(parent, leaf))
-		lease.child = os.NewFile(uintptr(childHandle), staging)
-		if lease.child == nil {
-			windows.CloseHandle(childHandle)
-			return fail(errors.New("adopt private clone staging handle"), staging, nil)
+		lease.containerPath = filepath.Clean(filepath.Join(parent, leaf))
+		lease.container = os.NewFile(uintptr(containerHandle), lease.containerPath)
+		if lease.container == nil {
+			windows.CloseHandle(containerHandle)
+			return fail(errors.New("adopt private clone staging container handle"))
 		}
-		owned, err := lease.child.Stat()
+		lease.containerInfo, err = lease.container.Stat()
 		if err != nil {
-			return fail(fmt.Errorf("stat private clone staging handle: %w", err), staging, nil)
+			return fail(fmt.Errorf("stat private clone staging container handle: %w", err))
 		}
 		if status.Information != 2 {
-			return fail(fmt.Errorf("private clone staging creation status = %d, want created", status.Information), staging, owned)
+			return fail(fmt.Errorf("private clone staging container creation status = %d, want created", status.Information))
 		}
-		if err := lease.validate(staging, owned, parentInfo, lstat); err != nil {
-			return fail(err, staging, owned)
+		if err := lease.validateContainer(lstat); err != nil {
+			return fail(err)
 		}
-		if !cloneStagingPathIsSafe(staging, prefix, owned, parentInfo, true, lstat) {
-			return fail(errors.New("private clone staging path is unsafe"), staging, owned)
+		staging := filepath.Clean(filepath.Join(lease.containerPath, prefix+"root"))
+		if _, err := lstat(staging); err == nil || !os.IsNotExist(err) {
+			return fail(errors.Join(errors.New("private clone staging child unexpectedly exists"), err))
 		}
-		return staging, owned, lease, nil
+		return staging, nil, lease.containerInfo, lease, nil
 	}
-	return fail(errors.New("allocate collision-free private clone staging name"), "", nil)
+	return fail(errors.New("allocate collision-free private clone staging container name"))
 }
 
 func windowsCloneStagingLeaf(prefix string) (string, error) {
@@ -149,17 +141,88 @@ func windowsCloneStagingLeaf(prefix string) (string, error) {
 	return prefix + hex.EncodeToString(random[:]), nil
 }
 
-func (lease *windowsCloneStagingLease) validate(staging string, owned, parentInfo os.FileInfo, lstat func(string) (os.FileInfo, error)) error {
-	if lease == nil || lease.parent == nil || lease.child == nil || owned == nil || parentInfo == nil || lstat == nil {
-		return errors.New("private clone staging lease is incomplete")
+func openWindowsCloneStagingDirectory(parent windows.Handle, leaf string, disposition uint32, descriptor *windows.SECURITY_DESCRIPTOR) (windows.Handle, windows.IO_STATUS_BLOCK, error) {
+	return openWindowsCloneStagingDirectoryWithAccess(
+		parent,
+		leaf,
+		disposition,
+		descriptor,
+		uint32(windowsFileAllAccess),
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+	)
+}
+
+func openWindowsCloneStagingChild(parent windows.Handle, leaf string) (windows.Handle, windows.IO_STATUS_BLOCK, error) {
+	return openWindowsCloneStagingDirectoryWithAccess(
+		parent,
+		leaf,
+		windows.FILE_OPEN,
+		nil,
+		windowsCloneObservationAccess,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+	)
+}
+
+func openWindowsCloneStagingDirectoryWithAccess(parent windows.Handle, leaf string, disposition uint32, descriptor *windows.SECURITY_DESCRIPTOR, access uint32, share uint32) (windows.Handle, windows.IO_STATUS_BLOCK, error) {
+	name, err := windows.NewNTUnicodeString(leaf)
+	if err != nil {
+		return 0, windows.IO_STATUS_BLOCK{}, err
+	}
+	attributes := &windows.OBJECT_ATTRIBUTES{
+		Length:             uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})),
+		RootDirectory:      parent,
+		ObjectName:         name,
+		Attributes:         windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE,
+		SecurityDescriptor: descriptor,
+	}
+	var handle windows.Handle
+	var status windows.IO_STATUS_BLOCK
+	allocationSize := int64(0)
+	err = windows.NtCreateFile(
+		&handle,
+		access,
+		attributes,
+		&status,
+		&allocationSize,
+		windows.FILE_ATTRIBUTE_DIRECTORY,
+		share,
+		disposition,
+		windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
+		0,
+		0,
+	)
+	return handle, status, err
+}
+
+func (lease *windowsCloneStagingLease) validateContainer(lstat func(string) (os.FileInfo, error)) error {
+	if lease == nil || lease.parent == nil || lease.container == nil || lease.parentInfo == nil || lease.containerInfo == nil || lease.containerPath == "" || lstat == nil {
+		return errors.New("private clone staging container lease is incomplete")
 	}
 	parentHandleInfo, err := lease.parent.Stat()
-	if err != nil || !windowsDirectoryHandleIsPlain(windows.Handle(lease.parent.Fd())) || !os.SameFile(parentInfo, parentHandleInfo) {
+	if err != nil || !windowsDirectoryHandleIsPlain(windows.Handle(lease.parent.Fd())) || !os.SameFile(lease.parentInfo, parentHandleInfo) {
 		return errors.Join(errors.New("clone staging parent handle changed"), err)
 	}
-	parentPathInfo, err := lstat(filepath.Dir(staging))
-	if err != nil || !parentPathInfo.IsDir() || parentPathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(parentInfo, parentPathInfo) || !os.SameFile(parentHandleInfo, parentPathInfo) {
+	parentPathInfo, err := lstat(filepath.Dir(lease.containerPath))
+	if err != nil || !parentPathInfo.IsDir() || parentPathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(lease.parentInfo, parentPathInfo) || !os.SameFile(parentHandleInfo, parentPathInfo) {
 		return errors.Join(errors.New("clone staging parent path changed"), err)
+	}
+	containerHandleInfo, err := lease.container.Stat()
+	if err != nil || !windowsDirectoryHandleIsPlain(windows.Handle(lease.container.Fd())) || !os.SameFile(lease.containerInfo, containerHandleInfo) {
+		return errors.Join(errors.New("clone staging container handle changed"), err)
+	}
+	containerPathInfo, err := lstat(lease.containerPath)
+	if err != nil || !containerPathInfo.IsDir() || containerPathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(lease.containerInfo, containerPathInfo) || !os.SameFile(containerHandleInfo, containerPathInfo) {
+		return errors.Join(errors.New("clone staging container path changed"), err)
+	}
+	return validateWindowsPrivateDirectoryHandle(windows.Handle(lease.container.Fd()), lease.user, true)
+}
+
+func (lease *windowsCloneStagingLease) validateChild(staging string, owned, parentInfo os.FileInfo, lstat func(string) (os.FileInfo, error)) error {
+	if lease == nil || lease.child == nil || owned == nil || parentInfo == nil || !os.SameFile(parentInfo, lease.containerInfo) || filepath.Dir(staging) != lease.containerPath {
+		return errors.New("private clone staging child lease is incomplete")
+	}
+	if err := lease.validateContainer(lstat); err != nil {
+		return err
 	}
 	childHandleInfo, err := lease.child.Stat()
 	if err != nil || !windowsDirectoryHandleIsPlain(windows.Handle(lease.child.Fd())) || !os.SameFile(owned, childHandleInfo) {
@@ -169,14 +232,213 @@ func (lease *windowsCloneStagingLease) validate(staging string, owned, parentInf
 	if err != nil || !pathInfo.IsDir() || pathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(owned, pathInfo) || !os.SameFile(childHandleInfo, pathInfo) {
 		return errors.Join(errors.New("clone staging path identity or type changed"), err)
 	}
-	return validateWindowsPrivateDirectoryHandle(windows.Handle(lease.child.Fd()), lease.user, true)
+	if err := validateWindowsPrivateDirectoryHandle(windows.Handle(lease.child.Fd()), lease.user, false); err != nil {
+		return err
+	}
+	if !cloneStagingPathIsSafe(staging, lease.prefix, owned, parentInfo, true, lstat) {
+		return errors.New("private clone staging child path is unsafe")
+	}
+	if lease.guard != nil {
+		if err := lease.validateGuard(lstat); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (lease *windowsCloneStagingLease) prepareChild(staging, checkout string, owned, parentInfo os.FileInfo, _ func(string, os.FileMode) error, lstat func(string) (os.FileInfo, error)) (os.FileInfo, error) {
+	if owned != nil {
+		return owned, lease.validateChild(staging, owned, parentInfo, lstat)
+	}
+	if err := lease.validateContainer(lstat); err != nil {
+		return nil, err
+	}
+	if _, err := lstat(staging); err == nil || !os.IsNotExist(err) {
+		return nil, errors.Join(errors.New("private clone staging child unexpectedly exists before creation"), err)
+	}
+	if filepath.Clean(checkout) == filepath.Clean(staging) {
+		return nil, nil
+	}
+	// Creating a child is authorized by the retained container handle. Retain
+	// only observation access on the resulting child so legitimate Git and
+	// inventory opens remain compatible while the no-delete share continues to
+	// prevent rename or substitution of the logical root.
+	handle, status, err := openWindowsCloneStagingDirectoryWithAccess(
+		windows.Handle(lease.container.Fd()),
+		filepath.Base(staging),
+		windows.FILE_CREATE,
+		nil,
+		windowsCloneObservationAccess,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create private clone logical root: %w", err)
+	}
+	if status.Information != 2 {
+		windows.CloseHandle(handle)
+		return nil, fmt.Errorf("private clone logical root creation status = %d, want created", status.Information)
+	}
+	return lease.adoptChild(handle, staging, parentInfo, lstat)
+}
+
+func (lease *windowsCloneStagingLease) captureChild(staging, checkout string, owned, parentInfo os.FileInfo, lstat func(string) (os.FileInfo, error)) (os.FileInfo, error) {
+	if owned != nil {
+		if err := lease.captureGuard(staging, checkout, lstat); err != nil {
+			return nil, err
+		}
+		return owned, lease.validateChild(staging, owned, parentInfo, lstat)
+	}
+	if err := lease.validateContainer(lstat); err != nil {
+		return nil, err
+	}
+	handle, _, err := openWindowsCloneStagingChild(windows.Handle(lease.container.Fd()), filepath.Base(staging))
+	if err != nil {
+		return nil, fmt.Errorf("open Git-created private clone staging root: %w", err)
+	}
+	owned, err = lease.adoptChild(handle, staging, parentInfo, lstat)
+	if err != nil {
+		return nil, err
+	}
+	if err := lease.captureGuard(staging, checkout, lstat); err != nil {
+		_ = lease.child.Close()
+		lease.child = nil
+		return nil, err
+	}
+	if err := lease.validateChild(staging, owned, parentInfo, lstat); err != nil {
+		_ = lease.closeGuard()
+		_ = lease.child.Close()
+		lease.child = nil
+		return nil, err
+	}
+	return owned, nil
+}
+
+func (lease *windowsCloneStagingLease) adoptChild(handle windows.Handle, staging string, parentInfo os.FileInfo, lstat func(string) (os.FileInfo, error)) (os.FileInfo, error) {
+	lease.child = os.NewFile(uintptr(handle), staging)
+	if lease.child == nil {
+		windows.CloseHandle(handle)
+		return nil, errors.New("adopt private clone staging child handle")
+	}
+	owned, err := lease.child.Stat()
+	if err != nil {
+		_ = lease.child.Close()
+		lease.child = nil
+		return nil, fmt.Errorf("stat private clone staging child handle: %w", err)
+	}
+	if err := lease.validateChild(staging, owned, parentInfo, lstat); err != nil {
+		_ = lease.child.Close()
+		lease.child = nil
+		return nil, err
+	}
+	return owned, nil
+}
+
+func (lease *windowsCloneStagingLease) captureGuard(staging, checkout string, lstat func(string) (os.FileInfo, error)) error {
+	if lease.guard != nil {
+		return nil
+	}
+	// checkout is the first parent-first repository path derived from the
+	// validated clone plan. A forest's staging root can be grouping-only, so
+	// bind directly to that checkout's Git authority without discovering a
+	// different nested repository or submodule.
+	objects := filepath.Join(checkout, ".git", "objects")
+	handle, err := lease.openGuardRelative(staging, checkout)
+	if err != nil {
+		return fmt.Errorf("retain Git object authority: %w", err)
+	}
+	lease.guard = os.NewFile(uintptr(handle), objects)
+	if lease.guard == nil {
+		windows.CloseHandle(handle)
+		return errors.New("adopt Git object authority handle")
+	}
+	lease.guardPath = objects
+	lease.guardInfo, err = lease.guard.Stat()
+	if err != nil {
+		_ = lease.closeGuard()
+		return fmt.Errorf("stat Git object authority handle: %w", err)
+	}
+	if err := lease.validateGuard(lstat); err != nil {
+		_ = lease.closeGuard()
+		return err
+	}
+	return nil
+}
+
+func (lease *windowsCloneStagingLease) openGuardRelative(staging, checkout string) (windows.Handle, error) {
+	relative, err := filepath.Rel(staging, checkout)
+	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return 0, errors.Join(errors.New("Git object authority is outside private clone staging"), err)
+	}
+	components := []string{}
+	if relative != "." {
+		components = append(components, strings.Split(relative, string(filepath.Separator))...)
+	}
+	components = append(components, ".git", "objects")
+	parent := windows.Handle(lease.child.Fd())
+	var opened windows.Handle
+	for _, component := range components {
+		handle, _, openErr := openWindowsCloneStagingDirectoryWithAccess(
+			parent,
+			component,
+			windows.FILE_OPEN,
+			nil,
+			windowsCloneObservationAccess,
+			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		)
+		if openErr != nil || !windowsDirectoryHandleIsPlain(handle) {
+			if openErr == nil {
+				windows.CloseHandle(handle)
+				openErr = errors.New("Git object authority component is not a plain directory")
+			}
+			if opened != 0 {
+				_ = windows.CloseHandle(opened)
+			}
+			return 0, openErr
+		}
+		if opened != 0 {
+			if closeErr := windows.CloseHandle(opened); closeErr != nil {
+				_ = windows.CloseHandle(handle)
+				return 0, closeErr
+			}
+		}
+		opened = handle
+		parent = handle
+	}
+	return opened, nil
+}
+
+func (lease *windowsCloneStagingLease) validateGuard(lstat func(string) (os.FileInfo, error)) error {
+	if lease.guard == nil || lease.guardInfo == nil || lease.guardPath == "" || lstat == nil {
+		return errors.New("private clone staging Git object authority is incomplete")
+	}
+	handleInfo, err := lease.guard.Stat()
+	if err != nil || !windowsDirectoryHandleIsPlain(windows.Handle(lease.guard.Fd())) || !os.SameFile(lease.guardInfo, handleInfo) {
+		return errors.Join(errors.New("clone staging Git object handle changed"), err)
+	}
+	pathInfo, err := lstat(lease.guardPath)
+	if err != nil || !pathInfo.IsDir() || pathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(lease.guardInfo, pathInfo) || !os.SameFile(handleInfo, pathInfo) {
+		return errors.Join(errors.New("clone staging Git object path changed"), err)
+	}
+	return nil
+}
+
+func (lease *windowsCloneStagingLease) closeGuard() error {
+	if lease == nil || lease.guard == nil {
+		return nil
+	}
+	guard := lease.guard
+	lease.guard, lease.guardInfo, lease.guardPath = nil, nil, ""
+	return guard.Close()
 }
 
 func (lease *windowsCloneStagingLease) releaseChild(staging string, owned, parentInfo os.FileInfo, lstat func(string) (os.FileInfo, error)) error {
 	if lease == nil || lease.child == nil {
 		return nil
 	}
-	if err := lease.validate(staging, owned, parentInfo, lstat); err != nil {
+	if err := lease.validateChild(staging, owned, parentInfo, lstat); err != nil {
+		return err
+	}
+	if err := lease.closeGuard(); err != nil {
 		return err
 	}
 	child := lease.child
@@ -188,7 +450,37 @@ func (lease *windowsCloneStagingLease) closeAll() error {
 	if lease == nil {
 		return nil
 	}
+	if err := lease.closeGuard(); err != nil {
+		return errors.Join(fmt.Errorf("close clone staging Git object authority: %w", err), lease.closeHandles())
+	}
+	if lease.child != nil {
+		child := lease.child
+		lease.child = nil
+		if err := child.Close(); err != nil {
+			return errors.Join(fmt.Errorf("close clone staging child before container disposition: %w", err), lease.closeHandles())
+		}
+	}
+	if lease.container != nil && lease.containerPath != "" {
+		if err := lease.validateContainer(os.Lstat); err != nil {
+			return errors.Join(fmt.Errorf("preserve clone staging container after validation failed: %w", err), lease.closeHandles())
+		}
+		if lease.deleteHandle == nil {
+			return errors.Join(errors.New("preserve clone staging container without exact handle deletion capability"), lease.closeHandles())
+		}
+		if err := lease.deleteHandle(windows.Handle(lease.container.Fd())); err != nil {
+			return errors.Join(fmt.Errorf("preserve clone staging container after exact handle deletion failed: %w", err), lease.closeHandles())
+		}
+		lease.containerPath = ""
+	}
+	return lease.closeHandles()
+}
+
+func (lease *windowsCloneStagingLease) closeHandles() error {
+	if lease == nil {
+		return nil
+	}
 	var result error
+	result = errors.Join(result, lease.closeGuard())
 	if lease.child != nil {
 		result = errors.Join(result, lease.child.Close())
 		lease.child = nil
@@ -197,14 +489,20 @@ func (lease *windowsCloneStagingLease) closeAll() error {
 		result = errors.Join(result, lease.parent.Close())
 		lease.parent = nil
 	}
+	if lease.container != nil {
+		result = errors.Join(result, lease.container.Close())
+		lease.container = nil
+	}
 	return result
 }
 
 func windowsDirectoryHandleIsPlain(handle windows.Handle) bool {
 	var information windows.ByHandleFileInformation
-	return windows.GetFileInformationByHandle(handle, &information) == nil &&
-		information.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 &&
-		information.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0
+	return windows.GetFileInformationByHandle(handle, &information) == nil && windowsDirectoryAttributesArePlain(information.FileAttributes)
+}
+
+func windowsDirectoryAttributesArePlain(attributes uint32) bool {
+	return attributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 && attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0
 }
 
 func deleteWindowsCloneStagingHandle(handle windows.Handle) error {

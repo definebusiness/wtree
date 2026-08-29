@@ -7,13 +7,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/definebusiness/wtree/internal/config"
-	"github.com/definebusiness/wtree/internal/fsutil"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
 	"github.com/definebusiness/wtree/internal/lock"
 	"github.com/definebusiness/wtree/internal/store"
@@ -123,7 +123,7 @@ func TestCloneExecuteThreeLevelExactPlanPublishesConfigStateAndRegistry(t *testi
 }
 
 func TestCloneExecuteForestPublishesBaseOwnedMetadataAndEveryCheckout(t *testing.T) {
-	base := t.TempDir()
+	base := cloneExecutionTempDir(t)
 	tool := newCloneExecutionRemote(t, "tool-local", "tool-published", map[string]string{"tool.txt": "tool\n"})
 	shared := newCloneExecutionRemote(t, "shared-local", "shared-published", map[string]string{"shared.txt": "shared\n", ".gitignore": "/tools/tool/\n"})
 	web := newCloneExecutionRemote(t, "web-local", "web-published", map[string]string{"web.txt": "web\n"})
@@ -184,6 +184,19 @@ func TestCloneExecuteForestPublishesBaseOwnedMetadataAndEveryCheckout(t *testing
 			t.Fatalf("resolve %s from %q = %#v, %v", id, path, project, err)
 		}
 	}
+}
+
+func cloneExecutionTempDir(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return t.TempDir()
+	}
+	path, err := os.MkdirTemp("", "wtree-clone-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(path) })
+	return path
 }
 
 func TestCloneExecuteRejectsCommittedSymlinkGroupingPrefixWithoutTouchingExternalTarget(t *testing.T) {
@@ -277,7 +290,7 @@ func TestCloneExecuteRejectsGroupingDirectoryReplacementAfterCreation(t *testing
 }
 
 func TestCloneExecuteRevalidatesGroupingAfterPublicCloneStartedCallback(t *testing.T) {
-	base := t.TempDir()
+	base := cloneExecutionTempDir(t)
 	external := filepath.Join(base, "external")
 	if err := os.Mkdir(external, 0o700); err != nil {
 		t.Fatal(err)
@@ -307,21 +320,33 @@ func TestCloneExecuteRevalidatesGroupingAfterPublicCloneStartedCallback(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = NewCloneExecutor().Execute(context.Background(), plan, func(event transaction.Event) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var callbackErr error
+	_, err = NewCloneExecutor().Execute(ctx, plan, func(event transaction.Event) {
 		if event.Kind != transaction.ExecuteStarted || event.Step != "repository-child-clone" {
 			return
 		}
 		staging := findCloneStaging(t, plan)
 		packages := filepath.Join(staging, "packages")
 		if removeErr := os.RemoveAll(packages); removeErr != nil {
-			t.Fatal(removeErr)
+			callbackErr = removeErr
+			cancel()
+			return
 		}
 		if linkErr := os.Symlink(external, packages); linkErr != nil {
-			t.Fatal(linkErr)
+			callbackErr = linkErr
+			cancel()
 		}
 	})
-	if err == nil || !strings.Contains(err.Error(), "grouping directory") {
+	if callbackErr != nil && !cloneGroupingReplacementRefused(callbackErr) {
+		t.Fatalf("callback grouping replacement failed unexpectedly: %v", callbackErr)
+	}
+	if callbackErr == nil && (err == nil || !strings.Contains(err.Error(), "grouping directory")) {
 		t.Errorf("callback grouping replacement execution error = %v", err)
+	}
+	if callbackErr != nil && err == nil {
+		t.Fatal("clone succeeded after Windows refused the callback replacement")
 	}
 	assertCloneExecutionAbsent(t, plan)
 	contents, readErr := os.ReadFile(marker)
@@ -1194,6 +1219,13 @@ func TestCloneExecuteRejectsReplacedStagingIdentityBeforeRename(t *testing.T) {
 		return errors.New("staging not found")
 	}})
 	_, err := executor.Execute(context.Background(), plan, nil)
+	if runtime.GOOS == "windows" {
+		if err == nil || hasCloneErrorKind(err, ErrorRollbackIncomplete) {
+			t.Fatalf("retained container handle substitution refusal = %v, want clean callback failure", err)
+		}
+		assertCloneExecutionAbsent(t, plan)
+		return
+	}
 	if err == nil || !hasCloneErrorKind(err, ErrorRollbackIncomplete) {
 		t.Fatalf("error = %v, want rollback-incomplete", err)
 	}
@@ -1216,6 +1248,13 @@ func TestCloneExecuteRejectsReplacedParentIdentityBeforeRename(t *testing.T) {
 		return os.Mkdir(plan.Destination.Parent, 0o700)
 	}})
 	_, err := executor.Execute(context.Background(), plan, nil)
+	if runtime.GOOS == "windows" {
+		if err == nil || hasCloneErrorKind(err, ErrorRollbackIncomplete) {
+			t.Fatalf("retained parent handle substitution refusal = %v, want clean callback failure", err)
+		}
+		assertCloneExecutionAbsent(t, plan)
+		return
+	}
 	if err == nil || !hasCloneErrorKind(err, ErrorRollbackIncomplete) {
 		t.Fatalf("error = %v, want rollback-incomplete", err)
 	}
@@ -1267,24 +1306,11 @@ func TestCloneExecutePostIdentityMetadataAndIdentityChangesAreRetained(t *testin
 						ownedPath = filepath.Join(findCloneStaging(t, plan), "owned.txt")
 						return os.WriteFile(ownedPath, []byte("owned\n"), 0o600)
 					case "final-identity":
-						if mutation == "exact-config-inode" {
-							path := filepath.Join(plan.Destination.Path, ".wtree.yml")
-							data, err := os.ReadFile(path)
-							if err != nil {
-								return err
-							}
-							return fsutil.WriteFileAtomicMode(path, data, 0o600)
-						}
 						path := filepath.Join(plan.Destination.Path, "owned.txt")
-						switch mutation {
-						case "byte-identical-inode":
-							return fsutil.WriteFileAtomicMode(path, []byte("owned\n"), 0o600)
-						case "mtime-only":
-							future := time.Now().Add(time.Hour)
-							return os.Chtimes(path, future, future)
-						case "mode-only":
-							return os.Chmod(path, 0o640)
+						if mutation == "exact-config-inode" {
+							path = filepath.Join(plan.Destination.Path, ".wtree.yml")
 						}
+						return mutateClonePostIdentity(path, mutation)
 					}
 					return nil
 				},
@@ -1529,7 +1555,9 @@ func (git *cloneExecutionGit) Clone(_ context.Context, _ string, destination, _ 
 	if git.onClone != nil {
 		git.onClone()
 	}
-	return os.MkdirAll(destination, 0o700)
+	// Model the stable Git object authority retained by the native Windows
+	// staging lease as well as the checkout root itself.
+	return os.MkdirAll(filepath.Join(destination, ".git", "objects"), 0o700)
 }
 func (git *cloneExecutionGit) FetchTrackingBranch(_ context.Context, _ string, _ string, _ string) error {
 	if git.fetchFailure {
@@ -1647,7 +1675,8 @@ func findCloneStaging(t *testing.T, plan ClonePlan) string {
 	prefix := "." + filepath.Base(plan.Destination.Path) + ".wtree-clone-"
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), prefix) {
-			return filepath.Join(plan.Destination.Parent, entry.Name())
+			candidate := filepath.Join(plan.Destination.Parent, entry.Name())
+			return cloneTestLogicalRoot(candidate, prefix)
 		}
 	}
 	t.Fatal("clone staging directory not found")
@@ -1699,7 +1728,7 @@ func cloneGitOutput(t *testing.T, repository string, arguments ...string) string
 
 func syntheticExecutableClonePlan(t *testing.T) ClonePlan {
 	t.Helper()
-	base := t.TempDir()
+	base := cloneExecutionTempDir(t)
 	data := clonePlanManifest(t, filepath.Join(base, "missing-root.git"), filepath.Join(base, "missing-api.git"))
 	source := writeClonePlanManifest(t, base, data)
 	return mustClonePlan(t, NewClonePlannerWith(ClonePlannerDependencies{RemoteFacts: newClonePlanRemote(filepath.Join(base, "missing-root.git"), filepath.Join(base, "missing-api.git"))}), ClonePlanRequest{ManifestSource: source, Destination: filepath.Join(base, "clone"), CWD: base, DataDir: filepath.Join(base, "data")})
@@ -1707,7 +1736,7 @@ func syntheticExecutableClonePlan(t *testing.T) ClonePlan {
 
 func syntheticForestExecutableClonePlan(t *testing.T) ClonePlan {
 	t.Helper()
-	base := t.TempDir()
+	base := cloneExecutionTempDir(t)
 	urls := map[string]string{"base": filepath.Join(base, "base.git"), "web": filepath.Join(base, "web.git"), "shared": filepath.Join(base, "shared.git"), "tool": filepath.Join(base, "tool.git")}
 	commits := map[string]string{"base": clonePlanRootCommit, "web": "1123456789abcdef0123456789abcdef01234567", "shared": clonePlanChildCommit, "tool": "3123456789abcdef0123456789abcdef01234567"}
 	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "forest-execution", Name: "forest-execution", BaseRepository: "base"}, Repositories: map[string]config.PortableRepository{

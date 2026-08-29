@@ -25,7 +25,7 @@ func TestAutomaticNestedIgnoreProtectionThroughPublicCLI(t *testing.T) {
 
 	init := testutil.RunCommand(t, cli.Execute, "init", root.Path, "--data-dir", data)
 	if init.Err != nil || init.Stderr != "" || !containsAll(init.Stdout,
-		"Changed .gitignore:", filepath.Join(root.Path, ".gitignore"), filepath.Join(backend.Path, ".gitignore"),
+		"Changed .gitignore:", fixtureExistingPath(t, filepath.Join(root.Path, ".gitignore")), fixtureExistingPath(t, filepath.Join(backend.Path, ".gitignore")),
 		"wtree did not stage, commit, or push them.") {
 		t.Fatalf("init = %#v", init)
 	}
@@ -90,6 +90,15 @@ func TestAutomaticNestedIgnoreProtectionThroughPublicCLI(t *testing.T) {
 	assertFileBytes(t, filepath.Join(noChangeTarget, "backend", ".gitignore"), "/shared/\n")
 	assertIgnoredAndNoGitlink(t, noChangeTarget, "backend")
 	assertIgnoredAndNoGitlink(t, filepath.Join(noChangeTarget, "backend"), "shared")
+}
+
+func fixtureExistingPath(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
 }
 
 func TestAutomaticNestedIgnoreDryRunsAreTotallyNonMutating(t *testing.T) {
@@ -378,7 +387,9 @@ import (
 func main() {
   args := os.Args[1:]
   repo, rest := "", args
-  if len(args) >= 2 && args[0] == "-C" { repo, rest = args[1], args[2:] }
+  for len(rest) >= 2 && rest[0] == "-c" { rest = rest[2:] }
+  if len(rest) >= 2 && rest[0] == "-C" { repo, rest = rest[1], rest[2:] }
+  for len(rest) >= 2 && rest[0] == "-c" { rest = rest[2:] }
   resolved, _ := filepath.EvalSymlinks(repo)
   if resolved == %q && len(rest) >= 2 && (rest[0] == "worktree" && rest[1] == "add") {
     fmt.Fprintln(os.Stderr, "injected Git failure")

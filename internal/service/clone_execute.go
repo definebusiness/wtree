@@ -187,7 +187,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 
 	prefix := "." + filepath.Base(plan.Destination.Path) + ".wtree-clone-"
 	parentIdentity := ancestorIdentities[len(ancestorIdentities)-1]
-	staging, owned, stagingLease, err := createCloneStaging(
+	staging, owned, stagingParent, stagingLease, err := createCloneStaging(
 		plan.Destination.CanonicalParent,
 		prefix,
 		parentIdentity.info,
@@ -210,22 +210,28 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		if ownershipCompromised {
 			return errors.Join(cause, NewError(ErrorRollbackIncomplete, errors.New("clone staging or parent identity changed; preserving all paths")))
 		}
-		if !published {
-			if closeErr := stagingLease.releaseChild(staging, owned, parentIdentity.info, executor.dependencies.Lstat); closeErr != nil {
+		if !published && owned != nil {
+			if closeErr := stagingLease.releaseChild(staging, owned, stagingParent, executor.dependencies.Lstat); closeErr != nil {
 				ownershipCompromised = true
 				return errors.Join(cause, NewError(ErrorRollbackIncomplete, fmt.Errorf("clone staging handle validation or close failed; preserving all paths: %w", closeErr)))
+			}
+		}
+		if owned != nil {
+			cleanupParent := stagingParent
+			if published {
+				cleanupParent = parentIdentity.info
+			}
+			if cleanupErr := executor.removeOwnedTree(context.WithoutCancel(ctx), plan, staging, owned, cleanupParent, published, inventoryReady, treeInventory, configPublished, expectedFinalIdentities); cleanupErr != nil {
+				recoveryErr := error(nil)
+				if published && recordRecovery != nil {
+					recoveryErr = recordRecovery("cleanup", "destination", cleanupErr)
+				}
+				return errors.Join(cause, NewError(ErrorRollbackIncomplete, cleanupErr), recoveryErr)
 			}
 		}
 		if closeErr := stagingLease.closeAll(); closeErr != nil {
 			ownershipCompromised = true
 			return errors.Join(cause, NewError(ErrorRollbackIncomplete, fmt.Errorf("clone staging handle close failed; preserving all paths: %w", closeErr)))
-		}
-		if cleanupErr := executor.removeOwnedTree(context.WithoutCancel(ctx), plan, staging, owned, parentIdentity.info, published, inventoryReady, treeInventory, configPublished, expectedFinalIdentities); cleanupErr != nil {
-			recoveryErr := error(nil)
-			if published && recordRecovery != nil {
-				recoveryErr = recordRecovery("cleanup", "destination", cleanupErr)
-			}
-			return errors.Join(cause, NewError(ErrorRollbackIncomplete, cleanupErr), recoveryErr)
 		}
 		if hasCloneErrorKind(cause, ErrorRollbackIncomplete) {
 			return cause
@@ -267,6 +273,10 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 				return CloneExecutionResult{}, cleanup(NewError(ErrorConflict, fmt.Errorf("repository %q mount already exists", repository.ID)))
 			}
 		}
+		owned, err = stagingLease.prepareChild(staging, path, owned, stagingParent, executor.dependencies.Mkdir, executor.dependencies.Lstat)
+		if err != nil {
+			return CloneExecutionResult{}, cleanup(NewError(ErrorConflict, fmt.Errorf("prepare private clone staging root: %w", err)))
+		}
 		parentPath := staging
 		if repository.Parent != "" {
 			parentPath = paths[repository.Parent]
@@ -280,11 +290,24 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		// The started callback is intentionally observable. Revalidate after it
 		// returns and immediately before the adapter call so a callback cannot
 		// replace a previously-safe grouping component with a symlink.
-		if err := executor.revalidateCloneGroupingDirectories(staging, parentPath, path); err != nil {
-			return CloneExecutionResult{}, cleanup(NewError(ErrorValidation, fmt.Errorf("revalidate repository %q grouping directory: %w", repository.ID, err)))
+		owned, err = stagingLease.prepareChild(staging, path, owned, stagingParent, executor.dependencies.Mkdir, executor.dependencies.Lstat)
+		if err != nil {
+			return CloneExecutionResult{}, cleanup(NewError(ErrorConflict, fmt.Errorf("revalidate private clone staging root: %w", err)))
+		}
+		if owned != nil {
+			if err := executor.revalidateCloneGroupingDirectories(staging, parentPath, path); err != nil {
+				return CloneExecutionResult{}, cleanup(NewError(ErrorValidation, fmt.Errorf("revalidate repository %q grouping directory: %w", repository.ID, err)))
+			}
+		} else if path != staging {
+			return CloneExecutionResult{}, cleanup(NewError(ErrorConflict, errors.New("private clone staging root is unexpectedly absent")))
 		}
 		if err := executor.dependencies.Git.Clone(ctx, repository.CloneURL, path, repository.CloneRemote); err != nil {
 			return CloneExecutionResult{}, cleanup(NewError(ErrorGit, fmt.Errorf("clone repository %q: %w", repository.ID, err)))
+		}
+		owned, err = stagingLease.captureChild(staging, path, owned, stagingParent, executor.dependencies.Lstat)
+		if err != nil {
+			ownershipCompromised = true
+			return CloneExecutionResult{}, cleanup(NewError(ErrorConflict, fmt.Errorf("capture private clone staging root: %w", err)))
 		}
 		if err := executor.after(ctx, progress, "repository-"+repository.ID+"-clone"); err != nil {
 			return CloneExecutionResult{}, cleanup(err)
@@ -464,7 +487,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 	if err := executor.revalidateLocal(plan, false); err != nil {
 		return CloneExecutionResult{}, cleanup(classifyCloneExecutionError("destination rename revalidation", err))
 	}
-	if err := stagingLease.releaseChild(staging, owned, parentIdentity.info, executor.dependencies.Lstat); err != nil {
+	if err := stagingLease.releaseChild(staging, owned, stagingParent, executor.dependencies.Lstat); err != nil {
 		ownershipCompromised = true
 		return CloneExecutionResult{}, cleanup(NewError(ErrorConflict, fmt.Errorf("validate private clone staging before publication: %w", err)))
 	}

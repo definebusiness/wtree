@@ -1,8 +1,10 @@
 # Windows portability and CI hardening implementation plan
 
-Status: initial
+Status: implemented
 Source specification: [Windows portability and CI hardening specification](../spec/windows-portability-and-ci-hardening.md)
 Implementation context: [Investigation and porting context dump](windows-portability-and-ci-hardening-context.md)
+Follow-up remediation plan: [Windows portability simplification and CI remediation implementation plan](windows-portability-simplification-and-ci-remediation.md)
+Hosted failure context: [Hosted failure and simplification context](windows-portability-simplification-and-ci-remediation-context.md)
 Related implemented work: [Automatic nested mount ignore protection implementation plan](automatic-nested-mount-ignore-protection.md)
 Source branch: `codex/automatic-nested-mount-ignore-protection-ci`, candidate follow-ups `c5f6b51` through `ed1365c`
 Source of truth: [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml); [`internal/fsutil/atomic.go`](../../internal/fsutil/atomic.go); platform sync files under [`internal/fsutil`](../../internal/fsutil); [`internal/service/clone_execute.go`](../../internal/service/clone_execute.go); [`internal/service/clone_safety.go`](../../internal/service/clone_safety.go); [`internal/service/create.go`](../../internal/service/create.go); [`internal/config/paths.go`](../../internal/config/paths.go); current platform and end-to-end tests
@@ -314,7 +316,7 @@ Verification:
 Exit criteria: the workflow is portable and bounded, every normal/race test is
 assigned exactly once on Windows, and failures remain actionable and fatal.
 
-### [ ] M03 — Verify the integrated port on all supported platforms
+### [x] M03 — Verify the integrated port on all supported platforms
 
 Specification coverage: [§§2–7](../spec/windows-portability-and-ci-hardening.md#2-baseline-and-provenance).
 
@@ -367,3 +369,4 @@ this plan's durable run ledger.
 | 2026-08-27 | M00 | Focused fsutil normal/race and isolated Windows compilation pass; vet, format, build, release, tutorial, and diff gates pass. Full normal/race and `make check` consistently reach only the pre-existing long `internal/service` Git-test timeout while fsutil and all other packages pass; M02 owns bounded suite execution. | Approved after R1 durable-evidence remediation; no material implementation findings remain. | Not committed (not authorized). |
 | 2026-08-28 | M01 | Main focused config/domain/store, service (213.141s), CLI (81.642s), fsutil, and staging/rename regressions pass; five affected packages compile for Windows; vet, format, build, release, tutorial, and diff gates pass. Final full/race/check evidence reaches only the established unrelated long service Git-test limit that M02 owns. | Approved after R1–R5 remediation and one rejected complete submission; no material finding remains. Native Windows runtime remains M03. | Not committed (not authorized). |
 | 2026-08-28 | M02 | Deterministic helper harness, shell syntax, exact NUL formatting, vet, format, build, release, tutorial, and diff gates pass; full bounded normal/race suites pass with service at 1035.818s/1122.016s. Main reverified the harness, workflow helpers, quality gates, and live 549-target exact-once eight-shard assignment. | Approved on initial submission with no findings; native Windows workflow runtime remains M03. | Not committed (not authorized). |
+| 2026-08-29 | M03 | Exact run [`33229459008`](https://github.com/definebusiness/wtree/actions/runs/33229459008) passed every format, vet, normal, race, build, release-layout, reuse, and manifest gate on Ubuntu (7m24s), macOS (25m40s), and Windows (1h13m43s). Windows completed its eight-shard normal/race inventory in 35m56s/35m24s. | Approved after three independently reviewed hosted-remediation submissions; no material finding remains and attempts remain 2. | `c62ce13`, `b940185`, `d08f3bf`, `c7b3570`, and `b0f62fe` on `fix/windows-portability-simplification`. |

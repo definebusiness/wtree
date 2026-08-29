@@ -59,7 +59,7 @@ func TestProjectListHealthyJSONIncludesAdditiveTopology(t *testing.T) {
 func TestProjectListHumanJSONAndUnsupportedOptions(t *testing.T) {
 	data := t.TempDir()
 	configPath := filepath.Join(data, "path with spaces", ".wtree.yml")
-	if err := config.WriteProjectFile(configPath, strictLocalProjectConfig("project-a", "A")); err != nil {
+	if err := config.WriteProjectFile(configPath, strictLocalProjectConfig(t, "project-a", "A")); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.WriteRegistry(filepath.Join(data, "registry.json"), store.Registry{Projects: map[string]store.RegistryProject{"project-a": {Name: "A", ConfigPath: configPath}}}); err != nil {
@@ -84,7 +84,7 @@ func TestProjectListHumanFindingsFollowTheirProjectRows(t *testing.T) {
 	data := t.TempDir()
 	alphaConfig := filepath.Join(data, "alpha", ".wtree.yml")
 	bravoConfig := filepath.Join(data, "bravo", ".wtree.yml")
-	if err := config.WriteProjectFile(bravoConfig, strictLocalProjectConfig("bravo", "Bravo")); err != nil {
+	if err := config.WriteProjectFile(bravoConfig, strictLocalProjectConfig(t, "bravo", "Bravo")); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.WriteWorkspace(filepath.Join(data, "state", "alpha", "default.json"), store.WorkspaceState{ID: "default", Name: "default", Repositories: map[string]store.CheckoutState{}}); err != nil {
@@ -422,7 +422,7 @@ func projectPruneCLIData(t *testing.T) string {
 	t.Helper()
 	data := t.TempDir()
 	configPath := filepath.Join(data, "path with spaces", ".wtree.yml")
-	if err := config.WriteProjectFile(configPath, strictLocalProjectConfig("keeper", "Keeper")); err != nil {
+	if err := config.WriteProjectFile(configPath, strictLocalProjectConfig(t, "keeper", "Keeper")); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"keeper", "stale"} {
@@ -544,7 +544,7 @@ func TestProjectListRegistryErrorTaxonomyAndJSONCollections(t *testing.T) {
 
 	data := t.TempDir()
 	configPath := filepath.Join(data, "space path", ".wtree.yml")
-	if err := config.WriteProjectFile(configPath, strictLocalProjectConfig("keeper", "keeper")); err != nil {
+	if err := config.WriteProjectFile(configPath, strictLocalProjectConfig(t, "keeper", "keeper")); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.WriteRegistry(filepath.Join(data, "registry.json"), store.Registry{Projects: map[string]store.RegistryProject{"keeper": {ConfigPath: configPath}, "stale": {ConfigPath: configPath}}}); err != nil {
@@ -589,12 +589,13 @@ func contains(value, item string) bool {
 	return false
 }
 
-func strictLocalProjectConfig(id, name string) config.ProjectConfig {
+func strictLocalProjectConfig(t *testing.T, id, name string) config.ProjectConfig {
+	t.Helper()
 	return config.ProjectConfig{
 		Version:      config.ProjectConfigVersion,
 		Project:      config.Project{ID: id, Name: name, BaseRepository: "root"},
 		LogicalRoot:  ".",
 		Repositories: map[string]config.Repository{"root": {Source: ".", DefaultMount: ".", DefaultBranch: "main"}},
-		Manifest:     config.ManifestMetadata{Path: "project.wtree.yml", Source: "/manifests/project.wtree.yml"},
+		Manifest:     config.ManifestMetadata{Path: "project.wtree.yml", Source: filepath.Join(t.TempDir(), "manifests", "project.wtree.yml")},
 	}
 }
