@@ -67,6 +67,18 @@ func TestRenderWorkspaceStatusAppendsLocalDriftOnlyWhenPresent(t *testing.T) {
 	}
 }
 
+func TestRenderWorkspaceStatusAppendsHookSetupOnlyWhenPresent(t *testing.T) {
+	value := service.WorkspaceStatus{Workspace: "default", Repositories: []service.RepositoryStatus{{ID: "root", Mount: ".", Status: "clean"}}, Setup: []service.HookSetupStatus{{Event: "post-create", State: "failed", NextHookID: "setup", CompletedCount: 1, FailureKind: "non-zero-exit"}}}
+	var output bytes.Buffer
+	if err := renderWorkspaceStatus(&output, value); err != nil {
+		t.Fatal(err)
+	}
+	want := "Workspace: default\n\nREPOSITORY  BRANCH  MOUNT  STATUS  UPSTREAM\nroot                .      clean   none\n\nSetup:\nEVENT        STATE   NEXT   COMPLETED  FAILURE\npost-create  failed  setup  1          non-zero-exit\n"
+	if output.String() != want {
+		t.Fatalf("hook setup status = %q, want %q", output.String(), want)
+	}
+}
+
 func TestRenderWorkspaceStatusKeepsUnknownIdentityUpstreamNA(t *testing.T) {
 	value := service.WorkspaceStatus{Workspace: "default", Repositories: []service.RepositoryStatus{{ID: "root", Mount: ".", UnknownRepository: true, IdentityMismatch: true, Status: "unknown-repository"}}, Drift: []service.StatusDrift{{ID: "root", Origin: "checkout", Check: "identity", Status: "mismatch"}}}
 	var output bytes.Buffer

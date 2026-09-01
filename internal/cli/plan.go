@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	configuration "github.com/definebusiness/wtree/internal/config"
@@ -15,10 +18,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type createLifecycle interface {
+	Plan(context.Context, service.CreateLifecycleRequest) (service.CreateLifecycleResult, error)
+	Create(context.Context, service.CreateLifecycleRequest) (service.CreateLifecycleResult, error)
+}
+
+var newCreateLifecycle = func() createLifecycle { return service.NewCreateLifecycleCoordinator() }
+
 func newWorkspacePlanCommand(stdout, stderr io.Writer, projectPath *string, operation plan.Operation) *cobra.Command {
 	var from, targetPath, worktreeRoot, dataDir string
 	var mounts []string
-	var dryRun, jsonOutput, force, verbose bool
+	var dryRun, jsonOutput, force, verbose, noHooks bool
 	name := string(operation)
 	short := "preflight and render a " + name + " workspace plan"
 	long := "Build and validate a complete workspace plan without changing Git or workspace state. Use --dry-run to render this plan."
@@ -38,6 +48,9 @@ func newWorkspacePlanCommand(stdout, stderr io.Writer, projectPath *string, oper
 			}
 			if force {
 				return invalidArgumentsError{cause: fmt.Errorf("%s does not support --force", operation)}
+			}
+			if operation == plan.Create && noHooks && dryRun {
+				return invalidArgumentsError{cause: fmt.Errorf("create does not support --dry-run with --no-hooks")}
 			}
 			paths, home, err := resolveRuntimePaths()
 			if err != nil {
@@ -61,10 +74,82 @@ func newWorkspacePlanCommand(stdout, stderr io.Writer, projectPath *string, oper
 			if err != nil {
 				return service.NewError(service.ErrorValidation, err)
 			}
-			value, err := service.NewWorkspacePlanner().Plan(ctx, resolution.Project, service.WorkspacePlanRequest{
+			request := service.WorkspacePlanRequest{
 				Operation: operation, WorkspaceName: arguments[0], From: from, Mounts: overrides,
 				TargetPath: targetPath, WorktreeRoot: worktreeRoot, DataDir: dataDir,
-			})
+			}
+			if operation == plan.Create {
+				lifecycle := newCreateLifecycle()
+				lifecycleRequest := service.CreateLifecycleRequest{Project: resolution.Project, Workspace: request, NoHooks: noHooks, Reconcile: !dryRun, Environment: os.Environ(), Windows: runtime.GOOS == "windows", Sink: stderr}
+				if dryRun {
+					result, err := lifecycle.Plan(ctx, lifecycleRequest)
+					if err != nil {
+						return err
+					}
+					if jsonOutput {
+						if err := render.JSON(stdout, result); err != nil {
+							return outputFailure{err}
+						}
+						return nil
+					}
+					return renderCreateLifecycleDryRun(stdout, result)
+				}
+				// Preflight before reconciliation so malformed definitions and unavailable
+				// executables cannot trigger any core side effect.
+				if _, err := lifecycle.Plan(ctx, lifecycleRequest); err != nil {
+					return err
+				}
+				var progressErr error
+				lifecycleRequest.Progress = func(event transaction.Event) {
+					if !verbose || jsonOutput {
+						return
+					}
+					if progressErr == nil {
+						progressErr = render.Line(stderr, fmt.Sprintf("%s %s", event.Kind, event.Step))
+					}
+				}
+				created, err := lifecycle.Create(ctx, lifecycleRequest)
+				if err != nil {
+					if _, setup := service.SetupIncompleteFrom(err); setup {
+						if !jsonOutput {
+							if renderErr := renderCreateSuccess(stdout, created.Core.Plan, created.Core.IgnoreUpdates); renderErr != nil {
+								return renderErr
+							}
+						}
+						return err
+					}
+					if progressErr == nil {
+						progressErr = renderCreateFailureDiagnostic(stderr, jsonOutput, created.Core)
+					}
+					if progressErr == nil {
+						progressErr = renderCleanRollbackDiagnostic(stderr, jsonOutput, err)
+					}
+					if progressErr != nil {
+						return progressErr
+					}
+					return err
+				}
+				if progressErr != nil {
+					return progressErr
+				}
+				if jsonOutput {
+					if err := render.JSON(stdout, created); err != nil {
+						return outputFailure{err}
+					}
+					return nil
+				}
+				if err := renderCreateSuccess(stdout, created.Core.Plan, created.Core.IgnoreUpdates); err != nil {
+					return err
+				}
+				if created.HooksApplicable {
+					if created.HooksSkipped {
+						return render.Line(stdout, "Hooks intentionally skipped: post-create")
+					}
+					return render.Line(stdout, "Hooks completed: "+strings.Join(created.CompletedHookIDs, ","))
+				}
+				return nil
+			}
+			value, err := service.NewWorkspacePlanner().Plan(ctx, resolution.Project, request)
 			if err != nil {
 				return err
 			}
@@ -74,45 +159,7 @@ func newWorkspacePlanCommand(stdout, stderr io.Writer, projectPath *string, oper
 				}
 				return renderWorkspacePlan(stdout, value)
 			}
-			if operation != plan.Create {
-				return service.NewError(service.ErrorValidation, fmt.Errorf("%s execution is not available yet; use --dry-run to inspect its validated plan", operation))
-			}
-			if err := resolver.ReconcileProject(ctx, dataDir, resolution.Project); err != nil {
-				return err
-			}
-			var progressErr error
-			progress := func(event transaction.Event) {
-				if !verbose || jsonOutput {
-					return
-				}
-				if progressErr == nil {
-					progressErr = render.Line(stderr, fmt.Sprintf("%s %s", event.Kind, event.Step))
-				}
-			}
-			created, err := service.NewWorkspaceCreator().CreateWithResult(ctx, resolution.Project, service.WorkspacePlanRequest{
-				Operation: operation, WorkspaceName: arguments[0], From: from, Mounts: overrides,
-				TargetPath: targetPath, WorktreeRoot: worktreeRoot, DataDir: dataDir,
-			}, progress)
-			if err != nil {
-				if progressErr == nil {
-					progressErr = renderCreateFailureDiagnostic(stderr, jsonOutput, created)
-				}
-				if progressErr == nil {
-					progressErr = renderCleanRollbackDiagnostic(stderr, jsonOutput, err)
-				}
-				if progressErr != nil {
-					return progressErr
-				}
-				return err
-			}
-			if progressErr != nil {
-				return progressErr
-			}
-			value = created.Plan
-			if jsonOutput {
-				return render.JSON(stdout, value)
-			}
-			return renderCreateSuccess(stdout, value, created.IgnoreUpdates)
+			return service.NewError(service.ErrorValidation, fmt.Errorf("%s execution is not available yet; use --dry-run to inspect its validated plan", operation))
 		},
 	}
 	command.Flags().StringVar(&from, "from", "HEAD", "base ref (create only)")
@@ -124,6 +171,9 @@ func newWorkspacePlanCommand(stdout, stderr io.Writer, projectPath *string, oper
 	command.Flags().BoolVar(&jsonOutput, "json", false, "emit JSON")
 	command.Flags().BoolVar(&verbose, "verbose", false, "emit transaction progress")
 	command.Flags().BoolVar(&force, "force", false, "unsupported for create and checkout")
+	if operation == plan.Create {
+		command.Flags().BoolVar(&noHooks, "no-hooks", false, "skip automatic post-create hooks")
+	}
 	return command
 }
 
@@ -218,6 +268,41 @@ func parseMountOverrides(values []string) ([]service.MountOverride, error) {
 }
 
 func renderWorkspacePlan(stdout io.Writer, value plan.WorkspacePlan) error {
+	if err := renderWorkspacePlanBody(stdout, value); err != nil {
+		return err
+	}
+	if value.Operation == plan.Create {
+		return render.Line(stdout, "No changes made. Dry run performs no mutation.")
+	}
+	return render.Line(stdout, "No changes made.")
+}
+
+func renderCreateLifecycleDryRun(stdout io.Writer, result service.CreateLifecycleResult) error {
+	if err := renderWorkspacePlanBody(stdout, result.Core.Plan); err != nil {
+		return err
+	}
+	if result.HooksApplicable {
+		if err := render.Line(stdout, "Hooks (local automatic post-create):"); err != nil {
+			return err
+		}
+		for _, hook := range result.Hooks {
+			argumentValues := hook.Arguments
+			if argumentValues == nil {
+				argumentValues = []string{}
+			}
+			arguments, err := json.Marshal(argumentValues)
+			if err != nil {
+				return err
+			}
+			if err := render.Line(stdout, fmt.Sprintf("  %s [%s] %s <- %s => %s (%s) arguments=%s", hook.ID, hook.Repository, hook.WorkingDirectory, hook.ConfiguredExecutable, hook.ResolvedExecutable, hook.Timeout, arguments)); err != nil {
+				return err
+			}
+		}
+	}
+	return render.Line(stdout, "No changes made. Dry run performs no mutation.")
+}
+
+func renderWorkspacePlanBody(stdout io.Writer, value plan.WorkspacePlan) error {
 	lines := []string{
 		"Operation: " + string(value.Operation),
 		"Workspace: " + value.WorkspaceName,
@@ -262,7 +347,7 @@ func renderWorkspacePlan(stdout io.Writer, value plan.WorkspacePlan) error {
 		if err := render.Line(stdout, ""); err != nil {
 			return err
 		}
-		return render.Line(stdout, "No changes made. Dry run performs no mutation.")
+		return nil
 	}
-	return render.Line(stdout, "No changes made.")
+	return nil
 }

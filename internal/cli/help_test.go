@@ -18,7 +18,7 @@ func TestRootHelpDescribesCommandsConceptsSafetyAndExamples(t *testing.T) {
 	}
 	for _, want := range []string{
 		"USAGE", "GLOBAL OPTIONS", "COMMANDS", "CONCEPTS", "WORKTREE LOCATION", "EXAMPLES", "EXIT CODES",
-		"init", "clone", "import", "create", "checkout", "list", "status", "path", "repo", "remove", "delete", "doctor", "config",
+		"init", "clone", "import", "create", "checkout", "list", "status", "path", "repo", "remove", "delete", "doctor", "config", "hooks",
 		"project", "repository forest", "base repository", "top-level mounts are logical-root-relative", "metadata and ignores", "inspection and recovery", "repository identity", "wtree clone ./project.wtree.yml ./product --dry-run", "wtree create feature/login", "wtree <command> --help",
 	} {
 		if !strings.Contains(result.Stdout, want) {
@@ -33,7 +33,7 @@ func TestHowToCoversAllTopicsAndCommandGuides(t *testing.T) {
 		t.Fatalf("global how-to = %#v", guide)
 	}
 	for _, want := range []string{
-		"What wtree is", "Initialize and publish an existing project", "Keep local configuration private", "Configure worktree storage", "Clone a published project", "Preview a clone without changing anything", "Create a workspace", "Create from HEAD", "Create from another branch/ref", "Override nested repository mounts", "Work inside a workspace", "Resolve workspace paths", "Resolve repository paths", "Inspect status", "Import an existing workspace", "Import renamed nested checkouts", "Remove a workspace", "Restore an existing branch with checkout", "Delete workspace and branches", "Diagnose inconsistencies", "Use --dry-run", "Use --json", "Use wtree from nested directories", "Use --project explicitly", "AI coding agent workflow", "Inspect registered projects", "Prune only a stale registry registration", "Intentionally unregister a project registration", "Important safety semantics",
+		"What wtree is", "Initialize and publish an existing project", "Keep local configuration private", "Configure worktree storage", "Clone a published project", "Preview a clone without changing anything", "Create a workspace", "Create from HEAD", "Create from another branch/ref", "Override nested repository mounts", "Work inside a workspace", "Resolve workspace paths", "Resolve repository paths", "Inspect status", "Import an existing workspace", "Import renamed nested checkouts", "Remove a workspace", "Restore an existing branch with checkout", "Delete workspace and branches", "Diagnose inconsistencies", "Use --dry-run", "Use --json", "Use wtree from nested directories", "Use --project explicitly", "AI coding agent workflow", "Inspect registered projects", "Prune only a stale registry registration", "Intentionally unregister a project registration", "Manage lifecycle hooks safely", "Important safety semantics",
 	} {
 		if !strings.Contains(guide.Stdout, want) {
 			t.Errorf("global how-to missing %q", want)
@@ -44,11 +44,93 @@ func TestHowToCoversAllTopicsAndCommandGuides(t *testing.T) {
 			t.Errorf("global how-to missing workspace jump %q", want)
 		}
 	}
-	for _, command := range []string{"project", "init", "clone", "create", "import", "remove", "delete", "doctor"} {
+	for _, command := range []string{"project", "init", "clone", "create", "import", "remove", "delete", "doctor", "hooks"} {
 		result := testutil.RunCommand(t, cli.Execute, command, "--how-to")
 		if result.Err != nil || result.Stderr != "" || !strings.Contains(result.Stdout, "HOW TO: "+command) || !strings.Contains(result.Stdout, "EXAMPLES") {
 			t.Errorf("%s how-to = %#v", command, result)
 		}
+	}
+}
+
+func TestHookHelpAndHowToDescribeConsentRetryAndSecretBoundaries(t *testing.T) {
+	for _, arguments := range [][]string{{"hooks", "--help"}, {"hooks", "retry", "--help"}, {"clone", "--help"}} {
+		result := testutil.RunCommand(t, cli.Execute, arguments...)
+		if result.Err != nil || result.Stderr != "" {
+			t.Fatalf("%v help = %#v", arguments, result)
+		}
+	}
+	guide := testutil.RunCommand(t, cli.Execute, "hooks", "--how-to")
+	if guide.Err != nil || guide.Stderr != "" {
+		t.Fatalf("hooks how-to = %#v", guide)
+	}
+	for _, want := range []string{
+		"post-create", "post-clone", "--run-hooks", "shared_hooks", "wtree hooks retry <workspace>",
+		"idempotent", "environment", "literal command arguments", "command output",
+	} {
+		if !strings.Contains(guide.Stdout, want) {
+			t.Errorf("hooks how-to missing %q", want)
+		}
+	}
+	global := testutil.RunCommand(t, cli.Execute, "--how-to")
+	for _, want := range []string{"execution-result/error JSON", "hooks list and\n    create/clone plan or dry-run inspection intentionally show"} {
+		if global.Err != nil || !strings.Contains(global.Stdout, want) {
+			t.Errorf("global how-to missing qualified hook privacy contract %q", want)
+		}
+	}
+	if strings.Contains(global.Stdout, "in durable hook-run records or JSON results") || strings.Contains(guide.Stdout, "in durable records or\nJSON results") {
+		t.Error("installed how-to retains unqualified JSON-results privacy claim")
+	}
+}
+
+func TestLifecycleHookPublicDocumentationKeepsInstalledContractAligned(t *testing.T) {
+	root := testRepositoryRoot(t)
+	for path, required := range map[string][]string{
+		"README.md": {
+			"Lifecycle hooks: explicit local consent", "version 3", "--run-hooks", "shared_hooks", "--no-hooks", "wtree hooks retry", "execution-result/error JSON", "sanitized effective `PATH`", "hooks list",
+		},
+		"docs/INSTALL.md": {
+			"Lifecycle-hook commands in an installed binary", "wtree hooks --how-to", "--run-hooks", "execution-result/error JSON", "PATHEXT",
+		},
+		"docs/TROUBLESHOOTING.md": {
+			"A lifecycle hook left setup incomplete", "wtree hooks retry", "starts a fresh run", "shared_hooks", "hook-free", "explicitly version 3",
+		},
+		"tutorial/LIFECYCLE-HOOKS.md": {
+			"make tutorial-test", "TestLifecycleHookTutorialAcceptance", "tracked `sh` fixture on Unix", "`.cmd`", "generated Go helpers", "--run-hooks", "--no-hooks", "PATHEXT",
+		},
+		"Makefile": {
+			"lifecycle-hook-tutorial-test:", "HookRunnerSerializesConcurrentSameEvent", "HookRunRecordRoundTripAndPrivacy",
+		},
+	} {
+		data, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, want := range required {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("%s missing %q", path, want)
+			}
+		}
+		if path == "tutorial/LIFECYCLE-HOOKS.md" && strings.Contains(string(data), "Go helper processes only") {
+			t.Errorf("%s retains the contradictory Go-helper-only fixture claim", path)
+		}
+	}
+}
+
+func testRepositoryRoot(t *testing.T) string {
+	t.Helper()
+	directory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(directory, "go.mod")); err == nil {
+			return directory
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			t.Fatal("could not locate repository go.mod")
+		}
+		directory = parent
 	}
 }
 
@@ -68,7 +150,7 @@ func TestHowToIsValidatedTerminalCommand(t *testing.T) {
 }
 
 func TestDetailedCommandHelpAndUnsupportedOptionMatrix(t *testing.T) {
-	for _, command := range []string{"init", "clone", "import", "create", "checkout", "list", "status", "path", "repo", "remove", "delete", "doctor", "config"} {
+	for _, command := range []string{"init", "clone", "import", "create", "checkout", "list", "status", "path", "repo", "remove", "delete", "doctor", "config", "hooks"} {
 		result := testutil.RunCommand(t, cli.Execute, command, "--help")
 		if result.Err != nil || result.Stderr != "" || !strings.Contains(result.Stdout, "USAGE") || !strings.Contains(result.Stdout, "EXAMPLES") || !strings.Contains(result.Stdout, "SAFETY AND OUTPUT") || !strings.Contains(result.Stdout, "EXIT CODES") {
 			t.Errorf("%s help = %#v", command, result)
@@ -199,6 +281,7 @@ func TestEveryPrintedWTREEExampleParsesAsAnExecutableCommand(t *testing.T) {
 		{"init"}, {"clone"}, {"import"}, {"create"}, {"checkout"}, {"list"}, {"status"}, {"path"},
 		{"repo"}, {"repo", "path"}, {"repo", "get"}, {"remove"}, {"delete"}, {"doctor"},
 		{"config"}, {"config", "get"}, {"config", "set"}, {"config", "unset"}, {"config", "list"},
+		{"hooks"}, {"hooks", "list"}, {"hooks", "share"}, {"hooks", "install"},
 	}
 	for _, command := range helpCommands {
 		result := testutil.RunCommand(t, cli.Execute, append(append([]string(nil), command...), "--help")...)

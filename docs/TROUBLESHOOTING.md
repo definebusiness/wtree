@@ -11,6 +11,43 @@ wtree doctor <workspace>
 Add `--json` when structured output is easier to inspect. For commands that
 change state, use `--dry-run` first when it is supported.
 
+## A lifecycle hook left setup incomplete
+
+`wtree create` and an explicitly authorized `wtree clone --run-hooks` publish
+the valid workspace before lifecycle hooks run. A timeout, cancellation,
+launch failure, or non-zero hook exit therefore leaves the workspace intact;
+it does not undo branches, worktrees, registry state, or manifests. Start with
+read-only inspection:
+
+```sh
+wtree status <workspace>
+wtree doctor <workspace>
+```
+
+Correct the external cause, then run the exact bounded retry command, normally:
+
+```sh
+wtree hooks retry <workspace>
+```
+
+Retry requires the recorded configuration or manifest bytes, hook plan, and
+workspace facts to still match. It resumes at the recorded position, never
+starts a fresh run, and never reruns a durably completed hook. Do not delete or
+edit the private hook-run record to bypass that check. Hooks must be idempotent
+because an interruption after child side effects but before durable recording
+can require a hook to run again.
+
+Portable `post-clone` hooks run only with `--run-hooks`; without it, clone
+intentionally skips them and creates no retry record. `shared_hooks` are never
+executed directly. Use `wtree hooks list` to inspect sources and `wtree hooks
+install` to copy an explicitly shared `post-create` definition into trusted
+local configuration. `--no-hooks` is the intentional local `post-create`
+bypass. Review literal arguments before sharing; hooks are direct programs,
+not sandboxed shell snippets, and portable hooks receive only a sanitized
+environment. Durable records and execution-result/error JSON omit arguments,
+paths, output, and environment values; list and plan/dry-run inspection output
+intentionally shows configured/resolved executables and literal arguments.
+
 ## Update stopped with an active journal
 
 An interrupted `wtree update` deliberately leaves its journal and private
@@ -104,7 +141,8 @@ wtree init --base-repository api
 Review the base-owned `.wtree.yml` and `project.wtree.yml` plus every Git
 parent's `.gitignore` change. `init` does not stage, commit, or push them.
 Global configuration, registry, workspace state and recovery records retain
-their existing version-1 formats; portable manifests remain version 2.
+their existing version-1 formats. Portable manifests remain version 2 when
+hook-free; any portable hook declaration is explicitly version 3.
 
 ## Workspace checkout or metadata has drifted
 

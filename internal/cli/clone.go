@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	configuration "github.com/definebusiness/wtree/internal/config"
@@ -18,17 +20,20 @@ import (
 // preflight observations; repositories records what execution actually checked
 // out in deterministic repository-ID order.
 type cloneCommandResult struct {
-	Version         int                        `json:"version"`
-	Operation       string                     `json:"operation"`
-	Status          string                     `json:"status"`
-	Project         cloneProjectView           `json:"project"`
-	Destination     string                     `json:"destination"`
-	LogicalRoot     string                     `json:"logicalRoot"`
-	BaseRepository  string                     `json:"baseRepository"`
-	RepositoryCount int                        `json:"repositoryCount"`
-	ManifestSource  string                     `json:"manifestSource"`
-	Repositories    []cloneCompletedRepository `json:"repositories"`
-	Plan            service.ClonePlan          `json:"plan"`
+	Version          int                        `json:"version"`
+	Operation        string                     `json:"operation"`
+	Status           string                     `json:"status"`
+	Project          cloneProjectView           `json:"project"`
+	Destination      string                     `json:"destination"`
+	LogicalRoot      string                     `json:"logicalRoot"`
+	BaseRepository   string                     `json:"baseRepository"`
+	RepositoryCount  int                        `json:"repositoryCount"`
+	ManifestSource   string                     `json:"manifestSource"`
+	Repositories     []cloneCompletedRepository `json:"repositories"`
+	Plan             service.ClonePlan          `json:"plan"`
+	HooksCompleted   *bool                      `json:"hooksCompleted,omitempty"`
+	HooksSkipped     *bool                      `json:"hooksSkipped,omitempty"`
+	CompletedHookIDs []string                   `json:"completedHookIds,omitempty"`
 }
 
 type cloneCompletedRepository struct {
@@ -43,9 +48,17 @@ type cloneProjectView struct {
 	Name string `json:"name"`
 }
 
+type cloneLifecycleService interface {
+	Clone(context.Context, service.CloneLifecycleRequest) (service.CloneLifecycleResult, error)
+}
+
+var newCloneLifecycleCoordinator = func() cloneLifecycleService {
+	return service.NewCloneLifecycleCoordinator()
+}
+
 func newCloneCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Command {
 	var worktreeRoot, dataDir string
-	var dryRun, jsonOutput, verbose bool
+	var dryRun, jsonOutput, verbose, runHooks bool
 	command := &cobra.Command{
 		Use:   "clone <manifest-source> [destination]",
 		Short: "clone and register a complete portable project",
@@ -76,7 +89,7 @@ func newCloneCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Comma
 			if len(arguments) == 2 {
 				destination = arguments[1]
 			}
-			request := service.ClonePlanRequest{ManifestSource: arguments[0], Destination: destination, CWD: cwd, DataDir: dataDir, WorktreeRoot: worktreeRoot}
+			request := service.ClonePlanRequest{ManifestSource: arguments[0], Destination: destination, CWD: cwd, DataDir: dataDir, WorktreeRoot: worktreeRoot, RunHooks: runHooks}
 			planner := service.NewClonePlanner()
 			plan, err := planner.Plan(command.Context(), request)
 			if err != nil {
@@ -100,8 +113,17 @@ func newCloneCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Comma
 				}
 				progressErr = render.Line(stderr, fmt.Sprintf("%s %s", event.Kind, event.Step))
 			}
-			result, err := service.NewCloneExecutor().Execute(command.Context(), plan, progress)
+			lifecycle, err := newCloneLifecycleCoordinator().Clone(command.Context(), service.CloneLifecycleRequest{Plan: plan, RunHooks: runHooks, Environment: os.Environ(), Windows: runtime.GOOS == "windows", Sink: stderr, Progress: progress})
+			result := lifecycle.Core
 			if err != nil {
+				if _, setup := service.SetupIncompleteFrom(err); setup {
+					if !jsonOutput {
+						if renderErr := renderCloneSuccess(stdout, plan, result); renderErr != nil {
+							return renderErr
+						}
+					}
+					return err
+				}
 				if progressErr == nil {
 					progressErr = renderCleanRollbackDiagnostic(stderr, jsonOutput, err)
 				}
@@ -114,15 +136,30 @@ func newCloneCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Comma
 				return progressErr
 			}
 			if jsonOutput {
+				var hooksCompleted, hooksSkipped *bool
+				if lifecycle.HooksApplicable {
+					completed, skipped := lifecycle.HooksCompleted, lifecycle.HooksSkipped
+					hooksCompleted, hooksSkipped = &completed, &skipped
+				}
 				return render.JSON(stdout, cloneCommandResult{
 					Version: 2, Operation: "clone", Status: "completed",
 					Project:     cloneProjectView{ID: result.ProjectID, Name: plan.Project.Name},
 					Destination: result.Destination, RepositoryCount: len(result.Repositories),
 					LogicalRoot: result.LogicalRoot, BaseRepository: result.BaseRepository,
 					ManifestSource: plan.Source.Value, Repositories: completedCloneRepositories(result), Plan: plan,
+					HooksCompleted: hooksCompleted, HooksSkipped: hooksSkipped, CompletedHookIDs: append([]string(nil), lifecycle.CompletedHookIDs...),
 				})
 			}
-			return renderCloneSuccess(stdout, plan, result)
+			if err := renderCloneSuccess(stdout, plan, result); err != nil {
+				return err
+			}
+			if lifecycle.HooksSkipped {
+				return render.Line(stdout, "Portable hooks: skipped (use --run-hooks to authorize)")
+			}
+			if lifecycle.HooksCompleted {
+				return render.Line(stdout, "Portable hooks: completed")
+			}
+			return nil
 		},
 	}
 	command.Flags().StringVar(&worktreeRoot, "worktree-root", "", "worktree storage root for the cloned project")
@@ -130,6 +167,7 @@ func newCloneCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Comma
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "validate and render without mutation")
 	command.Flags().BoolVar(&jsonOutput, "json", false, "emit JSON")
 	command.Flags().BoolVar(&verbose, "verbose", false, "emit transaction progress")
+	command.Flags().BoolVar(&runHooks, "run-hooks", false, "run portable post-clone hooks for this invocation")
 	return command
 }
 
@@ -165,6 +203,16 @@ func renderClonePlan(stdout io.Writer, plan service.ClonePlan) error {
 	for _, repository := range plan.Repositories {
 		if _, err := fmt.Fprintf(stdout, "  %s\n    remote: %s\n    url: %s\n    branch: %s\n    merge: %s\n    mount: %s\n    observed commit: %s\n    verify: %s\n", repository.ID, repository.CloneRemote, repository.CloneURL, repository.LocalBranch, repository.RemoteRef, repository.Mount, repository.ObservedCommit, cloneVerificationSummary(repository.Verification)); err != nil {
 			return err
+		}
+	}
+	if len(plan.Hooks) != 0 {
+		if _, err := fmt.Fprintln(stdout, "Hooks:"); err != nil {
+			return err
+		}
+		for _, hook := range plan.Hooks {
+			if _, err := fmt.Fprintf(stdout, "  %s/%s (%s)\n    repository: %s\n    working directory: %s\n    executable: %s\n    availability: %s\n    timeout: %s\n    policy: %s\n", hook.Source, hook.ID, hook.Event, hook.Repository, hook.WorkingDirectory, hook.ConfiguredExecutable, hook.Availability, hook.Timeout, hook.ExecutionPolicy); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err := fmt.Fprintln(stdout, "Actions:"); err != nil {

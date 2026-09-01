@@ -29,3 +29,17 @@ test -f "$dist_dir/wtree_0.0.0-new_windows_amd64.exe"
 test -f "$dist_dir/LICENSE"
 test -f "$dist_dir/NOTICE"
 test -f "$dist_dir/SHA256SUMS"
+
+# The host-native built binary is an installed-artifact acceptance surface. It
+# is never installed or published; command help proves the release-facing hook
+# entry points and flags remain available to a user.
+host_binary="$tmp_dir/wtree-host"
+(
+  cd "$root_dir"
+  go build -o "$host_binary" ./cmd/wtree
+)
+"$host_binary" hooks --help | grep -F 'explicit consent operations' >/dev/null
+"$host_binary" hooks retry --help | grep -F 'never starts a fresh run' >/dev/null
+"$host_binary" clone --help | grep -F -- '--run-hooks' >/dev/null
+"$host_binary" create --help | grep -F -- '--no-hooks' >/dev/null
+"$host_binary" hooks --how-to | grep -F 'sanitized environment' >/dev/null

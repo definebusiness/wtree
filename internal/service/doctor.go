@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"time"
 
@@ -217,6 +218,18 @@ func (d *DoctorService) Doctor(ctx context.Context, project domain.Project, work
 	}
 	if workspace.Validate(project) == nil {
 		report.Repositories = doctorRepositories(project, workspace, observed, report.Findings)
+	}
+	inventory, inventoryErr := newAuthoritativeHookRunInventory().Inspect(ctx, HookRunInventoryRequest{Project: project, Workspace: workspace, DataDir: dataDir, Environment: os.Environ(), Windows: runtime.GOOS == "windows"})
+	if inventoryErr != nil {
+		return DoctorReport{}, inventoryErr
+	}
+	switch inventory.Classification {
+	case HookRunResumable:
+		report.Findings = append(report.Findings, DoctorFinding{Code: "hook-setup-incomplete", Severity: "warning", Message: "hook setup is incomplete and can be resumed with wtree hooks retry " + workspace.Name})
+	case HookRunStale:
+		report.Findings = append(report.Findings, DoctorFinding{Code: "hook-run-stale", Severity: "warning", Message: "hook run no longer matches its source or workspace; a fresh run is required"})
+	case HookRunInvalid:
+		report.Findings = append(report.Findings, DoctorFinding{Code: "invalid-hook-run-record", Severity: "error", Message: "hook run record is invalid and requires manual inspection"})
 	}
 	repositoryOrder := map[string]int{"": 0}
 	for index, repository := range project.ParentFirst() {

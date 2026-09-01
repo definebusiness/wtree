@@ -351,13 +351,13 @@ the failed hook and repository, and make a safe explicit retry possible. Hooks
 must never run during rollback.
 
 Portable `post-checkout`, `post-update`, and `post-create` hooks are not
-directly executable. The focused [machine-local and shared lifecycle-hook
-idea](../ideas/local-workspace-lifecycle-hooks.md) defines those events as
-trusted local hooks and defines inert portable `shared_hooks` that a developer
-may explicitly install into local configuration. Shared hooks never execute
-from the portable manifest, including when `--run-hooks` is supplied. Local or
-shared `post-clone` is unsupported because installation occurs only after the
-acquisition event has passed.
+directly executable. The focused [local and shared lifecycle-hook
+specification](local-workspace-lifecycle-hooks.md) defines trusted local events
+and inert portable `shared_hooks` that a developer may explicitly install into
+local configuration. Shared hooks never execute from the portable manifest,
+including when `--run-hooks` is supplied. Local or shared `post-clone` is
+unsupported because installation occurs only after the acquisition event has
+passed.
 
 ## 9. P4: scale and transport flexibility
 

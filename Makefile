@@ -1,4 +1,4 @@
-.PHONY: test test-race vet build release release-test tutorial-test check fmt-check
+.PHONY: test test-race vet build release release-test tutorial-test lifecycle-hook-tutorial-test check fmt-check
 
 # TEST_TIMEOUT remains a compatibility override for callers that intentionally
 # want one bound for both test modes. The mode-specific defaults match CI's
@@ -31,6 +31,10 @@ release-test:
 
 tutorial-test:
 	./tutorial/run-all-commands.sh
+	$(MAKE) lifecycle-hook-tutorial-test
+
+lifecycle-hook-tutorial-test:
+	go test ./internal/config ./internal/service ./internal/store ./internal/cli -run 'Test(LifecycleHook(TutorialAcceptance|PublicContractMatrix)|PortableHookCommandSyntaxIsElementAwareAndCrossPlatform|HooksCommandsRenderVersionedResultsAndKeepJSONSeparateOnErrors|CloneV3PortableHooksDryRunAndUnauthorizedSkipPublicContracts|CreateHookRunnerPersistsFirstSuccessAndStopsAtLaterFailure|CreateNoHooksValidatesAndCommitsWithoutHookAuthority|HookRunnerResumesFailedAndFinalizingRecords|HookRunnerSerializesConcurrentSameEvent|HookRetryUsesSingleInventoryCandidateAndRendersBoundedResult|HookEnvironmentPortableAllowlistExcludesSecrets|HookRunRecordRoundTripAndPrivacy|HookProcess(ClassifiesOutputTimeoutCancellationAndNonZero|ForcedBoundaryNeverLeaksCredentialContinuation|ForcedBoundaryRedactsNewlineTerminatedContinuations)|UpdatePublicationPreservesLocalV3HookConsentWithoutExecutingSharedContent)' -count=1
 
 fmt-check:
 	@unformatted="$$(go list -f '{{.Dir}}' ./... | while IFS= read -r dir; do gofmt -l "$$dir"/*.go; done)"; \

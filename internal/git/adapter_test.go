@@ -44,6 +44,20 @@ func TestAdapterReadsHermeticRepositoryFacts(t *testing.T) {
 	}
 }
 
+func TestAdapterReportsLiteralWorkingTreeTracking(t *testing.T) {
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile("hooks/setup", "setup\n", "hook")
+	adapter := git.NewAdapter("git")
+	tracked, err := adapter.WorkingFileTracked(context.Background(), repository.Path, "hooks/setup")
+	if err != nil || !tracked {
+		t.Fatalf("WorkingFileTracked(tracked) = %t, %v", tracked, err)
+	}
+	tracked, err = adapter.WorkingFileTracked(context.Background(), repository.Path, "hooks/missing")
+	if err != nil || tracked {
+		t.Fatalf("WorkingFileTracked(missing) = %t, %v", tracked, err)
+	}
+}
+
 func TestAdapterFactStatusSuppressesConfiguredFSMonitorHook(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fsmonitor hook fixture is POSIX-only")

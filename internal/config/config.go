@@ -59,6 +59,7 @@ type ProjectConfig struct {
 	Worktrees    Worktrees             `yaml:"worktrees" json:"worktrees"`
 	Discovery    Discovery             `yaml:"discovery,omitempty" json:"discovery,omitempty"`
 	Manifest     ManifestMetadata      `yaml:"manifest,omitempty" json:"manifest,omitempty"`
+	Hooks        HookEvents            `yaml:"hooks,omitempty" json:"hooks,omitempty"`
 }
 type GlobalConfig struct {
 	Version   int       `yaml:"version"`
@@ -66,17 +67,33 @@ type GlobalConfig struct {
 }
 
 func LoadProject(data []byte) (ProjectConfig, error) {
-	var value ProjectConfig
-	if err := strictYAML(data, &value); err != nil {
+	version, err := localConfigVersion(data)
+	if err != nil {
 		return ProjectConfig{}, err
 	}
-	if value.Version == 1 {
+	if version == 1 {
 		return ProjectConfig{}, fmt.Errorf("local project config version 1 is unsupported; reinitialization is required")
 	}
-	if value.Version != ProjectConfigVersion {
-		return ProjectConfig{}, fmt.Errorf("unsupported local project config version %d", value.Version)
+	if version != ProjectConfigVersion && version != ProjectConfigVersion3 {
+		return ProjectConfig{}, fmt.Errorf("unsupported local project config version %d", version)
 	}
-	if err := requireLocalV2Fields(data); err != nil {
+	var value ProjectConfig
+	if version == ProjectConfigVersion {
+		var v2 projectConfigV2
+		err = strictYAML(data, &v2)
+		value = ProjectConfig{Version: v2.Version, Project: v2.Project, LogicalRoot: v2.LogicalRoot, Repositories: v2.Repositories, Worktrees: v2.Worktrees, Discovery: v2.Discovery, Manifest: v2.Manifest}
+	} else {
+		err = strictYAML(data, &value)
+	}
+	if err != nil {
+		return ProjectConfig{}, err
+	}
+	if version == ProjectConfigVersion3 {
+		if err := validateExplicitHookTimeouts(data); err != nil {
+			return ProjectConfig{}, err
+		}
+	}
+	if err := requireLocalFields(data); err != nil {
 		return ProjectConfig{}, err
 	}
 	if err := value.Validate(); err != nil {
@@ -85,7 +102,29 @@ func LoadProject(data []byte) (ProjectConfig, error) {
 	return value, nil
 }
 
-func requireLocalV2Fields(data []byte) error {
+// projectConfigV2 intentionally omits Hooks. Strict decoding through this
+// wire type preserves v2's rejection of the otherwise known v3 field.
+type projectConfigV2 struct {
+	Version      int                   `yaml:"version" json:"version"`
+	Project      Project               `yaml:"project" json:"project"`
+	LogicalRoot  string                `yaml:"logical_root" json:"logical_root"`
+	Repositories map[string]Repository `yaml:"repositories" json:"repositories"`
+	Worktrees    Worktrees             `yaml:"worktrees" json:"worktrees"`
+	Discovery    Discovery             `yaml:"discovery,omitempty" json:"discovery,omitempty"`
+	Manifest     ManifestMetadata      `yaml:"manifest,omitempty" json:"manifest,omitempty"`
+}
+
+func localConfigVersion(data []byte) (int, error) {
+	var document struct {
+		Version int `yaml:"version"`
+	}
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return 0, err
+	}
+	return document.Version, nil
+}
+
+func requireLocalFields(data []byte) error {
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
 		return err
@@ -152,7 +191,7 @@ func LoadGlobal(data []byte) (GlobalConfig, error) {
 // actual filesystem placement. Placement and canonical inversion are checked
 // by the service loader, which has the base configuration path.
 func (value ProjectConfig) Validate() error {
-	if value.Version != ProjectConfigVersion {
+	if value.Version != ProjectConfigVersion && value.Version != ProjectConfigVersion3 {
 		return fmt.Errorf("unsupported local project config version %d", value.Version)
 	}
 	if err := ValidatePortableID(value.Project.ID); err != nil {
@@ -172,6 +211,9 @@ func (value ProjectConfig) Validate() error {
 	}
 	if err := ValidateManifestMetadata(value.Manifest); err != nil {
 		return err
+	}
+	if value.Version == ProjectConfigVersion && len(value.Hooks) != 0 {
+		return fmt.Errorf("local project config version %d does not support hooks", ProjectConfigVersion)
 	}
 	repositories := make([]domain.Repository, 0, len(value.Repositories))
 	for id, repository := range value.Repositories {
@@ -194,6 +236,29 @@ func (value ProjectConfig) Validate() error {
 	project := domain.Project{Version: domain.CurrentVersion, ID: value.Project.ID, Name: value.Project.Name, BaseRepository: value.Project.BaseRepository, Repositories: repositories}
 	if err := project.Validate(); err != nil {
 		return err
+	}
+	if value.Version == ProjectConfigVersion3 {
+		if err := validateHookEventsForRepositories(value.Hooks, value.Project.BaseRepository, value.Repositories, hookSourceLocal); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateHookEventsForRepositories(events HookEvents, baseRepository string, repositories map[string]Repository, source hookSource) error {
+	if err := validateHookEvents(events, baseRepository, source); err != nil {
+		return err
+	}
+	for event, hooks := range events {
+		for _, hook := range hooks {
+			repository := hook.Repository
+			if repository == "" {
+				repository = baseRepository
+			}
+			if _, exists := repositories[repository]; !exists {
+				return fmt.Errorf("hook event %q hook %q references unknown repository %q", event, hook.ID, repository)
+			}
+		}
 	}
 	return nil
 }

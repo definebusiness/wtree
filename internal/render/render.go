@@ -43,9 +43,10 @@ type ErrorEnvelope struct {
 }
 
 type ErrorDetails struct {
-	Code     string           `json:"code"`
-	Message  string           `json:"message"`
-	Rollback *RollbackDetails `json:"rollback,omitempty"`
+	Code     string                          `json:"code"`
+	Message  string                          `json:"message"`
+	Rollback *RollbackDetails                `json:"rollback,omitempty"`
+	Setup    *service.SetupIncompleteDetails `json:"setup,omitempty"`
 }
 
 type RollbackDetails struct {
@@ -57,6 +58,9 @@ func JSONError(writer io.Writer, err error) error {
 	details := ErrorDetails{Code: ErrorCode(err), Message: err.Error()}
 	if service.HasCleanRollback(err) {
 		details.Rollback = &RollbackDetails{Complete: true}
+	}
+	if setup, ok := service.SetupIncompleteFrom(err); ok {
+		details.Setup = &setup
 	}
 	return JSON(writer, ErrorEnvelope{Success: false, Error: details})
 }

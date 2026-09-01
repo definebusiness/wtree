@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/definebusiness/wtree/internal/cli"
+	"github.com/definebusiness/wtree/internal/config"
+	"github.com/definebusiness/wtree/internal/service"
 	"github.com/definebusiness/wtree/internal/testutil"
 )
 
@@ -64,6 +67,124 @@ func TestExecuteDoctorJSONIsReadOnlyAndSupportsFixDryRun(t *testing.T) {
 	}
 	if afterDryRun := exactDoctorObservation(t, project.Path, data); !reflect.DeepEqual(beforeObservation, afterDryRun) {
 		t.Fatalf("doctor --fix --dry-run changed filesystem, index, status, HEAD, or refs:\nbefore=%#v\nafter=%#v", beforeObservation, afterDryRun)
+	}
+}
+
+func TestExecuteDoctorRendersIncompleteHookRunWithoutFixingIt(t *testing.T) {
+	projectPath := testutil.NewPushedGitRepository(t)
+	projectPath.CommitFile("root.txt", "root\n", "root")
+	data := t.TempDir()
+	if result := testutil.RunCommand(t, cli.Execute, "init", projectPath.Path, "--data-dir", data); result.Err != nil {
+		t.Fatalf("init = %#v", result)
+	}
+	executable := filepath.Join(projectPath.Path, "fail-hook")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 23\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(projectPath.Path, ".wtree.yml")
+	local, err := config.ReadProjectFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local.Version = config.ProjectConfigVersion3
+	local.Hooks = config.HookEvents{config.HookEventPostCreate: {{ID: "setup", Command: []string{executable}}}}
+	if err := config.WriteProjectFile(configPath, local); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "workspace")
+	created := testutil.RunCommand(t, cli.Execute, "create", "--project", projectPath.Path, "feature/doctor-hook", "--data-dir", data, "--path", target)
+	if _, incomplete := service.SetupIncompleteFrom(created.Err); !incomplete {
+		t.Fatalf("create incomplete hook run = %#v", created)
+	}
+	resolution, err := service.NewResolver().ResolveReadOnly(context.Background(), service.ResolveRequest{Path: projectPath.Path, ProjectPath: projectPath.Path, DataDir: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := service.RequireWorkspace(resolution.Project, data, "feature/doctor-hook")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(data, "projects", resolution.Project.ID, "hooks", workspace.ID, "post-create.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsonResult := testutil.RunCommand(t, cli.Execute, "doctor", "--project", projectPath.Path, workspace.Name, "--data-dir", data, "--json")
+	if jsonResult.Err != nil || jsonResult.Stderr != "" {
+		t.Fatalf("doctor JSON = %#v", jsonResult)
+	}
+	var report struct {
+		Findings []struct {
+			Code, Severity, Message string
+			Fixable                 bool
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(jsonResult.Stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, finding := range report.Findings {
+		if finding.Code == "hook-setup-incomplete" {
+			found = finding.Severity == "warning" && !finding.Fixable && finding.Message == "hook setup is incomplete and can be resumed with wtree hooks retry "+workspace.Name
+		}
+	}
+	if !found {
+		t.Fatalf("hook doctor JSON = %s", jsonResult.Stdout)
+	}
+	human := testutil.RunCommand(t, cli.Execute, "doctor", "--project", projectPath.Path, workspace.Name, "--data-dir", data)
+	if human.Err != nil || !strings.Contains(human.Stdout, "warning: hook-setup-incomplete — hook setup is incomplete and can be resumed with wtree hooks retry "+workspace.Name+"\n") {
+		t.Fatalf("hook doctor human = %#v", human)
+	}
+	if fixed := testutil.RunCommand(t, cli.Execute, "doctor", "--project", projectPath.Path, workspace.Name, "--data-dir", data, "--fix"); fixed.Err != nil {
+		t.Fatalf("doctor fix = %#v", fixed)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("doctor fix changed hook run record: %v\nbefore=%s\nafter=%s", err, before, after)
+	}
+}
+
+func TestExecuteDoctorRendersInvalidHookRunWithoutFixingIt(t *testing.T) {
+	projectPath := testutil.NewPushedGitRepository(t)
+	projectPath.CommitFile("root.txt", "root\n", "root")
+	data := t.TempDir()
+	if result := testutil.RunCommand(t, cli.Execute, "init", projectPath.Path, "--data-dir", data); result.Err != nil {
+		t.Fatalf("init = %#v", result)
+	}
+	resolution, err := service.NewResolver().ResolveReadOnly(context.Background(), service.ResolveRequest{Path: projectPath.Path, ProjectPath: projectPath.Path, DataDir: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := service.RequireWorkspace(resolution.Project, data, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(data, "projects", resolution.Project.ID, "hooks", workspace.ID)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "unexpected.txt")
+	if err := os.WriteFile(path, []byte("unsafe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsonResult := testutil.RunCommand(t, cli.Execute, "doctor", "--project", projectPath.Path, "default", "--data-dir", data, "--json")
+	if jsonResult.Err != nil || jsonResult.Stderr != "" || !strings.Contains(jsonResult.Stdout, `"code":"invalid-hook-run-record"`) || !strings.Contains(jsonResult.Stdout, `"severity":"error"`) {
+		t.Fatalf("doctor invalid JSON = %#v", jsonResult)
+	}
+	human := testutil.RunCommand(t, cli.Execute, "doctor", "--project", projectPath.Path, "default", "--data-dir", data)
+	if human.Err != nil || !strings.Contains(human.Stdout, "error: invalid-hook-run-record — hook run record is invalid and requires manual inspection\n") {
+		t.Fatalf("doctor invalid human = %#v", human)
+	}
+	if fixed := testutil.RunCommand(t, cli.Execute, "doctor", "--project", projectPath.Path, "default", "--data-dir", data, "--fix"); fixed.Err != nil {
+		t.Fatalf("doctor fix = %#v", fixed)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("doctor fix changed invalid hook entry: %v\nbefore=%s\nafter=%s", err, before, after)
 	}
 }
 

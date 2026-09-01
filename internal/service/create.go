@@ -77,8 +77,12 @@ func (c *WorkspaceCreator) Create(ctx context.Context, project domain.Project, r
 // internal automatic-ignore evidence. The evidence is intentionally not part of
 // plan.WorkspacePlan or its JSON representation.
 func (c *WorkspaceCreator) CreateWithResult(ctx context.Context, project domain.Project, request WorkspacePlanRequest, progress func(transaction.Event)) (CreateResult, error) {
+	return c.createWithResultRevalidate(ctx, project, request, progress, nil)
+}
+
+func (c *WorkspaceCreator) createWithResultRevalidate(ctx context.Context, project domain.Project, request WorkspacePlanRequest, progress func(transaction.Event), extra func(context.Context, plan.WorkspacePlan) error) (CreateResult, error) {
 	request.Operation = plan.Create
-	return c.executeCreate(ctx, project, request, progress)
+	return c.executeCreateRevalidate(ctx, project, request, progress, extra)
 }
 
 // Checkout executes an existing-branch workspace plan. It shares the same
@@ -127,6 +131,10 @@ func (c *WorkspaceCreator) execute(ctx context.Context, project domain.Project, 
 }
 
 func (c *WorkspaceCreator) executeCreate(ctx context.Context, project domain.Project, request WorkspacePlanRequest, progress func(transaction.Event)) (CreateResult, error) {
+	return c.executeCreateRevalidate(ctx, project, request, progress, nil)
+}
+
+func (c *WorkspaceCreator) executeCreateRevalidate(ctx context.Context, project domain.Project, request WorkspacePlanRequest, progress func(transaction.Event), extra func(context.Context, plan.WorkspacePlan) error) (CreateResult, error) {
 	if c == nil || c.git == nil || c.planner == nil || c.transaction == nil {
 		return CreateResult{}, NewError(ErrorInternal, fmt.Errorf("workspace creator is not configured"))
 	}
@@ -150,6 +158,9 @@ func (c *WorkspaceCreator) executeCreate(ctx context.Context, project domain.Pro
 			}
 			if !reflect.DeepEqual(value, revalidated) {
 				return NewError(ErrorConflict, fmt.Errorf("workspace plan changed during locked revalidation"))
+			}
+			if extra != nil {
+				return extra(ctx, revalidated)
 			}
 			return nil
 		},

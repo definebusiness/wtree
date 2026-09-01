@@ -120,6 +120,13 @@ func (r *Resolver) ResolveProject(ctx context.Context, request ResolveRequest) (
 // ReconcileProject records a relocated project only after a mutating command
 // has completed its read-only preflight.
 func (r *Resolver) ReconcileProject(ctx context.Context, dataDir string, project domain.Project) error {
+	return r.reconcileProjectWith(ctx, dataDir, project, nil)
+}
+
+// reconcileProjectWith retains ReconcileProject's public behavior while
+// allowing a lifecycle owner to recheck its immutable preflight immediately
+// before the registry replacement CAS.
+func (r *Resolver) reconcileProjectWith(ctx context.Context, dataDir string, project domain.Project, beforePublish func() error) error {
 	if r == nil || r.locker == nil || r.writeRegistryCAS == nil || r.writeRawCAS == nil || r.writeRecoveryCAS == nil {
 		return NewError(ErrorInternal, errors.New("project reconciliation publication is not configured"))
 	}
@@ -143,7 +150,7 @@ func (r *Resolver) ReconcileProject(ctx context.Context, dataDir string, project
 	if err != nil {
 		return err
 	}
-	return r.reconcileRegistry(ctx, dataDir, project, registry)
+	return r.reconcileRegistry(ctx, dataDir, project, registry, beforePublish)
 }
 
 func (r *Resolver) Resolve(ctx context.Context, request ResolveRequest) (Resolution, error) {
@@ -821,7 +828,7 @@ func sameRepositoryIDs(left, right map[string]string) bool {
 	return true
 }
 
-func (r *Resolver) reconcileRegistry(ctx context.Context, dataDir string, project domain.Project, registry store.Registry) error {
+func (r *Resolver) reconcileRegistry(ctx context.Context, dataDir string, project domain.Project, registry store.Registry, beforePublish func() error) error {
 	registered, exists := registry.Projects[project.ID]
 	needsReconciliation, err := registryNeedsReconciliation(registered, exists, project)
 	if err != nil {
@@ -865,7 +872,15 @@ func (r *Resolver) reconcileRegistry(ctx context.Context, dataDir string, projec
 	registered.ConfigPath = project.ConfigPath
 	registered.RepositoryIDs = repositoryIDs(project)
 	current.Projects[project.ID] = registered
-	if err := r.writeRegistryCAS(path, current, func() error { return revalidateCloneFileSnapshot(registrySnapshot) }); err != nil {
+	if err := r.writeRegistryCAS(path, current, func() error {
+		if err := revalidateCloneFileSnapshot(registrySnapshot); err != nil {
+			return err
+		}
+		if beforePublish != nil {
+			return beforePublish()
+		}
+		return nil
+	}); err != nil {
 		if !fsutil.ReplacementCompleted(err) {
 			return fmt.Errorf("update relocated project registry entry: %w", err)
 		}

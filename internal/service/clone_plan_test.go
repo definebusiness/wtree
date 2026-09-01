@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,8 +16,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/definebusiness/wtree/internal/config"
+	gitadapter "github.com/definebusiness/wtree/internal/git"
+	"github.com/definebusiness/wtree/internal/lock"
 	"github.com/definebusiness/wtree/internal/store"
 	"github.com/definebusiness/wtree/internal/testutil"
 )
@@ -145,6 +149,638 @@ func TestClonePlanExplicitDestinationStableParentFirstJSONAndNoMutation(t *testi
 	if got := string(plan.ManifestBytes()); got != string(clonePlanManifest(t, rootURL, childURL)) {
 		t.Fatal("plan did not retain exact manifest bytes")
 	}
+}
+
+func TestClonePlanV3HooksAreDeferredAndSharedHooksRemainInert(t *testing.T) {
+	base := t.TempDir()
+	rootURL, childURL := filepath.Join(base, "root.git"), filepath.Join(base, "api.git")
+	manifest, err := config.LoadPortableManifest(clonePlanManifest(t, rootURL, childURL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Version = config.PortableManifestVersion3
+	manifest.Hooks = config.HookEvents{config.HookEventPostClone: {{ID: "clone-setup", Command: []string{"hooks/setup", "--literal"}}}}
+	manifest.SharedHooks = config.HookEvents{config.HookEventPostCreate: {{ID: "shared-setup", Command: []string{"hooks/shared"}}}}
+	data, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := writeClonePlanManifest(t, base, data)
+	before := mustDirectorySnapshot(t, base)
+	plan, err := NewClonePlannerWith(ClonePlannerDependencies{RemoteFacts: newClonePlanRemote(rootURL, childURL)}).Plan(context.Background(), ClonePlanRequest{ManifestSource: source, Destination: filepath.Join(base, "clone"), CWD: base, DataDir: filepath.Join(base, "data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after := mustDirectorySnapshot(t, base); !reflect.DeepEqual(before, after) {
+		t.Fatalf("dry hook planning mutated filesystem\nbefore=%#v\nafter=%#v", before, after)
+	}
+	if len(plan.Hooks) != 2 {
+		t.Fatalf("hook entries = %#v", plan.Hooks)
+	}
+	portable, shared := plan.Hooks[0], plan.Hooks[1]
+	if portable.Source != "portable" || portable.Event != config.HookEventPostClone || portable.Availability != "deferred" || portable.ResolvedExecutable != "" || portable.ExecutionPolicy != "requires-run-hooks" || !reflect.DeepEqual(portable.Arguments, []string{"--literal"}) {
+		t.Fatalf("portable dry-run entry = %#v", portable)
+	}
+	if shared.Source != "shared" || shared.Event != config.HookEventPostCreate || shared.Availability != "deferred" || shared.ExecutionPolicy != "inert" {
+		t.Fatalf("shared dry-run entry = %#v", shared)
+	}
+	encoded, err := plan.JSON()
+	if err != nil || !strings.Contains(string(encoded), `"executionPolicy": "inert"`) {
+		t.Fatalf("hook plan JSON = %s, %v", encoded, err)
+	}
+	for _, mutate := range []func(*ClonePlan){
+		func(value *ClonePlan) { value.Hooks[0].ConfiguredExecutable = "hooks/other" },
+		func(value *ClonePlan) { value.Hooks[0].Arguments = []string{"changed"} },
+		func(value *ClonePlan) { value.Hooks[0].ID = "changed" },
+		func(value *ClonePlan) { value.Hooks[0].Source = "shared" },
+		func(value *ClonePlan) { value.Hooks[0].Event = config.HookEventPostCreate },
+		func(value *ClonePlan) { value.Hooks[0].ExecutionPolicy = "inert" },
+		func(value *ClonePlan) { value.Hooks[0], value.Hooks[1] = value.Hooks[1], value.Hooks[0] },
+		func(value *ClonePlan) { value.Hooks = nil },
+		func(value *ClonePlan) { value.Hooks = value.Hooks[1:] },
+		func(value *ClonePlan) { value.Hooks = append(value.Hooks, HookPlanEntry{ID: "extra"}) },
+	} {
+		mutated := clonePlanCopy(plan)
+		mutated.Hooks = cloneHookPlanEntries(plan.Hooks)
+		mutate(&mutated)
+		if err := mutated.Validate(); err == nil {
+			t.Fatal("tampered hook projection passed plan validation")
+		}
+		if _, _, err := NewCloneLifecycleCoordinator().Plan(context.Background(), mutated); err == nil {
+			t.Fatal("tampered hook projection reached lifecycle planning")
+		}
+	}
+}
+
+func TestClonePlanHTTPV3HooksRemainDeferredWithoutCoreMutation(t *testing.T) {
+	base := t.TempDir()
+	rootURL, childURL := "https://example.test/root.git", "https://example.test/api.git"
+	manifest, err := config.LoadPortableManifest(clonePlanManifest(t, rootURL, childURL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Version = config.PortableManifestVersion3
+	manifest.Hooks = config.HookEvents{config.HookEventPostClone: {{ID: "portable", Command: []string{"hooks/setup"}}}}
+	manifest.SharedHooks = config.HookEvents{config.HookEventPostCreate: {{ID: "shared", Command: []string{"hooks/shared"}}}}
+	body, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/project.wtree.yml" {
+			t.Errorf("unexpected manifest request %q", request.URL.Path)
+			http.NotFound(writer, request)
+			return
+		}
+		_, _ = writer.Write(body)
+	}))
+	defer server.Close()
+	destination, data := filepath.Join(base, "clone"), filepath.Join(base, "data")
+	before := mustDirectorySnapshot(t, base)
+	plan, err := NewClonePlannerWith(ClonePlannerDependencies{RemoteFacts: newClonePlanRemote(rootURL, childURL)}).DryRun(context.Background(), ClonePlanRequest{ManifestSource: server.URL + "/project.wtree.yml", Destination: destination, CWD: base, DataDir: data})
+	if err != nil || len(plan.Hooks) != 2 || plan.Hooks[0].Availability != "deferred" || plan.Hooks[1].ExecutionPolicy != "inert" {
+		t.Fatalf("HTTP v3 dry-run plan=%#v err=%v", plan.Hooks, err)
+	}
+	if after := mustDirectorySnapshot(t, base); !reflect.DeepEqual(before, after) {
+		t.Fatalf("HTTP dry-run mutated filesystem\nbefore=%#v\nafter=%#v", before, after)
+	}
+}
+
+func TestCloneSetupIncompleteDetailsRetainsPortableRetryContract(t *testing.T) {
+	exit := 17
+	details := cloneSetupIncompleteDetails(CloneExecutionResult{}, HookRunResult{CompletedIDs: []string{"first"}, Failure: &HookRunFailure{Kind: HookFailureNonZero, HookID: "second", RepositoryID: "root", ExitCode: &exit}}, nil)
+	if details.Operation != "clone" || details.CoreStatus != "completed" || details.Event != config.HookEventPostClone || details.RetryCommand != "wtree hooks retry default" || details.FailureKind != HookFailureNonZero || details.ExitCode == nil || *details.ExitCode != exit || !reflect.DeepEqual(details.CompletedHookIDs, []string{"first"}) {
+		t.Fatalf("clone incomplete details = %#v", details)
+	}
+	if got := (&SetupIncompleteError{Details: details}).Error(); !strings.HasPrefix(got, "clone setup incomplete") {
+		t.Fatalf("clone incomplete message = %q", got)
+	}
+	wrapped := NewError(ErrorSetupIncomplete, &SetupIncompleteError{Details: details, Cause: context.Canceled})
+	if _, ok := SetupIncompleteFrom(wrapped); !ok || !errors.Is(wrapped, context.Canceled) {
+		t.Fatalf("setup-incomplete cancellation wrapper lost contract: %v", wrapped)
+	}
+}
+
+func TestCloneLifecycleRequiresExactCompletedRunnerIDs(t *testing.T) {
+	plan := mustHookRunnerPlanEntries(t, "first", "second")
+	for _, ids := range [][]string{nil, {}, {"first"}, {"second", "first"}, {"first", "unknown"}, {"first", "first"}} {
+		if cloneHookRunCompleted(plan, HookRunResult{Status: "completed", CompletedIDs: ids}, nil) {
+			t.Fatalf("invalid completed IDs accepted: %v", ids)
+		}
+		if prefix := orderedHookPrefix(plan, ids); len(prefix) > 1 || (len(prefix) == 1 && prefix[0] != "first") {
+			t.Fatalf("invalid completed IDs produced non-prefix: %v => %v", ids, prefix)
+		}
+	}
+	if !cloneHookRunCompleted(plan, HookRunResult{Status: "completed", CompletedIDs: []string{"first", "second"}}, nil) {
+		t.Fatal("exact completed IDs rejected")
+	}
+}
+
+func TestCloneLifecyclePlanRendersSharedOnlyDeclarationsAsInert(t *testing.T) {
+	base := t.TempDir()
+	rootURL, childURL := filepath.Join(base, "root.git"), filepath.Join(base, "api.git")
+	manifest, err := config.LoadPortableManifest(clonePlanManifest(t, rootURL, childURL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Version = config.PortableManifestVersion3
+	manifest.SharedHooks = config.HookEvents{config.HookEventPostCreate: {{ID: "shared-only", Command: []string{"hooks/shared"}}}}
+	data, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := NewClonePlannerWith(ClonePlannerDependencies{RemoteFacts: newClonePlanRemote(rootURL, childURL)}).Plan(context.Background(), ClonePlanRequest{ManifestSource: writeClonePlanManifest(t, base, data), Destination: filepath.Join(base, "clone"), CWD: base, DataDir: filepath.Join(base, "data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, applicable, err := NewCloneLifecycleCoordinator().Plan(context.Background(), plan)
+	if err != nil || applicable || len(entries) != 1 || entries[0].Source != "shared" || entries[0].ExecutionPolicy != "inert" || entries[0].Availability != "deferred" {
+		t.Fatalf("shared-only lifecycle plan = %#v applicable=%v err=%v", entries, applicable, err)
+	}
+}
+
+func TestCloneLifecycleAuthorizedPortableHooksRunAfterPublicationWithFinalFacts(t *testing.T) {
+	base := t.TempDir()
+	repository := testutil.NewGitRepository(t)
+	writeAndCommitCloneFiles(t, repository.Path, map[string]string{".gitignore": "/.wtree.yml\n", "README.md": "root\n", "hooks/first": "portable first helper\n", "hooks/setup": "portable helper\n"}, "root identity")
+	for _, name := range []string{"first", "setup"} {
+		if err := os.Chmod(filepath.Join(repository.Path, "hooks", name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cloneGit(t, repository.Path, "add", "hooks/setup")
+	cloneGit(t, repository.Path, "commit", "-m", "make helper executable")
+	identity := cloneGitOutput(t, repository.Path, "rev-parse", "HEAD")
+	remote := testutil.NewBareGitRemote(t)
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion3, Project: config.PortableProject{ID: "portable-hooks", Name: "portable-hooks", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: remote}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{identity}}, Mount: ".", DefaultBranch: "main"}}, Hooks: config.HookEvents{config.HookEventPostClone: {{ID: "first", Command: []string{"hooks/first"}}, {ID: "setup", Command: []string{"hooks/setup", "--literal"}}}}, SharedHooks: config.HookEvents{config.HookEventPostCreate: {{ID: "never", Command: []string{"hooks/shared"}}}}}
+	manifestBytes, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAndCommitCloneFiles(t, repository.Path, map[string]string{"project.wtree.yml": string(manifestBytes)}, "portable manifest")
+	cloneGit(t, repository.Path, "push", remote, "HEAD:refs/heads/main")
+	data, destination := filepath.Join(base, "data"), filepath.Join(base, "clone")
+	plan, err := NewClonePlanner().Plan(context.Background(), ClonePlanRequest{ManifestSource: filepath.Join(repository.Path, "project.wtree.yml"), Destination: destination, CWD: base, DataDir: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &createHooksRunnerFake{run: func(ctx context.Context, request HookRunRequest) (HookRunResult, error) {
+		if handle, lockErr := (lock.Manager{}).ProjectLock(ctx, data, plan.Project.ID, time.Second); lockErr != nil {
+			t.Fatalf("project lock remained held during portable hook: %v", lockErr)
+		} else if unlockErr := handle.Unlock(); unlockErr != nil {
+			t.Fatal(unlockErr)
+		}
+		if request.Plan.Operation != "clone" || request.Plan.authority.source != "portable" || request.Plan.authority.event != config.HookEventPostClone || len(request.Plan.Entries()) != 2 || request.Plan.Entries()[1].WorkingDirectory != plan.Destination.Path || request.Plan.Entries()[1].Availability != "deferred" || request.Plan.Entries()[1].ResolvedExecutable != "" {
+			t.Fatalf("portable runner plan = %#v", request.Plan)
+		}
+		if _, err := store.ReadWorkspace(WorkspaceStatePath(data, plan.Project.ID, "default")); err != nil {
+			t.Fatalf("workspace was not published before portable hook: %v", err)
+		}
+		if registry, err := store.ReadRegistry(filepath.Join(data, "registry.json")); err != nil || registry.Projects[plan.Project.ID].ConfigPath == "" {
+			t.Fatalf("registry was not published before portable hook: %#v %v", registry, err)
+		}
+		snapshot, verifyErr := request.Revalidate(ctx)
+		if verifyErr != nil || request.Plan.SourceSHA256() != digest(snapshot.SourceBytes) || request.Plan.WorkspaceStateSHA256() != digest(snapshot.WorkspaceStateBytes) {
+			t.Fatalf("portable runner generations = %#v, %v", snapshot, verifyErr)
+		}
+		return HookRunResult{Status: "completed", CompletedIDs: []string{"first", "setup"}}, nil
+	}}
+	result, err := NewCloneLifecycleCoordinatorWith(CloneLifecycleDependencies{Runner: runner}).Clone(context.Background(), CloneLifecycleRequest{Plan: plan, RunHooks: true, Environment: []string{"PATH=" + os.Getenv("PATH")}})
+	if err != nil || !result.HooksApplicable || !result.HooksCompleted || result.HooksSkipped || runner.calls != 1 || !reflect.DeepEqual(result.CompletedHookIDs, []string{"first", "setup"}) || len(result.Hooks) != 3 || result.Hooks[2].ExecutionPolicy != "inert" {
+		t.Fatalf("authorized portable clone result = %#v, %v", result, err)
+	}
+	for _, test := range []struct {
+		name string
+		ids  []string
+		want []string
+		ok   bool
+	}{
+		{name: "empty", ids: []string{}, want: []string{}},
+		{name: "valid-subset", ids: []string{"first"}, want: []string{"first"}},
+		{name: "reordered", ids: []string{"setup", "first"}, want: []string{}},
+		{name: "valid-prefix-unknown", ids: []string{"first", "unknown"}, want: []string{"first"}},
+		{name: "duplicate", ids: []string{"first", "first"}, want: []string{"first"}},
+		{name: "exact-full", ids: []string{"first", "setup"}, want: []string{"first", "setup"}, ok: true},
+	} {
+		t.Run("runner-completion-"+test.name, func(t *testing.T) {
+			completionPlan, err := NewClonePlanner().Plan(context.Background(), ClonePlanRequest{ManifestSource: filepath.Join(repository.Path, "project.wtree.yml"), Destination: filepath.Join(base, "completion-"+test.name), CWD: base, DataDir: filepath.Join(base, "completion-data-"+test.name)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			completionRunner := &createHooksRunnerFake{run: func(context.Context, HookRunRequest) (HookRunResult, error) {
+				return HookRunResult{Status: "completed", CompletedIDs: append([]string(nil), test.ids...)}, nil
+			}}
+			completion, completionErr := NewCloneLifecycleCoordinatorWith(CloneLifecycleDependencies{Runner: completionRunner}).Clone(context.Background(), CloneLifecycleRequest{Plan: completionPlan, RunHooks: true, Environment: []string{"PATH=" + os.Getenv("PATH")}})
+			if test.ok {
+				if completionErr != nil || !completion.HooksCompleted || !reflect.DeepEqual(completion.CompletedHookIDs, test.want) {
+					t.Fatalf("exact completion=%#v err=%v", completion, completionErr)
+				}
+				return
+			}
+			details, setup := SetupIncompleteFrom(completionErr)
+			if !setup || completion.HooksCompleted || !reflect.DeepEqual(completion.CompletedHookIDs, test.want) || !reflect.DeepEqual(details.CompletedHookIDs, test.want) {
+				t.Fatalf("invalid completion=%#v details=%#v err=%v", completion, details, completionErr)
+			}
+			encoded, err := json.Marshal(details)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rendered struct {
+				CompletedHookIDs []string `json:"completedHookIds"`
+			}
+			if err := json.Unmarshal(encoded, &rendered); err != nil || !reflect.DeepEqual(rendered.CompletedHookIDs, test.want) {
+				t.Fatalf("invalid completion JSON=%s rendered=%#v err=%v", encoded, rendered, err)
+			}
+		})
+	}
+	// Rebuild the published authority with controllable read-only facts. Every
+	// generation change is rejected before HookRunner can launch a process or
+	// alter its durable record.
+	verifierProcess := &cloneLifecycleVerifierProcess{}
+	verifierGit := &cloneLifecycleVerifierGit{Git: gitadapter.NewAdapter("git")}
+	verification := NewCloneLifecycleCoordinatorWith(CloneLifecycleDependencies{Process: verifierProcess, Git: verifierGit})
+	hookPlan, verifier, verifyPlanErr := verification.publishedPlan(context.Background(), plan, result.Core, []string{"PATH=" + os.Getenv("PATH")}, false)
+	if verifyPlanErr != nil || verifier == nil || hookPlan.SourceSHA256() == "" {
+		t.Fatalf("published portable verifier plan=%#v verifier=%v err=%v", hookPlan, verifier != nil, verifyPlanErr)
+	}
+	publishedStatePath := WorkspaceStatePath(data, plan.Project.ID, "default")
+	originalPublishedState, stateReadErr := os.ReadFile(publishedStatePath)
+	if stateReadErr != nil {
+		t.Fatal(stateReadErr)
+	}
+	originalPublishedManifest, manifestReadErr := verifierGit.TrackedFile(context.Background(), plan.Destination.Path, result.Core.Repositories[plan.BaseRepository].Head, "project.wtree.yml")
+	if manifestReadErr != nil {
+		t.Fatal(manifestReadErr)
+	}
+	assertPublishedRejection := func(name string) {
+		snapshot, verifyErr := verifier(context.Background())
+		if verifyErr == nil && digest(snapshot.SourceBytes) == hookPlan.SourceSHA256() && digest(snapshot.WorkspaceStateBytes) == hookPlan.WorkspaceStateSHA256() {
+			t.Fatalf("%s generation change was accepted", name)
+		}
+		if verifierProcess.runs != 0 {
+			t.Fatalf("%s generation change ran portable code", name)
+		}
+	}
+	if err := os.WriteFile(publishedStatePath, append(append([]byte(nil), originalPublishedState...), '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertPublishedRejection("workspace state")
+	if err := os.WriteFile(publishedStatePath, originalPublishedState, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	verifierGit.manifestOverride = append(append([]byte(nil), originalPublishedManifest...), '\n')
+	assertPublishedRejection("portable manifest")
+	verifierGit.manifestOverride = nil
+	verifierGit.headOverride = strings.Repeat("f", 40)
+	assertPublishedRejection("checkout HEAD")
+	verifierGit.headOverride = ""
+	verifierProcess.suffix = "-changed"
+	assertPublishedRejection("executable path")
+	verifierProcess.suffix = ""
+	unauthorizedData, unauthorizedDestination := filepath.Join(base, "unauthorized-data"), filepath.Join(base, "unauthorized-clone")
+	unauthorizedPlan, err := NewClonePlanner().Plan(context.Background(), ClonePlanRequest{ManifestSource: filepath.Join(repository.Path, "project.wtree.yml"), Destination: unauthorizedDestination, CWD: base, DataDir: unauthorizedData})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorizedRunner := &createHooksRunnerFake{run: func(context.Context, HookRunRequest) (HookRunResult, error) {
+		t.Fatal("unauthorized portable hook reached runner")
+		return HookRunResult{}, nil
+	}}
+	unauthorized, err := NewCloneLifecycleCoordinatorWith(CloneLifecycleDependencies{Runner: unauthorizedRunner}).Clone(context.Background(), CloneLifecycleRequest{Plan: unauthorizedPlan, Environment: []string{"PATH=" + os.Getenv("PATH")}})
+	if err != nil || !unauthorized.HooksApplicable || !unauthorized.HooksSkipped || unauthorized.HooksCompleted || unauthorizedRunner.calls != 0 {
+		t.Fatalf("unauthorized portable clone result = %#v, %v", unauthorized, err)
+	}
+	if recordPath, recordErr := store.HookRunRecordPath(unauthorizedData, unauthorizedPlan.Project.ID, "default", config.HookEventPostClone); recordErr != nil {
+		t.Fatal(recordErr)
+	} else if _, statErr := os.Stat(recordPath); !os.IsNotExist(statErr) {
+		t.Fatalf("unauthorized clone created hook record: %v", statErr)
+	}
+	failureData, failureDestination := filepath.Join(base, "failure-data"), filepath.Join(base, "failure-clone")
+	failurePlan, err := NewClonePlanner().Plan(context.Background(), ClonePlanRequest{ManifestSource: filepath.Join(repository.Path, "project.wtree.yml"), Destination: failureDestination, CWD: base, DataDir: failureData})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := &cloneLifecycleProcess{failID: "setup"}
+	runnerWithRecord := NewHookRunnerWith(HookRunnerDependencies{Process: process})
+	failed, failureErr := NewCloneLifecycleCoordinatorWith(CloneLifecycleDependencies{Runner: runnerWithRecord, Process: process}).Clone(context.Background(), CloneLifecycleRequest{Plan: failurePlan, RunHooks: true, Environment: []string{"PATH=" + os.Getenv("PATH")}})
+	var failedSetup *Error
+	if !errors.As(failureErr, &failedSetup) || failedSetup.Kind != ErrorSetupIncomplete || failed.Core.ProjectID == "" || !failed.HooksApplicable || process.runs != 2 {
+		t.Fatalf("portable hook failure=%#v err=%v runs=%d", failed, failureErr, process.runs)
+	}
+	recordPath, recordErr := store.HookRunRecordPath(failureData, failurePlan.Project.ID, "default", config.HookEventPostClone)
+	if recordErr != nil {
+		t.Fatal(recordErr)
+	}
+	record, recordErr := store.ReadHookRunRecord(recordPath)
+	if recordErr != nil || record.Source != "portable" || record.Operation != "clone" || record.Event != config.HookEventPostClone || record.NextIndex != 1 || record.State != "failed" || !reflect.DeepEqual(record.CompletedHookIDs, []string{"first"}) {
+		t.Fatalf("portable failure record=%#v err=%v", record, recordErr)
+	}
+	resolution, resolveErr := NewResolver().Resolve(context.Background(), ResolveRequest{Path: failurePlan.Destination.Path, ProjectPath: failurePlan.Destination.Path, DataDir: failureData})
+	if resolveErr != nil {
+		t.Fatal(resolveErr)
+	}
+	builder := hookRetryDefaultBuilder{process: process, git: gitadapter.NewAdapter("git")}
+	prepare := func(ctx context.Context, current store.HookRunRecord) (HookPlan, HookGenerationVerifier, error) {
+		return builder.Rebuild(ctx, HookRetryPlanRequest{Project: resolution.Project, Workspace: resolution.Workspace, Record: current, DataDir: failureData, Environment: []string{"PATH=" + os.Getenv("PATH")}})
+	}
+	statePath := WorkspaceStatePath(failureData, failurePlan.Project.ID, "default")
+	originalState, stateErr := os.ReadFile(statePath)
+	if stateErr != nil {
+		t.Fatal(stateErr)
+	}
+	originalRecord, recordReadErr := os.ReadFile(recordPath)
+	if recordReadErr != nil {
+		t.Fatal(recordReadErr)
+	}
+	if err := os.WriteFile(statePath, append(append([]byte(nil), originalState...), '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stale, staleErr := runnerWithRecord.Resume(context.Background(), HookResumeRequest{DataDir: failureData, ProjectID: resolution.Project.ID, WorkspaceID: resolution.Workspace.ID, Event: config.HookEventPostClone, Environment: []string{"PATH=" + os.Getenv("PATH")}, Prepare: prepare})
+	if staleErr != nil || stale.Failure == nil || stale.Failure.Kind != HookFailureGeneration || process.runs != 2 {
+		t.Fatalf("state-changed portable retry=%#v err=%v runs=%d", stale, staleErr, process.runs)
+	}
+	if got, readErr := os.ReadFile(recordPath); readErr != nil || !bytes.Equal(got, originalRecord) {
+		t.Fatalf("stale retry mutated record=%q err=%v", got, readErr)
+	}
+	if err := os.WriteFile(statePath, originalState, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	process.failID = ""
+	if rebuilt, verifier, rebuildErr := builder.Rebuild(context.Background(), HookRetryPlanRequest{Project: resolution.Project, Workspace: resolution.Workspace, Record: record, DataDir: failureData, Environment: []string{"PATH=" + os.Getenv("PATH")}}); rebuildErr != nil || verifier == nil || !matchesHookRunRecord(record, rebuilt) {
+		t.Fatalf("portable retry rebuild plan=%#v verifier=%v err=%v", rebuilt, verifier != nil, rebuildErr)
+	}
+	resumed, resumeErr := runnerWithRecord.Resume(context.Background(), HookResumeRequest{DataDir: failureData, ProjectID: resolution.Project.ID, WorkspaceID: resolution.Workspace.ID, Event: config.HookEventPostClone, Environment: []string{"PATH=" + os.Getenv("PATH")}, Prepare: prepare})
+	if resumeErr != nil || resumed.Status != "completed" || !reflect.DeepEqual(resumed.CompletedIDs, []string{"first", "setup"}) || process.runs != 3 {
+		t.Fatalf("portable resume=%#v failure=%#v err=%v runs=%d", resumed, resumed.Failure, resumeErr, process.runs)
+	}
+	if _, statErr := os.Stat(recordPath); !os.IsNotExist(statErr) {
+		t.Fatalf("completed portable retry retained record: %v", statErr)
+	}
+
+	// A post-publication cancellation during executable resolution is setup
+	// incomplete, not a clone rollback. Its record is established before the
+	// locked verifier and survives an interrupted retry byte-for-byte.
+	canceledData, canceledDestination := filepath.Join(base, "canceled-data"), filepath.Join(base, "canceled-clone")
+	canceledPlan, err := NewClonePlanner().Plan(context.Background(), ClonePlanRequest{ManifestSource: filepath.Join(repository.Path, "project.wtree.yml"), Destination: canceledDestination, CWD: base, DataDir: canceledData})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceledProcess := &cloneLifecycleProcess{resolveErr: context.Canceled}
+	canceledRunner := NewHookRunnerWith(HookRunnerDependencies{Process: canceledProcess})
+	canceled, canceledErr := NewCloneLifecycleCoordinatorWith(CloneLifecycleDependencies{Runner: canceledRunner, Process: canceledProcess}).Clone(context.Background(), CloneLifecycleRequest{Plan: canceledPlan, RunHooks: true, Environment: []string{"PATH=" + os.Getenv("PATH")}})
+	if !errors.Is(canceledErr, context.Canceled) || canceled.Core.ProjectID == "" || canceled.Core.Destination != canceledDestination || !canceled.HooksApplicable || canceled.HooksCompleted {
+		t.Fatalf("post-publication resolve cancellation result=%#v err=%v", canceled, canceledErr)
+	}
+	canceledDetails, canceledSetup := SetupIncompleteFrom(canceledErr)
+	if !canceledSetup || canceledDetails.CoreStatus != "completed" || canceledDetails.FailureKind != HookFailureCanceled || canceledDetails.RetryCommand != "wtree hooks retry default" {
+		t.Fatalf("post-publication resolve cancellation details=%#v setup=%v", canceledDetails, canceledSetup)
+	}
+	canceledRecordPath, err := store.HookRunRecordPath(canceledData, canceledPlan.Project.ID, "default", config.HookEventPostClone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceledRecord, err := store.ReadHookRunRecord(canceledRecordPath)
+	if err != nil || canceledRecord.State != "failed" || canceledRecord.NextIndex != 0 || !reflect.DeepEqual(canceledRecord.CompletedHookIDs, []string{}) || canceledRecord.Failure == nil || canceledRecord.Failure.Kind != string(HookFailureCanceled) || canceledRecord.PlanSHA256 == "" || canceledRecord.SourceSHA256 != digest(canceledPlan.ManifestBytes()) {
+		t.Fatalf("post-publication resolve cancellation record=%#v err=%v", canceledRecord, err)
+	}
+	canceledBytes, err := os.ReadFile(canceledRecordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceledResolution, err := NewResolver().Resolve(context.Background(), ResolveRequest{Path: canceledDestination, ProjectPath: canceledDestination, DataDir: canceledData})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceledBuilder := hookRetryDefaultBuilder{process: canceledProcess, git: gitadapter.NewAdapter("git")}
+	canceledRetry := NewHookRetryServiceWith(NewHookRunInventoryServiceWith(canceledBuilder), canceledBuilder, canceledRunner)
+	canceledProcess.resolveErr = context.DeadlineExceeded
+	if _, err := canceledRetry.Retry(context.Background(), HookRetryRequest{Project: canceledResolution.Project, Workspace: canceledResolution.Workspace, DataDir: canceledData, Environment: []string{"PATH=" + os.Getenv("PATH")}}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("post-publication resolve deadline retry error = %v", err)
+	}
+	if got, err := os.ReadFile(canceledRecordPath); err != nil || !bytes.Equal(got, canceledBytes) {
+		t.Fatalf("canceled retry changed durable record=%q err=%v", got, err)
+	}
+	canceledProcess.resolveErr = nil
+	resumedRetry, err := canceledRetry.Retry(context.Background(), HookRetryRequest{Project: canceledResolution.Project, Workspace: canceledResolution.Workspace, DataDir: canceledData, Environment: []string{"PATH=" + os.Getenv("PATH")}})
+	if err != nil || resumedRetry.Status != "completed" || !reflect.DeepEqual(resumedRetry.CompletedHookIDs, []string{"first", "setup"}) || canceledProcess.runs != 2 {
+		t.Fatalf("post-publication resolve retry result=%#v err=%v runs=%d", resumedRetry, err, canceledProcess.runs)
+	}
+	if _, err := os.Stat(canceledRecordPath); !os.IsNotExist(err) {
+		t.Fatalf("completed post-publication resolve retry retained record: %v", err)
+	}
+
+	stateReadFailure := errors.New("published state temporarily unavailable")
+	stateProcess := &cloneLifecycleProcess{}
+	stateRunner := NewHookRunnerWith(HookRunnerDependencies{Process: stateProcess})
+	stateCoordinator := NewCloneLifecycleCoordinatorWith(CloneLifecycleDependencies{Process: stateProcess, ReadFile: func(path string) ([]byte, error) {
+		if path == canceled.Core.StatePath {
+			return nil, stateReadFailure
+		}
+		return os.ReadFile(path)
+	}})
+	statePlan, stateVerifier, err := stateCoordinator.publishedPlan(context.Background(), canceledPlan, canceled.Core, []string{"PATH=" + os.Getenv("PATH")}, false)
+	if err != nil || stateVerifier == nil {
+		t.Fatalf("state-read portable plan=%#v verifier=%t err=%v", statePlan, stateVerifier != nil, err)
+	}
+	stateRun, err := stateRunner.Run(context.Background(), HookRunRequest{DataDir: canceledData, Plan: statePlan, InheritedEnvironment: []string{"PATH=" + os.Getenv("PATH")}, Revalidate: stateVerifier})
+	if err != nil || stateRun.Failure == nil || stateRun.Failure.Kind != HookFailureGeneration || stateProcess.runs != 0 {
+		t.Fatalf("post-publication state-read run=%#v err=%v runs=%d", stateRun, err, stateProcess.runs)
+	}
+	stateRecord, err := store.ReadHookRunRecord(canceledRecordPath)
+	if err != nil || stateRecord.State != "failed" || stateRecord.NextIndex != 0 || stateRecord.Failure == nil || stateRecord.Failure.Kind != string(HookFailureGeneration) || stateRecord.PlanSHA256 != statePlan.Digest() || stateRecord.WorkspaceStateSHA256 != statePlan.WorkspaceStateSHA256() {
+		t.Fatalf("post-publication state-read record=%#v err=%v", stateRecord, err)
+	}
+	if err := os.Remove(canceledRecordPath); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name       string
+		headErr    error
+		trackedErr error
+		kind       HookFailureKind
+	}{
+		{name: "head-canceled", headErr: context.Canceled, kind: HookFailureCanceled},
+		{name: "manifest-deadline", trackedErr: context.DeadlineExceeded, kind: HookFailureTimeout},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			git := &cloneLifecycleVerifierGit{Git: gitadapter.NewAdapter("git"), headErr: test.headErr, trackedErr: test.trackedErr}
+			process := &cloneLifecycleProcess{}
+			coordinator := NewCloneLifecycleCoordinatorWith(CloneLifecycleDependencies{Process: process, Git: git})
+			planValue, verifier, err := coordinator.publishedPlan(context.Background(), canceledPlan, canceled.Core, []string{"PATH=" + os.Getenv("PATH")}, false)
+			if err != nil || verifier == nil {
+				t.Fatalf("Git-failure portable plan=%#v verifier=%t err=%v", planValue, verifier != nil, err)
+			}
+			run, runErr := NewHookRunnerWith(HookRunnerDependencies{Process: process}).Run(context.Background(), HookRunRequest{DataDir: canceledData, Plan: planValue, InheritedEnvironment: []string{"PATH=" + os.Getenv("PATH")}, Revalidate: verifier})
+			if !errors.Is(runErr, test.headErr) && !errors.Is(runErr, test.trackedErr) || run.Failure == nil || run.Failure.Kind != test.kind || process.runs != 0 {
+				t.Fatalf("post-publication Git failure run=%#v err=%v", run, runErr)
+			}
+			record, err := store.ReadHookRunRecord(canceledRecordPath)
+			if err != nil || record.State != "failed" || record.NextIndex != 0 || record.Failure == nil || record.Failure.Kind != string(test.kind) {
+				t.Fatalf("post-publication Git failure record=%#v err=%v", record, err)
+			}
+			if err := os.Remove(canceledRecordPath); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name        string
+		unavailable bool
+		suffix      string
+	}{
+		{name: "executable-unavailable", unavailable: true},
+		{name: "executable-retarget", suffix: "-retargeted"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			process := &cloneLifecycleProcess{unavailable: test.unavailable, suffix: test.suffix}
+			coordinator := NewCloneLifecycleCoordinatorWith(CloneLifecycleDependencies{Process: process})
+			planValue, verifier, err := coordinator.publishedPlan(context.Background(), canceledPlan, canceled.Core, []string{"PATH=" + os.Getenv("PATH")}, false)
+			if err != nil || verifier == nil {
+				t.Fatalf("executable-failure portable plan=%#v verifier=%t err=%v", planValue, verifier != nil, err)
+			}
+			run, runErr := NewHookRunnerWith(HookRunnerDependencies{Process: process}).Run(context.Background(), HookRunRequest{DataDir: canceledData, Plan: planValue, InheritedEnvironment: []string{"PATH=" + os.Getenv("PATH")}, Revalidate: verifier})
+			if runErr != nil || run.Failure == nil || run.Failure.Kind != HookFailureGeneration || process.runs != 0 {
+				t.Fatalf("post-publication executable failure run=%#v err=%v", run, runErr)
+			}
+			record, err := store.ReadHookRunRecord(canceledRecordPath)
+			if err != nil || record.State != "failed" || record.NextIndex != 0 || record.Failure == nil || record.Failure.Kind != string(HookFailureGeneration) {
+				t.Fatalf("post-publication executable failure record=%#v err=%v", record, err)
+			}
+			if err := os.Remove(canceledRecordPath); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+type cloneLifecycleProcess struct {
+	failID      string
+	resolveErr  error
+	unavailable bool
+	suffix      string
+	runs        int
+}
+
+type cloneLifecycleVerifierProcess struct {
+	suffix string
+	runs   int
+}
+
+func (p *cloneLifecycleVerifierProcess) Resolve(_ context.Context, request HookExecutableRequest) (HookExecutableFact, error) {
+	return HookExecutableFact{Resolved: filepath.Join(request.Directory, filepath.FromSlash(request.Program)) + p.suffix, Available: true}, nil
+}
+func (p *cloneLifecycleVerifierProcess) Run(_ context.Context, _ HookProcessRequest) (HookProcessResult, error) {
+	p.runs++
+	return HookProcessResult{Started: true}, nil
+}
+
+type cloneLifecycleVerifierGit struct {
+	gitadapter.Git
+	headOverride     string
+	manifestOverride []byte
+	headErr          error
+	trackedErr       error
+}
+
+func (g *cloneLifecycleVerifierGit) Head(ctx context.Context, path string) (string, error) {
+	if g.headErr != nil {
+		return "", g.headErr
+	}
+	if g.headOverride != "" {
+		return g.headOverride, nil
+	}
+	return g.Git.Head(ctx, path)
+}
+func (g *cloneLifecycleVerifierGit) TrackedFile(ctx context.Context, repository, commit, name string) ([]byte, error) {
+	if g.trackedErr != nil {
+		return nil, g.trackedErr
+	}
+	if name == "project.wtree.yml" && g.manifestOverride != nil {
+		return append([]byte(nil), g.manifestOverride...), nil
+	}
+	return g.Git.TrackedFile(ctx, repository, commit, name)
+}
+
+func (p *cloneLifecycleProcess) Resolve(_ context.Context, request HookExecutableRequest) (HookExecutableFact, error) {
+	if p.resolveErr != nil {
+		return HookExecutableFact{}, p.resolveErr
+	}
+	return HookExecutableFact{Resolved: filepath.Join(request.Directory, filepath.FromSlash(request.Program)) + p.suffix, Available: !p.unavailable}, nil
+}
+func (p *cloneLifecycleProcess) Run(_ context.Context, request HookProcessRequest) (HookProcessResult, error) {
+	p.runs++
+	if p.failID == request.HookID {
+		return HookProcessResult{Started: true, ExitCode: 23}, nil
+	}
+	return HookProcessResult{Started: true}, nil
+}
+
+func TestCloneRunHooksRejectsMissingStagedExecutableBeforePublication(t *testing.T) {
+	plan := syntheticExecutableClonePlan(t)
+	manifest, err := config.LoadPortableManifest(plan.ManifestBytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Version = config.PortableManifestVersion3
+	manifest.Hooks = config.HookEvents{config.HookEventPostClone: {{ID: "missing", Command: []string{"hooks/missing"}}}}
+	data, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.manifestData, plan.Source.SHA256, plan.runHooks = data, digest(data), true
+	plan.Hooks = cloneDryRunHookEntries(plan, manifest)
+	_, err = NewCloneExecutorWith(CloneExecutorDependencies{Git: &cloneExecutionGit{plan: plan}}).Execute(context.Background(), plan, nil)
+	var application *Error
+	if !errors.As(err, &application) || application.Kind != ErrorValidation {
+		t.Fatalf("missing staged executable error = %v", err)
+	}
+	assertCloneExecutionAbsent(t, plan)
+}
+
+func TestCloneRunHooksRejectsUntrackedStagedExecutableBeforePublication(t *testing.T) {
+	plan := syntheticExecutableClonePlan(t)
+	manifest, err := config.LoadPortableManifest(plan.ManifestBytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Version = config.PortableManifestVersion3
+	manifest.Hooks = config.HookEvents{config.HookEventPostClone: {{ID: "untracked", Command: []string{"hooks/setup"}}}}
+	data, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.manifestData, plan.Source.SHA256, plan.runHooks = data, digest(data), true
+	plan.Hooks = cloneDryRunHookEntries(plan, manifest)
+	base := &cloneExecutionGit{plan: plan}
+	_, err = NewCloneExecutorWith(CloneExecutorDependencies{Git: cloneStagedHookGit{cloneExecutionGit: base}}).Execute(context.Background(), plan, nil)
+	var application *Error
+	if !errors.As(err, &application) || application.Kind != ErrorValidation {
+		t.Fatalf("untracked staged executable error = %v", err)
+	}
+	assertCloneExecutionAbsent(t, plan)
+}
+
+// cloneStagedHookGit produces a regular executable in private staging but
+// refuses its tracked-file proof. It keeps the test at the publication seam:
+// invalid portable content cannot leave destination, registry, state, or a
+// hook record behind.
+type cloneStagedHookGit struct{ *cloneExecutionGit }
+
+func (g cloneStagedHookGit) Clone(ctx context.Context, remote, destination, name string) error {
+	if err := g.cloneExecutionGit.Clone(ctx, remote, destination, name); err != nil {
+		return err
+	}
+	path := filepath.Join(destination, "hooks", "setup")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte("not tracked\n"), 0o755)
+}
+func (g cloneStagedHookGit) TrackedFile(ctx context.Context, repository, commit, name string) ([]byte, error) {
+	if name != "project.wtree.yml" {
+		return nil, os.ErrNotExist
+	}
+	return g.cloneExecutionGit.TrackedFile(ctx, repository, commit, name)
 }
 
 func TestClonePlanJSONRoundTripRejectsTamperedBaseRepository(t *testing.T) {

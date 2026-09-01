@@ -136,6 +136,7 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 		newCloneCommand(stdout, stderr, &projectPath),
 		newUpdateCommand(stdout, stderr, &projectPath),
 		newConfigCommand(stdout, &projectPath),
+		newHooksCommand(stdout, &projectPath),
 		newWorkspacePlanCommand(stdout, stderr, &projectPath, plan.Create),
 		newCheckoutCommand(stdout, stderr, &projectPath),
 		newRemoveCommand(stdout, stderr, &projectPath),
@@ -193,6 +194,7 @@ COMMANDS
   delete     remove worktrees, branches, and retained state
   doctor     diagnose drift and apply narrowly safe repairs
   config     inspect or update global/project configuration
+  hooks      inspect and explicitly share or install workspace hook definitions
 
 CONCEPTS
   project: one logical root containing one or more independent repository trees.
@@ -266,6 +268,10 @@ func applyCommandDocumentation(command *cobra.Command) {
 		"wtree config set":         "  wtree config set worktrees.root /worktrees\n",
 		"wtree config unset":       "  wtree config unset worktrees.root\n",
 		"wtree config list":        "  wtree config list\n",
+		"wtree hooks":              "  wtree hooks list\n  wtree hooks share post-create --force\n  wtree hooks install --missing\n",
+		"wtree hooks list":         "  wtree hooks list --json\n",
+		"wtree hooks share":        "  wtree hooks share post-create\n  wtree hooks share post-create --force\n",
+		"wtree hooks install":      "  wtree hooks install\n  wtree hooks install --missing\n",
 	}
 	commandPath := fullCommandPath(command)
 	if example, found := examples[commandPath]; found {
@@ -593,6 +599,8 @@ func ExitCode(err error) int {
 		return 8
 	case service.ErrorRollbackIncomplete:
 		return 9
+	case service.ErrorSetupIncomplete:
+		return 10
 	default:
 		return 1
 	}
