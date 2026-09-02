@@ -301,18 +301,47 @@ func TestCloneLifecyclePlanRendersSharedOnlyDeclarationsAsInert(t *testing.T) {
 
 func TestCloneLifecycleAuthorizedPortableHooksRunAfterPublicationWithFinalFacts(t *testing.T) {
 	base := t.TempDir()
-	repository := testutil.NewGitRepository(t)
-	writeAndCommitCloneFiles(t, repository.Path, map[string]string{".gitignore": "/.wtree.yml\n", "README.md": "root\n", "hooks/first": "portable first helper\n", "hooks/setup": "portable helper\n"}, "root identity")
-	for _, name := range []string{"first", "setup"} {
-		if err := os.Chmod(filepath.Join(repository.Path, "hooks", name), 0o755); err != nil {
-			t.Fatal(err)
-		}
+	canonicalBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
 	}
-	cloneGit(t, repository.Path, "add", "hooks/setup")
-	cloneGit(t, repository.Path, "commit", "-m", "make helper executable")
+	base = canonicalBase
+	repository := testutil.NewGitRepository(t)
+	first, setup := "hooks/first", "hooks/setup"
+	files := map[string]string{".gitignore": "/.wtree.yml\n", "README.md": "root\n", first: "portable first helper\n", setup: "portable helper\n"}
+	if runtime.GOOS == "windows" {
+		first, setup = "hooks/first.exe", "hooks/setup.exe"
+		files = map[string]string{".gitignore": "/.wtree.yml\n", "README.md": "root\n"}
+	}
+	writeAndCommitCloneFiles(t, repository.Path, files, "root identity")
+	if runtime.GOOS == "windows" {
+		for _, name := range []string{first, setup} {
+			path := filepath.Join(repository.Path, filepath.FromSlash(name))
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(os.Args[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cloneGit(t, repository.Path, "add", first, setup)
+		cloneGit(t, repository.Path, "commit", "-m", "add native hook helpers")
+	} else {
+		for _, name := range []string{"first", "setup"} {
+			if err := os.Chmod(filepath.Join(repository.Path, "hooks", name), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cloneGit(t, repository.Path, "add", setup)
+		cloneGit(t, repository.Path, "commit", "-m", "make helper executable")
+	}
 	identity := cloneGitOutput(t, repository.Path, "rev-parse", "HEAD")
 	remote := testutil.NewBareGitRemote(t)
-	manifest := config.PortableManifest{Version: config.PortableManifestVersion3, Project: config.PortableProject{ID: "portable-hooks", Name: "portable-hooks", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: remote}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{identity}}, Mount: ".", DefaultBranch: "main"}}, Hooks: config.HookEvents{config.HookEventPostClone: {{ID: "first", Command: []string{"hooks/first"}}, {ID: "setup", Command: []string{"hooks/setup", "--literal"}}}}, SharedHooks: config.HookEvents{config.HookEventPostCreate: {{ID: "never", Command: []string{"hooks/shared"}}}}}
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion3, Project: config.PortableProject{ID: "portable-hooks", Name: "portable-hooks", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "origin", URL: remote}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{identity}}, Mount: ".", DefaultBranch: "main"}}, Hooks: config.HookEvents{config.HookEventPostClone: {{ID: "first", Command: []string{first}}, {ID: "setup", Command: []string{setup, "--literal"}}}}, SharedHooks: config.HookEvents{config.HookEventPostCreate: {{ID: "never", Command: []string{"hooks/shared"}}}}}
 	manifestBytes, err := config.MarshalPortableManifest(manifest)
 	if err != nil {
 		t.Fatal(err)

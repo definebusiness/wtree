@@ -137,13 +137,15 @@ func TestCloneV3PortableHooksDryRunAndUnauthorizedSkipPublicContracts(t *testing
 	}
 	program, script := "hooks/setup", "#!/bin/sh\nexit 0\n"
 	if runtime.GOOS == "windows" {
-		program, script = "hooks/setup.cmd", "@exit /b 0\r\n"
+		program, script = "hooks/setup.exe", ""
 	}
 	hookPath := filepath.Join(filepath.Dir(manifestPath), filepath.FromSlash(program))
 	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(hookPath, []byte(script), 0o755); err != nil {
+	if runtime.GOOS == "windows" {
+		copyLifecycleNativeHook(t, hookPath)
+	} else if err := os.WriteFile(hookPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if runtime.GOOS != "windows" {
@@ -159,7 +161,11 @@ func TestCloneV3PortableHooksDryRunAndUnauthorizedSkipPublicContracts(t *testing
 		}
 	}
 	manifest.Version = config.PortableManifestVersion3
-	manifest.Hooks = config.HookEvents{config.HookEventPostClone: {{ID: "deferred", Command: []string{program, "--literal"}}}}
+	command := []string{program, "--literal"}
+	if runtime.GOOS == "windows" {
+		command = []string{program, "-test.run=^TestLifecycleHookNativeHelper$"}
+	}
+	manifest.Hooks = config.HookEvents{config.HookEventPostClone: {{ID: "deferred", Command: command}}}
 	manifest.SharedHooks = config.HookEvents{config.HookEventPostCreate: {{ID: "inert", Command: []string{"hooks/shared"}}}}
 	manifestBytes, err = config.MarshalPortableManifest(manifest)
 	if err != nil {
@@ -217,10 +223,12 @@ func TestCloneV3PortableHooksDryRunAndUnauthorizedSkipPublicContracts(t *testing
 
 	failingProgram, failingScript := "hooks/fail", "#!/bin/sh\nexit 23\n"
 	if runtime.GOOS == "windows" {
-		failingProgram, failingScript = "hooks/fail.cmd", "@exit /b 23\r\n"
+		failingProgram, failingScript = "hooks/fail.exe", ""
 	}
 	failingPath := filepath.Join(filepath.Dir(manifestPath), filepath.FromSlash(failingProgram))
-	if err := os.WriteFile(failingPath, []byte(failingScript), 0o755); err != nil {
+	if runtime.GOOS == "windows" {
+		copyLifecycleNativeHook(t, failingPath)
+	} else if err := os.WriteFile(failingPath, []byte(failingScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if runtime.GOOS != "windows" {
@@ -228,7 +236,11 @@ func TestCloneV3PortableHooksDryRunAndUnauthorizedSkipPublicContracts(t *testing
 			t.Fatal(err)
 		}
 	}
-	manifest.Hooks = config.HookEvents{config.HookEventPostClone: {{ID: "failure", Command: []string{failingProgram}}}}
+	failingCommand := []string{failingProgram}
+	if runtime.GOOS == "windows" {
+		failingCommand = []string{failingProgram, "-test.run=^TestLifecycleHookNativeHelper$"}
+	}
+	manifest.Hooks = config.HookEvents{config.HookEventPostClone: {{ID: "failure", Command: failingCommand}}}
 	manifestBytes, err = config.MarshalPortableManifest(manifest)
 	if err != nil {
 		t.Fatal(err)

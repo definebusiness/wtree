@@ -1,9 +1,11 @@
 # Lifecycle-hook acceptance tutorial
 
 This is the executable, offline acceptance path for lifecycle hooks. It uses
-temporary local Git repositories, a tracked `sh` fixture on Unix or `.cmd`
-fixture on Windows for lifecycle ordering, and generated Go helpers for
-direct-process guarantees. It does not contact a network endpoint or read
+temporary local Git repositories, a tracked `sh` fixture on Unix or tracked
+native `.exe` test-binary helper on Windows for lifecycle ordering, and
+generated Go helpers for direct-process guarantees. `.cmd` fixtures remain
+supplemental PATHEXT/availability coverage and are never directly launched.
+It does not contact a network endpoint or read
 global Git configuration. Run it from the repository root:
 
 ```sh
@@ -84,9 +86,10 @@ tracked, and contained; a bare command uses sanitized `PATH` and Windows
 never persist command output, executable paths, literal arguments, or
 environment values. List and plan/dry-run inspection output intentionally
 exposes configured/resolved executables and literal arguments. The integrated
-tutorial uses a tracked `sh` fixture on Unix and a tracked `.cmd` fixture on
-Windows only for lifecycle ordering; generated-Go-helper process tests cover
-direct launch, cancellation, child cleanup, writer failure, and redaction.
+tutorial uses a tracked `sh` fixture on Unix and a tracked native `.exe`
+test-binary helper on Windows for lifecycle ordering; `.cmd` fixtures remain availability/PATHEXT-only.
+Generated-Go-helper process tests cover direct
+launch, cancellation, child cleanup, writer failure, and redaction.
 
 After a hook failure, inspect `wtree status <workspace>` and `wtree doctor
 <workspace>`, correct the cause, then run `wtree hooks retry <workspace>`.

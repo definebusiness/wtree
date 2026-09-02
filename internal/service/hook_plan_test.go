@@ -2,13 +2,20 @@ package service
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
+func hookPlanTestPath(parts ...string) string {
+	return filepath.Join(append([]string{os.TempDir(), "wtree-hook-plan"}, parts...)...)
+}
+
 func TestHookPlanDefensivelyProjectsExecutionFacts(t *testing.T) {
-	input := hookPlanInput{Operation: "create", Source: "local", Event: "post-create", Policy: "automatic", ProjectID: "project", ProjectName: "Project", BaseRepository: "root", WorkspaceID: "default", WorkspaceName: "Default", SourceLogicalRoot: "/source", TargetLogicalRoot: "/target", SourceBytes: []byte("source"), WorkspaceStateBytes: []byte("state"), Entries: []hookPlanInputEntry{{ID: "setup", Repository: "root", SourceRepository: "/source", TargetRepository: "/target", Branch: "main", Head: strings.Repeat("a", 40), ConfiguredExecutable: "setup", ResolvedExecutable: "/target/setup", Availability: "available", Arguments: []string{"one"}, Timeout: time.Second}}}
+	source, target := hookPlanTestPath("source"), hookPlanTestPath("target")
+	input := hookPlanInput{Operation: "create", Source: "local", Event: "post-create", Policy: "automatic", ProjectID: "project", ProjectName: "Project", BaseRepository: "root", WorkspaceID: "default", WorkspaceName: "Default", SourceLogicalRoot: source, TargetLogicalRoot: target, SourceBytes: []byte("source"), WorkspaceStateBytes: []byte("state"), Entries: []hookPlanInputEntry{{ID: "setup", Repository: "root", SourceRepository: source, TargetRepository: target, Branch: "main", Head: strings.Repeat("a", 40), ConfiguredExecutable: "setup", ResolvedExecutable: filepath.Join(target, "setup"), Availability: "available", Arguments: []string{"one"}, Timeout: time.Second}}}
 	plan, err := newHookPlan(input)
 	if err != nil {
 		t.Fatal(err)
@@ -24,11 +31,11 @@ func TestHookPlanTopologyAndExecutableProjectionMatrix(t *testing.T) {
 	tests := []struct {
 		name, sourceRoot, targetRoot, sourceRepository, targetRepository, executable, resolved, availability string
 	}{
-		{"plain-root-absolute", "/src/project", "/dst/project", "/src/project", "/dst/project", "/dst/project/.wtree/hooks/setup", "/dst/project/.wtree/hooks/setup", "available"},
-		{"sibling-nondot-base", "/src/forest/base-repository", "/dst/forest/base-repository", "/src/forest/base-repository", "/dst/forest/base-repository", "hooks/setup", "/dst/forest/base-repository/hooks/setup", "available"},
-		{"three-level-nested", "/src/base", "/dst/base", "/src/base/a/b/c", "/dst/base/a/b/c", "scripts/setup", "/dst/base/a/b/c/scripts/setup", "available"},
-		{"mount-override", "/src/base", "/dst/base", "/src/base/components/tooling", "/dst/base/mounted/tooling", "hooks/setup", "/dst/base/mounted/tooling/hooks/setup", "available"},
-		{"bare-path-deferred", "/src/base", "/dst/base", "/src/base", "/dst/base", "tool", "", "deferred"},
+		{"plain-root-absolute", hookPlanTestPath("src", "project"), hookPlanTestPath("dst", "project"), hookPlanTestPath("src", "project"), hookPlanTestPath("dst", "project"), hookPlanTestPath("dst", "project", ".wtree", "hooks", "setup"), hookPlanTestPath("dst", "project", ".wtree", "hooks", "setup"), "available"},
+		{"sibling-nondot-base", hookPlanTestPath("src", "forest", "base-repository"), hookPlanTestPath("dst", "forest", "base-repository"), hookPlanTestPath("src", "forest", "base-repository"), hookPlanTestPath("dst", "forest", "base-repository"), "hooks/setup", hookPlanTestPath("dst", "forest", "base-repository", "hooks", "setup"), "available"},
+		{"three-level-nested", hookPlanTestPath("src", "base"), hookPlanTestPath("dst", "base"), hookPlanTestPath("src", "base", "a", "b", "c"), hookPlanTestPath("dst", "base", "a", "b", "c"), "scripts/setup", hookPlanTestPath("dst", "base", "a", "b", "c", "scripts", "setup"), "available"},
+		{"mount-override", hookPlanTestPath("src", "base"), hookPlanTestPath("dst", "base"), hookPlanTestPath("src", "base", "components", "tooling"), hookPlanTestPath("dst", "base", "mounted", "tooling"), "hooks/setup", hookPlanTestPath("dst", "base", "mounted", "tooling", "hooks", "setup"), "available"},
+		{"bare-path-deferred", hookPlanTestPath("src", "base"), hookPlanTestPath("dst", "base"), hookPlanTestPath("src", "base"), hookPlanTestPath("dst", "base"), "tool", "", "deferred"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -49,11 +56,12 @@ func TestHookPlanTopologyAndExecutableProjectionMatrix(t *testing.T) {
 }
 
 func TestHookPlanRejectsInvalidCombinationAndMutableFacts(t *testing.T) {
-	base := hookPlanInput{Operation: "create", Source: "local", Event: "post-create", Policy: "automatic", ProjectID: "project", ProjectName: "Project", BaseRepository: "base", WorkspaceID: "workspace", WorkspaceName: "Workspace", SourceLogicalRoot: "/source", TargetLogicalRoot: "/target", Entries: []hookPlanInputEntry{{ID: "setup", Repository: "base", SourceRepository: "/source", TargetRepository: "/target", Branch: "main", Head: strings.Repeat("a", 40), ConfiguredExecutable: "setup", ResolvedExecutable: "/target/setup", Availability: "available", Timeout: time.Second}}}
+	source, target := hookPlanTestPath("source"), hookPlanTestPath("target")
+	base := hookPlanInput{Operation: "create", Source: "local", Event: "post-create", Policy: "automatic", ProjectID: "project", ProjectName: "Project", BaseRepository: "base", WorkspaceID: "workspace", WorkspaceName: "Workspace", SourceLogicalRoot: source, TargetLogicalRoot: target, Entries: []hookPlanInputEntry{{ID: "setup", Repository: "base", SourceRepository: source, TargetRepository: target, Branch: "main", Head: strings.Repeat("a", 40), ConfiguredExecutable: "setup", ResolvedExecutable: filepath.Join(target, "setup"), Availability: "available", Timeout: time.Second}}}
 	for _, mutate := range []func(*hookPlanInput){
 		func(v *hookPlanInput) { v.Event = "post-clone" },
 		func(v *hookPlanInput) { v.Entries[0].Availability, v.Entries[0].ResolvedExecutable = "available", "" },
-		func(v *hookPlanInput) { v.Entries[0].TargetRepository = "/outside" },
+		func(v *hookPlanInput) { v.Entries[0].TargetRepository = hookPlanTestPath("outside") },
 		func(v *hookPlanInput) { v.Entries[0].ID = "../unsafe" },
 	} {
 		input := base
@@ -65,7 +73,8 @@ func TestHookPlanRejectsInvalidCombinationAndMutableFacts(t *testing.T) {
 	}
 }
 func TestHookEnvironmentReplacesReservedValues(t *testing.T) {
-	plan, err := newHookPlan(hookPlanInput{Operation: "create", Source: "local", Event: "post-create", Policy: "automatic", ProjectID: "p", ProjectName: "P", BaseRepository: "r", WorkspaceID: "w", WorkspaceName: "W", SourceLogicalRoot: "/s", TargetLogicalRoot: "/t", SourceBytes: []byte("s"), WorkspaceStateBytes: []byte("w"), Entries: []hookPlanInputEntry{{ID: "h", Repository: "r", SourceRepository: "/s", TargetRepository: "/t", Branch: "main", Head: strings.Repeat("a", 40), ConfiguredExecutable: "x", ResolvedExecutable: "/t/x", Availability: "available", Timeout: time.Second}}})
+	source, target := hookPlanTestPath("s"), hookPlanTestPath("t")
+	plan, err := newHookPlan(hookPlanInput{Operation: "create", Source: "local", Event: "post-create", Policy: "automatic", ProjectID: "p", ProjectName: "P", BaseRepository: "r", WorkspaceID: "w", WorkspaceName: "W", SourceLogicalRoot: source, TargetLogicalRoot: target, SourceBytes: []byte("s"), WorkspaceStateBytes: []byte("w"), Entries: []hookPlanInputEntry{{ID: "h", Repository: "r", SourceRepository: source, TargetRepository: target, Branch: "main", Head: strings.Repeat("a", 40), ConfiguredExecutable: "x", ResolvedExecutable: filepath.Join(target, "x"), Availability: "available", Timeout: time.Second}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +85,8 @@ func TestHookEnvironmentReplacesReservedValues(t *testing.T) {
 }
 
 func TestHookEnvironmentPortableAllowlistExcludesSecrets(t *testing.T) {
-	plan, err := newHookPlan(hookPlanInput{Operation: "clone", Source: "portable", Event: "post-clone", Policy: "requires-run-hooks", ProjectID: "p", ProjectName: "P", BaseRepository: "r", WorkspaceID: "default", WorkspaceName: "Default", SourceLogicalRoot: "/s", TargetLogicalRoot: "/t", SourceBytes: []byte("s"), WorkspaceStateBytes: []byte("w"), Entries: []hookPlanInputEntry{{ID: "h", Repository: "r", SourceRepository: "/s", TargetRepository: "/t", Branch: "main", Head: strings.Repeat("a", 40), ConfiguredExecutable: "x", ResolvedExecutable: "/t/x", Availability: "available", Timeout: time.Second}}})
+	source, target := hookPlanTestPath("s"), hookPlanTestPath("t")
+	plan, err := newHookPlan(hookPlanInput{Operation: "clone", Source: "portable", Event: "post-clone", Policy: "requires-run-hooks", ProjectID: "p", ProjectName: "P", BaseRepository: "r", WorkspaceID: "default", WorkspaceName: "Default", SourceLogicalRoot: source, TargetLogicalRoot: target, SourceBytes: []byte("s"), WorkspaceStateBytes: []byte("w"), Entries: []hookPlanInputEntry{{ID: "h", Repository: "r", SourceRepository: source, TargetRepository: target, Branch: "main", Head: strings.Repeat("a", 40), ConfiguredExecutable: "x", ResolvedExecutable: filepath.Join(target, "x"), Availability: "available", Timeout: time.Second}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +126,7 @@ func TestHookEnvironmentPolicyMatrix(t *testing.T) {
 					t.Fatalf("environment %q leaks %q", joined, absent)
 				}
 			}
-			if got := environment[len(environment)-14:]; strings.Join(got, "\n") != strings.Join([]string{"WTREE_HOOK=post-create", "WTREE_OPERATION=create", "WTREE_PROJECT_ID=project", "WTREE_PROJECT_NAME=Project", "WTREE_BASE_REPOSITORY_ID=root", "WTREE_WORKSPACE_ID=default", "WTREE_WORKSPACE_NAME=Default", "WTREE_SOURCE_LOGICAL_ROOT=/source", "WTREE_TARGET_LOGICAL_ROOT=/target", "WTREE_REPOSITORY_ID=root", "WTREE_SOURCE_REPOSITORY=/source", "WTREE_TARGET_REPOSITORY=/target", "WTREE_BRANCH=main", "WTREE_HEAD=" + strings.Repeat("a", 40)}, "\n") {
+			if got := environment[len(environment)-14:]; strings.Join(got, "\n") != strings.Join([]string{"WTREE_HOOK=post-create", "WTREE_OPERATION=create", "WTREE_PROJECT_ID=project", "WTREE_PROJECT_NAME=Project", "WTREE_BASE_REPOSITORY_ID=root", "WTREE_WORKSPACE_ID=default", "WTREE_WORKSPACE_NAME=Default", "WTREE_SOURCE_LOGICAL_ROOT=" + plan.authority.sourceRoot, "WTREE_TARGET_LOGICAL_ROOT=" + plan.authority.targetRoot, "WTREE_REPOSITORY_ID=root", "WTREE_SOURCE_REPOSITORY=" + plan.authority.entries[0].SourceRepository, "WTREE_TARGET_REPOSITORY=" + plan.authority.entries[0].TargetRepository, "WTREE_BRANCH=main", "WTREE_HEAD=" + strings.Repeat("a", 40)}, "\n") {
 				t.Fatalf("reserved=%v", got)
 			}
 		})

@@ -97,6 +97,7 @@ func (s *HookManagementService) List(ctx context.Context, request HookManagement
 	if err != nil {
 		return HookListResult{}, err
 	}
+	defer sources.close()
 	return buildHookList(sources.local, sources.manifest)
 }
 
@@ -112,6 +113,7 @@ func (s *HookManagementService) Share(ctx context.Context, request HookShareRequ
 	if err != nil {
 		return result, err
 	}
+	defer sources.close()
 	local, manifest := sources.local, sources.manifest
 	localHooks, exists := local.Hooks[request.Event]
 	if !exists {
@@ -226,6 +228,7 @@ func (s *HookManagementService) Install(ctx context.Context, request HookInstall
 	if err != nil {
 		return result, err
 	}
+	defer sources.close()
 	local, manifest := sources.local, sources.manifest
 	if len(manifest.SharedHooks) == 0 {
 		return result, nil
@@ -492,10 +495,16 @@ type hookManagementSources struct {
 	manifestGeneration        hookFileGeneration
 }
 
+func (sources *hookManagementSources) close() {
+	sources.localGeneration.close()
+	sources.manifestGeneration.close()
+}
+
 type hookFileGeneration struct {
 	path string
 	data []byte
 	info os.FileInfo
+	file *os.File
 }
 
 func captureHookFileGeneration(path string) (hookFileGeneration, error) {
@@ -506,11 +515,16 @@ func captureHookFileGeneration(path string) (hookFileGeneration, error) {
 	if !link.Mode().IsRegular() {
 		return hookFileGeneration{}, errors.New("not a regular file")
 	}
-	file, err := os.Open(path)
+	file, err := openHookGenerationFile(path)
 	if err != nil {
 		return hookFileGeneration{}, err
 	}
-	defer file.Close()
+	keepFile := false
+	defer func() {
+		if !keepFile {
+			_ = file.Close()
+		}
+	}()
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		if err == nil {
@@ -522,7 +536,16 @@ func captureHookFileGeneration(path string) (hookFileGeneration, error) {
 	if err != nil {
 		return hookFileGeneration{}, err
 	}
-	return hookFileGeneration{path: path, data: data, info: info}, nil
+	// Retaining the captured descriptor prevents a remove/recreate with
+	// identical bytes from recycling the same identity before verification.
+	// The Windows opener explicitly shares delete access so this does not
+	// obstruct the atomic Rename used to publish a replacement.
+	keepFile = true
+	generation := hookFileGeneration{path: path, data: data, info: info}
+	if keepFile {
+		generation.file = file
+	}
+	return generation, nil
 }
 
 func (generation hookFileGeneration) verify() error {
@@ -544,6 +567,13 @@ func (generation hookFileGeneration) verify() error {
 		return errHookDefinitionGenerationChanged
 	}
 	return nil
+}
+
+func (generation *hookFileGeneration) close() {
+	if generation.file != nil {
+		_ = generation.file.Close()
+		generation.file = nil
+	}
 }
 
 func (sources hookManagementSources) verify() error {
@@ -575,6 +605,12 @@ func captureHookManagementSources(_ context.Context, request HookManagementReque
 	if err != nil {
 		return hookManagementSources{}, hookManagementReadError("local configuration", err)
 	}
+	releaseLocal := true
+	defer func() {
+		if releaseLocal {
+			localGeneration.close()
+		}
+	}()
 	localBytes := localGeneration.data
 	local, err := config.LoadProject(localBytes)
 	if err != nil {
@@ -594,6 +630,12 @@ func captureHookManagementSources(_ context.Context, request HookManagementReque
 	if err != nil {
 		return hookManagementSources{}, hookManagementReadError("portable manifest", err)
 	}
+	releaseManifest := true
+	defer func() {
+		if releaseManifest {
+			manifestGeneration.close()
+		}
+	}()
 	manifestBytes := manifestGeneration.data
 	manifest, err := config.LoadPortableManifest(manifestBytes)
 	if err != nil {
@@ -602,12 +644,14 @@ func captureHookManagementSources(_ context.Context, request HookManagementReque
 	if manifest.Project.ID != local.Project.ID || manifest.Project.BaseRepository != local.Project.BaseRepository {
 		return hookManagementSources{}, NewError(ErrorConflict, errors.New("portable manifest no longer matches the local project"))
 	}
-	return hookManagementSources{
+	sources := hookManagementSources{
 		local: local, manifest: manifest,
 		localBytes: append([]byte(nil), localBytes...), manifestBytes: append([]byte(nil), manifestBytes...),
 		localPath: request.Project.ConfigPath, manifestPath: manifestPath,
 		localGeneration: localGeneration, manifestGeneration: manifestGeneration,
-	}, nil
+	}
+	releaseLocal, releaseManifest = false, false
+	return sources, nil
 }
 
 func hookManagementWorkingManifestPath(project domain.Project, local config.ProjectConfig) (string, error) {

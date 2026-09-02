@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -23,7 +22,9 @@ const HookRunRecordVersion = 1
 var ErrHookRunDurabilityUnconfirmed = errors.New("hook run durability unconfirmed")
 var ErrHookRunRemovalDurabilityUnconfirmed = errors.New("hook run removal durability unconfirmed")
 
-var hookRunRemoveSync = fsutil.Sync
+var hookRunRemoveSync = func(path *fsutil.PrivatePath) error { return path.SyncDirectory() }
+var hookRunRemoveStepHook fsutil.AtomicStepHook
+var hookRunAuthorityStepHook fsutil.AtomicStepHook
 
 type HookRunFailure struct {
 	Kind         string `json:"kind"`
@@ -73,26 +74,40 @@ func DecodeHookRunRecord(data []byte) (HookRunRecord, error) {
 	return cloneHookRunRecord(value), nil
 }
 func ReadHookRunRecord(path string) (HookRunRecord, error) {
-	if err := verifyHookRecordPath(path, false); err != nil {
+	authority, err := openHookRecordPath(path, false)
+	if err != nil {
 		return HookRunRecord{}, err
 	}
-	data, err := os.ReadFile(path)
+	defer authority.Close()
+	if hookRunAuthorityStepHook != nil {
+		if err := hookRunAuthorityStepHook("after-open-read"); err != nil {
+			return HookRunRecord{}, err
+		}
+	}
+	data, err := authority.ReadFile()
 	if err != nil {
 		return HookRunRecord{}, err
 	}
 	return DecodeHookRunRecord(data)
 }
 func WriteHookRunRecord(path string, value HookRunRecord) error {
-	if err := verifyHookRecordPath(path, true); err != nil {
+	authority, err := openHookRecordPath(path, true)
+	if err != nil {
 		return err
+	}
+	defer authority.Close()
+	if hookRunAuthorityStepHook != nil {
+		if err := hookRunAuthorityStepHook("after-open-write"); err != nil {
+			return err
+		}
 	}
 	data, err := HookRunRecordBytes(value)
 	if err != nil {
 		return err
 	}
-	if err := fsutil.WriteFileAtomicModeWithHook(path, data, 0o600, atomicHook); err != nil {
+	if err := authority.WriteFileAtomicModeWithHook(data, 0o600, atomicHook); err != nil {
 		if fsutil.ReplacementCompleted(err) {
-			got, readErr := os.ReadFile(path)
+			got, readErr := authority.ReadFile()
 			if readErr == nil && bytes.Equal(got, data) {
 				if _, decodeErr := DecodeHookRunRecord(got); decodeErr == nil {
 					return ErrHookRunDurabilityUnconfirmed
@@ -104,18 +119,22 @@ func WriteHookRunRecord(path string, value HookRunRecord) error {
 	return nil
 }
 func RemoveHookRunRecord(path string) error {
-	if err := verifyHookRecordPath(path, false); err != nil {
-		return err
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	directory, err := os.Open(filepath.Dir(path))
+	authority, err := openHookRecordPath(path, false)
 	if err != nil {
 		return err
 	}
-	defer directory.Close()
-	if err := hookRunRemoveSync(directory); err != nil {
+	defer authority.Close()
+	if err := authority.RemoveWithHook(hookRunRemoveStepHook); err != nil {
+		if errors.Is(err, fsutil.ErrPrivateRemovalQuarantined) {
+			// On Unix, fsutil has already synced and revalidated both the
+			// authoritative absence and the retained exact quarantine. A second
+			// store sync cannot improve that completed logical removal and, if it
+			// fails, would incorrectly make a runner restore finalizing.
+			return nil
+		}
+		return err
+	}
+	if err := hookRunRemoveSync(authority); err != nil {
 		return ErrHookRunRemovalDurabilityUnconfirmed
 	}
 	return nil
@@ -127,12 +146,11 @@ func HookRunRecordPath(dataDir, project, workspace, event string) (string, error
 	return filepath.Join(dataDir, "projects", project, "hooks", workspace, event+".json"), nil
 }
 
-// verifyHookRecordPath accepts only the exact private path layout emitted by
-// HookRunRecordPath. It never follows a symlink for a record or one of the
-// hook-run-owned parent directories.
-func verifyHookRecordPath(path string, create bool) error {
+// openHookRecordPath accepts only the exact private path layout emitted by
+// HookRunRecordPath and returns retained authority over its owned suffix.
+func openHookRecordPath(path string, create bool) (*fsutil.PrivatePath, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || filepath.Ext(path) != ".json" {
-		return errors.New("unsafe hook run record path")
+		return nil, errors.New("unsafe hook run record path")
 	}
 	workspaceDirectory := filepath.Dir(path)
 	hooksDirectory := filepath.Dir(workspaceDirectory)
@@ -142,30 +160,13 @@ func verifyHookRecordPath(path string, create bool) error {
 	project, workspace := filepath.Base(projectDirectory), filepath.Base(workspaceDirectory)
 	event := strings.TrimSuffix(filepath.Base(path), ".json")
 	if filepath.Base(hooksDirectory) != "hooks" || filepath.Base(projectsDirectory) != "projects" || !safeHookID(project) || !safeHookID(workspace) || !safeHookID(event) || path != filepath.Join(dataDirectory, "projects", project, "hooks", workspace, event+".json") {
-		return errors.New("unsafe hook run record path")
+		return nil, errors.New("unsafe hook run record path")
 	}
-	if create {
-		if err := os.MkdirAll(workspaceDirectory, 0o700); err != nil {
-			return err
-		}
+	authority, err := fsutil.OpenPrivatePath(dataDirectory, []string{"projects", project, "hooks", workspace}, event+".json", create)
+	if err != nil {
+		return nil, errors.Join(errors.New("unsafe hook run record path authority"), err)
 	}
-	for _, directory := range []string{projectsDirectory, projectDirectory, hooksDirectory, workspaceDirectory} {
-		info, err := os.Lstat(directory)
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
-			return errors.New("unsafe hook run record directory")
-		}
-	}
-	if info, err := os.Lstat(path); err == nil {
-		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("unsafe hook run record file")
-		}
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	return nil
+	return authority, nil
 }
 
 func validateHookRunRecord(v HookRunRecord) error {

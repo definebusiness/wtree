@@ -3,6 +3,7 @@ package lock
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,11 +11,14 @@ import (
 	"time"
 
 	"github.com/definebusiness/wtree/internal/config"
+	"github.com/definebusiness/wtree/internal/fsutil"
 	"github.com/gofrs/flock"
 )
 
 type Handle interface{ Unlock() error }
 type Manager struct{}
+
+var privateLockAuthorityStepHook fsutil.AtomicStepHook
 
 func (Manager) Acquire(ctx context.Context, path string, timeout time.Duration) (Handle, error) {
 	context, cancel := context.WithTimeout(ctx, timeout)
@@ -58,11 +62,33 @@ func (manager Manager) ProjectLock(ctx context.Context, dataDir, projectID strin
 	if projectID == "" || projectID == "." || projectID == ".." || filepath.IsAbs(projectID) || projectID != filepath.Base(projectID) || filepath.Clean(projectID) != projectID || strings.ContainsAny(projectID, "/\\\x00") {
 		return nil, fmt.Errorf("unsafe project ID %q", projectID)
 	}
-	directory := filepath.Join(dataDir, "projects", projectID)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
+	path := filepath.Join(dataDir, "projects", projectID, "project.lock")
+	authority, err := fsutil.OpenPrivatePathForMutation(dataDir, []string{"projects", projectID}, "project.lock")
+	if err != nil {
 		return nil, err
 	}
-	return manager.Acquire(ctx, filepath.Join(directory, "project.lock"), timeout)
+	if err := privateLockAuthorityStepHookCall("project-after-open"); err != nil {
+		authority.Close()
+		return nil, err
+	}
+	lockContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for {
+		lock, err := authority.TryLock(lockContext)
+		if err == nil {
+			return lock, nil
+		}
+		if !errors.Is(err, fsutil.ErrPrivateLockHeld) {
+			authority.Close()
+			return nil, fmt.Errorf("acquire lock %q: %w", path, err)
+		}
+		select {
+		case <-lockContext.Done():
+			authority.Close()
+			return nil, fmt.Errorf("acquire lock %q: %w", path, lockContext.Err())
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // HookRunLock serializes one project/workspace/event hook execution without
@@ -72,35 +98,27 @@ func (manager Manager) HookRunLock(ctx context.Context, dataDir, projectID, work
 	if err != nil {
 		return nil, err
 	}
-	if err := verifyHookRunLockPath(path); err != nil {
+	authority, err := fsutil.OpenPrivatePath(dataDir, []string{"projects", projectID, "hooks", workspaceID}, event+".lock", true)
+	if err != nil {
 		return nil, err
 	}
-	return manager.AcquireImmediate(ctx, path)
+	if err := privateLockAuthorityStepHookCall("hook-after-open"); err != nil {
+		authority.Close()
+		return nil, err
+	}
+	lock, err := authority.TryLock(ctx)
+	if err != nil {
+		authority.Close()
+		return nil, fmt.Errorf("acquire lock %q: %w", path, err)
+	}
+	return lock, nil
 }
 
-func verifyHookRunLockPath(path string) error {
-	workspaceDirectory := filepath.Dir(path)
-	hooksDirectory := filepath.Dir(workspaceDirectory)
-	projectDirectory := filepath.Dir(hooksDirectory)
-	projectsDirectory := filepath.Dir(projectDirectory)
-	if err := os.MkdirAll(workspaceDirectory, 0o700); err != nil {
-		return err
+func privateLockAuthorityStepHookCall(step string) error {
+	if privateLockAuthorityStepHook == nil {
+		return nil
 	}
-	for _, directory := range []string{projectsDirectory, projectDirectory, hooksDirectory, workspaceDirectory} {
-		info, err := os.Lstat(directory)
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
-			return fmt.Errorf("unsafe hook run lock directory")
-		}
-	}
-	if info, err := os.Lstat(path); err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
-		return fmt.Errorf("unsafe hook run lock file")
-	} else if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
+	return privateLockAuthorityStepHook(step)
 }
 
 func HookRunLockPath(dataDir, projectID, workspaceID, event string) (string, error) {

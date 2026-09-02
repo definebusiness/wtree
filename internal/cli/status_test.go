@@ -96,9 +96,17 @@ func TestExecuteStatusAppendsHookSetupOnlyWhenAnExactRunRecordExists(t *testing.
 	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
 		t.Fatalf("init = %#v", result)
 	}
-	executable := filepath.Join(project.Path, "fail-hook")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 23\n"), 0o755); err != nil {
+	executable, command := filepath.Join(project.Path, "fail-hook"), []string{}
+	if runtime.GOOS == "windows" {
+		executable, command = os.Args[0], []string{"-test.run=^TestLifecycleHookNativeHelper$"}
+		t.Setenv("WTREE_TEST_NATIVE_HOOK_FAIL", "1")
+	} else if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 23\n"), 0o755); err != nil {
 		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(executable, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	configPath := filepath.Join(project.Path, ".wtree.yml")
 	local, err := config.ReadProjectFile(configPath)
@@ -106,7 +114,7 @@ func TestExecuteStatusAppendsHookSetupOnlyWhenAnExactRunRecordExists(t *testing.
 		t.Fatal(err)
 	}
 	local.Version = config.ProjectConfigVersion3
-	local.Hooks = config.HookEvents{config.HookEventPostCreate: {{ID: "setup", Command: []string{executable}}}}
+	local.Hooks = config.HookEvents{config.HookEventPostCreate: {{ID: "setup", Command: append([]string{executable}, command...)}}}
 	if err := config.WriteProjectFile(configPath, local); err != nil {
 		t.Fatal(err)
 	}

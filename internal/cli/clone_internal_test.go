@@ -43,11 +43,13 @@ func TestCloneSetupIncompleteCancellationAndDeadlineRenderCommittedCore(t *testi
 					return service.CloneLifecycleResult{Core: core, HooksApplicable: true, CompletedHookIDs: []string{}}, service.NewError(service.ErrorSetupIncomplete, &service.SetupIncompleteError{Details: details, Cause: test.cause})
 				}}
 			}
-			human := testutil.RunCommand(t, Execute, "clone", manifest, filepath.Join(t.TempDir(), "human"), "--data-dir", t.TempDir(), "--run-hooks")
+			humanRoot, humanData := canonicalCloneSetupTempDir(t), canonicalCloneSetupTempDir(t)
+			human := testutil.RunCommand(t, Execute, "clone", manifest, filepath.Join(humanRoot, "human"), "--data-dir", humanData, "--run-hooks")
 			if !errors.Is(human.Err, test.cause) || !strings.Contains(human.Stdout, "Cloned project:") || strings.Contains(human.Stdout, "rollback") {
 				t.Fatalf("human post-publication %s = %#v", test.name, human)
 			}
-			json := testutil.RunCommand(t, Execute, "clone", manifest, filepath.Join(t.TempDir(), "json"), "--data-dir", t.TempDir(), "--run-hooks", "--json")
+			jsonRoot, jsonData := canonicalCloneSetupTempDir(t), canonicalCloneSetupTempDir(t)
+			json := testutil.RunCommand(t, Execute, "clone", manifest, filepath.Join(jsonRoot, "json"), "--data-dir", jsonData, "--run-hooks", "--json")
 			if !errors.Is(json.Err, test.cause) || !strings.Contains(json.Stdout, `"code":"setup_incomplete"`) || !strings.Contains(json.Stdout, `"operation":"clone"`) || strings.Contains(json.Stdout, "rollback") {
 				t.Fatalf("JSON post-publication %s = %#v", test.name, json)
 			}
@@ -70,5 +72,19 @@ func cloneSetupIncompleteManifest(t *testing.T) string {
 	if _, err := os.Stat(manifest); err != nil {
 		t.Fatal(err)
 	}
-	return manifest
+	return canonicalCloneSetupPath(t, manifest)
+}
+
+func canonicalCloneSetupTempDir(t *testing.T) string {
+	t.Helper()
+	return canonicalCloneSetupPath(t, t.TempDir())
+}
+
+func canonicalCloneSetupPath(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,102 @@ func TestHookRunInventoryStrictlyClassifiesExactWorkspaceDirectory(t *testing.T)
 	value, err = inventory.Inspect(context.Background(), request)
 	if err != nil || value.Classification != HookRunInvalid {
 		t.Fatalf("unsafe entry inventory=%#v err=%v", value, err)
+	}
+}
+
+func TestHookRunInventoryRejectsIntermediateAncestorChange(t *testing.T) {
+	for _, scenario := range []string{"missing", "replacement"} {
+		t.Run(scenario, func(t *testing.T) {
+			root, data := t.TempDir(), t.TempDir()
+			project := hookManagementProject(filepath.Join(root, ".wtree.yml"), root)
+			workspace := domain.Workspace{ID: "workspace", Name: "Workspace"}
+			request := HookRunInventoryRequest{Project: project, Workspace: workspace, DataDir: data}
+			path, err := store.HookRunRecordPath(data, project.ID, workspace.ID, "post-create")
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+			record := store.HookRunRecord{Version: store.HookRunRecordVersion, ProjectID: project.ID, WorkspaceID: workspace.ID, WorkspaceName: workspace.Name, Operation: "create", Event: "post-create", Source: "local", SourceSHA256: strings.Repeat("a", 64), PlanSHA256: strings.Repeat("b", 64), WorkspaceStateSHA256: strings.Repeat("c", 64), HookIDs: []string{"setup"}, CompletedHookIDs: []string{}, NextIndex: 0, State: "failed", Failure: &store.HookRunFailure{Kind: "missing-executable", HookID: "setup", RepositoryID: "root"}, CreatedAt: now, UpdatedAt: now}
+			if err := store.WriteHookRunRecord(path, record); err != nil {
+				t.Fatal(err)
+			}
+			hookRunInventoryStepHook = func(step string) error {
+				if step != "after-open" {
+					return nil
+				}
+				hookRunInventoryStepHook = nil
+				if err := os.Rename(filepath.Join(data, "projects"), filepath.Join(data, "old-projects")); err != nil {
+					return err
+				}
+				if scenario == "replacement" {
+					return store.WriteHookRunRecord(path, record)
+				}
+				return nil
+			}
+			defer func() { hookRunInventoryStepHook = nil }()
+			result, err := NewHookRunInventoryService().Inspect(context.Background(), request)
+			if err != nil || result.Classification != HookRunInvalid {
+				t.Fatalf("detached inventory=%#v %v", result, err)
+			}
+			if scenario == "replacement" {
+				result, err = NewHookRunInventoryService().Inspect(context.Background(), request)
+				if err != nil || result.Classification != HookRunResumable {
+					t.Fatalf("fresh inventory=%#v %v", result, err)
+				}
+			}
+		})
+	}
+}
+
+func TestHookRunInventoryAcceptsOnlyBoundedRemovalEvidence(t *testing.T) {
+	root, data := t.TempDir(), t.TempDir()
+	project := hookManagementProject(filepath.Join(root, ".wtree.yml"), root)
+	workspace := domain.Workspace{ID: "workspace", Name: "Workspace"}
+	request := HookRunInventoryRequest{Project: project, Workspace: workspace, DataDir: data}
+	path, err := store.HookRunRecordPath(data, project.ID, workspace.ID, "post-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	record := store.HookRunRecord{Version: store.HookRunRecordVersion, ProjectID: project.ID, WorkspaceID: workspace.ID, WorkspaceName: workspace.Name, Operation: "create", Event: "post-create", Source: "local", SourceSHA256: strings.Repeat("a", 64), PlanSHA256: strings.Repeat("b", 64), WorkspaceStateSHA256: strings.Repeat("c", 64), HookIDs: []string{"setup"}, CompletedHookIDs: []string{}, NextIndex: 0, State: "failed", Failure: &store.HookRunFailure{Kind: "missing-executable", HookID: "setup", RepositoryID: "root"}, CreatedAt: now, UpdatedAt: now}
+	if err := store.WriteHookRunRecord(path, record); err != nil {
+		t.Fatal(err)
+	}
+	for index := 1; index <= 2; index++ {
+		name := ".post-create.json.remove-1-" + strconv.Itoa(index)
+		if err := os.WriteFile(filepath.Join(filepath.Dir(path), name), []byte("evidence"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		result, err := NewHookRunInventoryService().Inspect(context.Background(), request)
+		want := HookRunResumable
+		if index == 2 {
+			want = HookRunInvalid
+		}
+		if err != nil || result.Classification != want {
+			t.Fatalf("evidence count %d inventory=%#v %v, want %s", index, result, err, want)
+		}
+	}
+}
+
+func TestHookRunInventoryTreatsCompletedRecordRemovalAsAbsent(t *testing.T) {
+	root, data := t.TempDir(), t.TempDir()
+	project := hookManagementProject(filepath.Join(root, ".wtree.yml"), root)
+	workspace := domain.Workspace{ID: "workspace", Name: "Workspace"}
+	path, err := store.HookRunRecordPath(data, project.ID, workspace.ID, "post-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	record := store.HookRunRecord{Version: store.HookRunRecordVersion, ProjectID: project.ID, WorkspaceID: workspace.ID, WorkspaceName: workspace.Name, Operation: "create", Event: "post-create", Source: "local", SourceSHA256: strings.Repeat("a", 64), PlanSHA256: strings.Repeat("b", 64), WorkspaceStateSHA256: strings.Repeat("c", 64), HookIDs: []string{"setup"}, CompletedHookIDs: []string{}, NextIndex: 0, State: "failed", Failure: &store.HookRunFailure{Kind: "missing-executable", HookID: "setup", RepositoryID: "root"}, CreatedAt: now, UpdatedAt: now}
+	if err := store.WriteHookRunRecord(path, record); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RemoveHookRunRecord(path); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewHookRunInventoryService().Inspect(context.Background(), HookRunInventoryRequest{Project: project, Workspace: workspace, DataDir: data})
+	if err != nil || result.Classification != HookRunAbsent || result.Setup == nil {
+		t.Fatalf("completed removal inventory=%#v %v", result, err)
 	}
 }
 
@@ -581,18 +678,28 @@ func TestHookRetryPropagatesUnderLockVerifierSentinelsWithoutOutputOrMutation(t 
 }
 
 func TestHookRetryWorkspaceFactsRejectEveryPersistedCheckoutChange(t *testing.T) {
-	project := domain.Project{Version: domain.CurrentVersion, ID: "project", Name: "Project", ConfigPath: "/source/.wtree.yml", LogicalRoot: "/source", BaseRepository: "root", Repositories: []domain.Repository{{ID: "root", SourcePath: "/source", CommonGitDir: "/common.git", DefaultMount: ".", DefaultBranch: "main"}}}
-	workspace := domain.Workspace{Version: domain.CurrentVersion, ID: "workspace", Name: "Workspace", RootPath: "/workspace", Checkouts: []domain.Checkout{{RepositoryID: "root", Branch: "main", Head: "0123456789abcdef0123456789abcdef01234567", Mount: ".", ResolvedPath: "/workspace"}}}
+	source := hookPlanTestPath("retry-facts", "source")
+	workspaceRoot := hookPlanTestPath("retry-facts", "workspace")
+	sourceCommon := hookPlanTestPath("retry-facts", "source.git")
+	workspaceCommon := hookPlanTestPath("retry-facts", "workspace.git")
+	project := domain.Project{Version: domain.CurrentVersion, ID: "project", Name: "Project", ConfigPath: filepath.Join(source, ".wtree.yml"), LogicalRoot: source, BaseRepository: "root", Repositories: []domain.Repository{{ID: "root", SourcePath: source, CommonGitDir: sourceCommon, DefaultMount: ".", DefaultBranch: "main"}}}
+	workspace := domain.Workspace{Version: domain.CurrentVersion, ID: "workspace", Name: "Workspace", RootPath: workspaceRoot, Checkouts: []domain.Checkout{{RepositoryID: "root", Branch: "main", Head: "0123456789abcdef0123456789abcdef01234567", Mount: ".", ResolvedPath: workspaceRoot}}}
 	for _, test := range []struct {
 		name   string
 		mutate func(*hookRetryWorkspaceFactsGit, *domain.Workspace)
 	}{
 		{name: "persisted-path", mutate: func(_ *hookRetryWorkspaceFactsGit, value *domain.Workspace) {
-			value.Checkouts[0].ResolvedPath = "/other"
+			value.Checkouts[0].ResolvedPath = hookPlanTestPath("retry-facts", "other")
 		}},
-		{name: "top-level", mutate: func(git *hookRetryWorkspaceFactsGit, _ *domain.Workspace) { git.topLevel = "/other" }},
-		{name: "checkout-common-git-dir", mutate: func(git *hookRetryWorkspaceFactsGit, _ *domain.Workspace) { git.workspaceCommon = "/other.git" }},
-		{name: "registered-source-identity", mutate: func(git *hookRetryWorkspaceFactsGit, _ *domain.Workspace) { git.sourceCommon = "/other.git" }},
+		{name: "top-level", mutate: func(git *hookRetryWorkspaceFactsGit, _ *domain.Workspace) {
+			git.topLevel = hookPlanTestPath("retry-facts", "other")
+		}},
+		{name: "checkout-common-git-dir", mutate: func(git *hookRetryWorkspaceFactsGit, _ *domain.Workspace) {
+			git.workspaceCommon = hookPlanTestPath("retry-facts", "other.git")
+		}},
+		{name: "registered-source-identity", mutate: func(git *hookRetryWorkspaceFactsGit, _ *domain.Workspace) {
+			git.sourceCommon = hookPlanTestPath("retry-facts", "other.git")
+		}},
 		{name: "branch", mutate: func(git *hookRetryWorkspaceFactsGit, _ *domain.Workspace) { git.branch = "other" }},
 		{name: "detached", mutate: func(git *hookRetryWorkspaceFactsGit, _ *domain.Workspace) { git.detached = true; git.branch = "" }},
 		{name: "head", mutate: func(git *hookRetryWorkspaceFactsGit, _ *domain.Workspace) {
@@ -602,7 +709,7 @@ func TestHookRetryWorkspaceFactsRejectEveryPersistedCheckoutChange(t *testing.T)
 		t.Run(test.name, func(t *testing.T) {
 			value := workspace
 			value.Checkouts = append([]domain.Checkout(nil), workspace.Checkouts...)
-			git := &hookRetryWorkspaceFactsGit{topLevel: "/workspace", workspaceCommon: "/common.git", sourceCommon: "/common.git", branch: "main", head: workspace.Checkouts[0].Head}
+			git := &hookRetryWorkspaceFactsGit{topLevel: workspaceRoot, sourcePath: source, workspaceCommon: workspaceCommon, sourceCommon: sourceCommon, branch: "main", head: workspace.Checkouts[0].Head}
 			test.mutate(git, &value)
 			if err := validateHookRetryWorkspaceFacts(context.Background(), git, project, value); err == nil {
 				t.Fatal("changed persisted checkout fact was accepted")
@@ -612,9 +719,13 @@ func TestHookRetryWorkspaceFactsRejectEveryPersistedCheckoutChange(t *testing.T)
 }
 
 func TestHookRetryWorkspaceFactsRejectPartialWorkspace(t *testing.T) {
-	project := domain.Project{Version: domain.CurrentVersion, ID: "project", Name: "Project", ConfigPath: "/source/.wtree.yml", LogicalRoot: "/source", BaseRepository: "root", Repositories: []domain.Repository{{ID: "root", SourcePath: "/source", CommonGitDir: "/common.git", DefaultMount: ".", DefaultBranch: "main"}, {ID: "child", SourcePath: "/source/child", ParentID: "root", CommonGitDir: "/child.git", DefaultMount: "child", DefaultBranch: "main"}}}
-	workspace := domain.Workspace{Version: domain.CurrentVersion, ID: "workspace", Name: "Workspace", RootPath: "/workspace", Partial: true, MissingRepositoryIDs: []string{"child"}, Checkouts: []domain.Checkout{{RepositoryID: "root", Branch: "main", Head: "0123456789abcdef0123456789abcdef01234567", Mount: ".", ResolvedPath: "/workspace"}}}
-	git := &hookRetryWorkspaceFactsGit{topLevel: "/workspace", workspaceCommon: "/common.git", sourceCommon: "/common.git", branch: "main", head: workspace.Checkouts[0].Head}
+	source := hookPlanTestPath("retry-partial", "source")
+	workspaceRoot := hookPlanTestPath("retry-partial", "workspace")
+	sourceCommon := hookPlanTestPath("retry-partial", "source.git")
+	workspaceCommon := hookPlanTestPath("retry-partial", "workspace.git")
+	project := domain.Project{Version: domain.CurrentVersion, ID: "project", Name: "Project", ConfigPath: filepath.Join(source, ".wtree.yml"), LogicalRoot: source, BaseRepository: "root", Repositories: []domain.Repository{{ID: "root", SourcePath: source, CommonGitDir: sourceCommon, DefaultMount: ".", DefaultBranch: "main"}, {ID: "child", SourcePath: filepath.Join(source, "child"), ParentID: "root", CommonGitDir: hookPlanTestPath("retry-partial", "child.git"), DefaultMount: "child", DefaultBranch: "main"}}}
+	workspace := domain.Workspace{Version: domain.CurrentVersion, ID: "workspace", Name: "Workspace", RootPath: workspaceRoot, Partial: true, MissingRepositoryIDs: []string{"child"}, Checkouts: []domain.Checkout{{RepositoryID: "root", Branch: "main", Head: "0123456789abcdef0123456789abcdef01234567", Mount: ".", ResolvedPath: workspaceRoot}}}
+	git := &hookRetryWorkspaceFactsGit{topLevel: workspaceRoot, sourcePath: source, workspaceCommon: workspaceCommon, sourceCommon: sourceCommon, branch: "main", head: workspace.Checkouts[0].Head}
 	if err := validateHookRetryWorkspaceFacts(context.Background(), git, project, workspace); err == nil {
 		t.Fatal("partial workspace was accepted for retry")
 	}
@@ -861,10 +972,10 @@ func TestHookRetryPortableRelativeExecutableNormalizesWindowsSeparatorsForTracke
 
 type hookRetryWorkspaceFactsGit struct {
 	gitadapter.Git
-	topLevel, workspaceCommon, sourceCommon, branch, head string
-	detached                                              bool
-	fail                                                  string
-	failErr                                               error
+	topLevel, sourcePath, workspaceCommon, sourceCommon, branch, head string
+	detached                                                          bool
+	fail                                                              string
+	failErr                                                           error
 }
 
 type hookRetryPortableGit struct {
@@ -908,7 +1019,7 @@ func (g *hookRetryWorkspaceFactsGit) CommonGitDir(_ context.Context, path string
 	if g.fail == "CommonGitDir" {
 		return "", g.failErr
 	}
-	if path == "/source" {
+	if path == g.sourcePath {
 		return g.sourceCommon, nil
 	}
 	return g.workspaceCommon, nil

@@ -31,7 +31,7 @@ discovery:
   ignore: []
 manifest:
   path: project.wtree.yml
-  source: /tmp/project.wtree.yml
+  source: https://example.test/project.wtree.yml
 hooks:
   post-create:
     - id: base

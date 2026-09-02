@@ -3,12 +3,12 @@ package service
 import (
 	"context"
 	"errors"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/definebusiness/wtree/internal/domain"
+	"github.com/definebusiness/wtree/internal/fsutil"
 	"github.com/definebusiness/wtree/internal/store"
 )
 
@@ -47,6 +47,8 @@ type HookRunInventoryResult struct {
 // directory. It never creates directories, locks, records, or workspace data.
 type HookRunInventoryService struct{ builder hookRetryPlanBuilder }
 
+var hookRunInventoryStepHook fsutil.AtomicStepHook
+
 func NewHookRunInventoryService() *HookRunInventoryService { return &HookRunInventoryService{} }
 func NewHookRunInventoryServiceWith(builder hookRetryPlanBuilder) *HookRunInventoryService {
 	return &HookRunInventoryService{builder: builder}
@@ -59,45 +61,77 @@ func (s *HookRunInventoryService) Inspect(ctx context.Context, q HookRunInventor
 	if err := q.Project.Validate(); err != nil {
 		return HookRunInventoryResult{Classification: HookRunInvalid}, nil
 	}
-	directory, present := hookRunInventoryDirectory(q.DataDir, q.Project.ID, q.Workspace.ID)
-	if !present {
-		return HookRunInventoryResult{Classification: HookRunAbsent, Setup: []HookSetupStatus{}}, nil
-	}
-	if directory == "" {
+	if _, err := store.HookRunRecordPath(q.DataDir, q.Project.ID, q.Workspace.ID, "post-create"); err != nil {
 		return HookRunInventoryResult{Classification: HookRunInvalid, Setup: []HookSetupStatus{}}, nil
 	}
-	entries, err := os.ReadDir(directory)
+	authority, err := fsutil.OpenPrivatePath(q.DataDir, []string{"projects", q.Project.ID, "hooks", q.Workspace.ID}, "post-create.json", false)
+	if fsutil.PrivatePathNotExist(err) {
+		return HookRunInventoryResult{Classification: HookRunAbsent, Setup: []HookSetupStatus{}}, nil
+	}
+	if err != nil {
+		return HookRunInventoryResult{Classification: HookRunInvalid, Setup: []HookSetupStatus{}}, nil
+	}
+	defer authority.Close()
+	if hookRunInventoryStepHook != nil {
+		if err := hookRunInventoryStepHook("after-open"); err != nil {
+			return HookRunInventoryResult{Classification: HookRunInvalid, Setup: []HookSetupStatus{}}, nil
+		}
+	}
+	entries, err := authority.ReadDirectory()
 	if err != nil {
 		return HookRunInventoryResult{Classification: HookRunInvalid, Setup: []HookSetupStatus{}}, nil
 	}
 	if len(entries) == 0 {
 		return HookRunInventoryResult{Classification: HookRunAbsent, Setup: []HookSetupStatus{}}, nil
 	}
+	sort.Strings(entries)
 	allowed := map[string]bool{"post-create.json": true, "post-clone.json": true, "post-create.lock": true, "post-clone.lock": true}
+	evidence := map[string]int{}
 	files := make([]string, 0, 2)
-	for _, entry := range entries {
+	for _, name := range entries {
 		if err := ctx.Err(); err != nil {
 			return HookRunInventoryResult{}, err
 		}
-		entryPath := filepath.Join(directory, entry.Name())
-		info, statErr := os.Lstat(entryPath)
-		if !allowed[entry.Name()] || statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		if event, ok := hookRunRemovalEvidenceEvent(name); ok {
+			evidence[event]++
+			if evidence[event] > 1 {
+				return HookRunInventoryResult{Classification: HookRunInvalid, Setup: []HookSetupStatus{}}, nil
+			}
+			continue
+		}
+		if !allowed[name] {
 			return HookRunInventoryResult{Classification: HookRunInvalid, Setup: []HookSetupStatus{}}, nil
 		}
-		if filepath.Ext(entry.Name()) == ".json" {
-			files = append(files, entry.Name())
+		if len(name) > len(".json") && name[len(name)-len(".json"):] == ".json" {
+			files = append(files, name)
 		}
+	}
+	if len(files) == 0 {
+		return HookRunInventoryResult{Classification: HookRunAbsent, Setup: []HookSetupStatus{}}, nil
 	}
 	if len(files) != 1 {
 		return HookRunInventoryResult{Classification: HookRunInvalid, Setup: []HookSetupStatus{}}, nil
 	}
 	sort.Strings(files)
 	event := files[0][:len(files[0])-len(".json")]
-	path, err := store.HookRunRecordPath(q.DataDir, q.Project.ID, q.Workspace.ID, event)
+	data, err := authority.ReadFileNamed(files[0])
 	if err != nil {
 		return HookRunInventoryResult{Classification: HookRunInvalid, Setup: []HookSetupStatus{}}, nil
 	}
-	record, err := store.ReadHookRunRecord(path)
+	entriesAfter, err := authority.ReadDirectory()
+	if err != nil {
+		return HookRunInventoryResult{Classification: HookRunInvalid, Setup: []HookSetupStatus{}}, nil
+	}
+	sort.Strings(entriesAfter)
+	if len(entriesAfter) != len(entries) {
+		return HookRunInventoryResult{Classification: HookRunInvalid, Setup: []HookSetupStatus{}}, nil
+	}
+	for index := range entries {
+		if entries[index] != entriesAfter[index] {
+			return HookRunInventoryResult{Classification: HookRunInvalid, Setup: []HookSetupStatus{}}, nil
+		}
+	}
+	record, err := store.DecodeHookRunRecord(data)
 	if err != nil || record.ProjectID != q.Project.ID || record.WorkspaceID != q.Workspace.ID || record.WorkspaceName != q.Workspace.Name || record.Event != event {
 		return HookRunInventoryResult{Classification: HookRunInvalid, Setup: []HookSetupStatus{}}, nil
 	}
@@ -124,30 +158,21 @@ func (s *HookRunInventoryService) Inspect(ctx context.Context, q HookRunInventor
 	return HookRunInventoryResult{Classification: HookRunResumable, Setup: []HookSetupStatus{setup}, record: &record}, nil
 }
 
-// hookRunInventoryDirectory walks only the private record hierarchy with
-// Lstat. A missing owned component means there is no record; every other
-// type, symlink, or non-private owned directory is invalid rather than an
-// invitation to follow a user-controlled path.
-func hookRunInventoryDirectory(dataDir, projectID, workspaceID string) (string, bool) {
-	if !filepath.IsAbs(dataDir) || filepath.Clean(dataDir) != dataDir {
-		return "", true
-	}
-	info, err := os.Lstat(dataDir)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return "", true
-	}
-	current := dataDir
-	for _, name := range []string{"projects", projectID, "hooks", workspaceID} {
-		current = filepath.Join(current, name)
-		info, err = os.Lstat(current)
-		if errors.Is(err, fs.ErrNotExist) {
+func hookRunRemovalEvidenceEvent(name string) (string, bool) {
+	for _, event := range []string{"post-create", "post-clone"} {
+		prefix := "." + event + ".json.remove-"
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		parts := strings.Split(strings.TrimPrefix(name, prefix), "-")
+		if len(parts) != 2 {
 			return "", false
 		}
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
-			return "", true
-		}
+		pid, pidErr := strconv.ParseUint(parts[0], 10, 64)
+		sequence, sequenceErr := strconv.ParseUint(parts[1], 10, 64)
+		return event, pidErr == nil && sequenceErr == nil && pid > 0 && sequence > 0
 	}
-	return current, true
+	return "", false
 }
 
 // hookRunRecordLifecycleCompatible is intentionally limited to immutable

@@ -35,9 +35,56 @@ func TestHookRunRecordPathAndPrivateWrite(t *testing.T) {
 	if err := WriteHookRunRecord(path, record); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("record mode=%v %v", info, err)
+	assertPrivateHookRecord(t, path)
+}
+
+func TestHookRunRecordReadAndWriteRejectIntermediateAncestorChange(t *testing.T) {
+	for _, scenario := range []string{"missing", "replacement"} {
+		for _, operation := range []string{"read", "write"} {
+			t.Run(scenario+"/"+operation, func(t *testing.T) {
+				path, original := hookRecordTestPathAndValue(t)
+				if err := WriteHookRunRecord(path, original); err != nil {
+					t.Fatal(err)
+				}
+				replacement := original
+				replacement.WorkspaceName = "Replacement"
+				step := "after-open-" + operation
+				hookRunAuthorityStepHook = func(got string) error {
+					if got != step {
+						return nil
+					}
+					hookRunAuthorityStepHook = nil
+					dataDir := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(path)))))
+					if err := os.Rename(filepath.Join(dataDir, "projects"), filepath.Join(dataDir, "old-projects")); err != nil {
+						return err
+					}
+					if scenario == "replacement" {
+						return WriteHookRunRecord(path, replacement)
+					}
+					return nil
+				}
+				defer func() { hookRunAuthorityStepHook = nil }()
+				if operation == "read" {
+					if _, err := ReadHookRunRecord(path); err == nil {
+						t.Fatal("ReadHookRunRecord accepted a detached intermediate ancestor")
+					}
+				} else {
+					updated := original
+					updated.WorkspaceName = "Detached"
+					if err := WriteHookRunRecord(path, updated); err == nil {
+						t.Fatal("WriteHookRunRecord published beneath a detached intermediate ancestor")
+					}
+				}
+				if scenario == "replacement" {
+					got, err := ReadHookRunRecord(path)
+					if err != nil || got.WorkspaceName != replacement.WorkspaceName {
+						t.Fatalf("authoritative replacement=%#v %v", got, err)
+					}
+				} else if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("missing authoritative path=%v", err)
+				}
+			})
+		}
 	}
 }
 
@@ -149,6 +196,10 @@ func TestHookRunRecordAtomicFailureAndDurabilityMatrix(t *testing.T) {
 
 func TestHookRunRecordRejectsUnsafePrivatePathComponents(t *testing.T) {
 	path, record := hookRecordTestPathAndValue(t)
+	assertRejectsUnsafePrivateHookRecordComponents(t, path, record)
+}
+
+func assertRejectsUnsafePrivateHookRecordComponentsUnix(t *testing.T, path string, record HookRunRecord) {
 	for _, directory := range []string{filepath.Dir(path), filepath.Dir(filepath.Dir(path)), filepath.Dir(filepath.Dir(filepath.Dir(path))), filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(path))))} {
 		if err := os.Chmod(directory, 0o755); err != nil {
 			t.Fatal(err)
@@ -168,18 +219,75 @@ func TestHookRunRecordRejectsUnsafePrivatePathComponents(t *testing.T) {
 	}
 }
 
-func TestHookRunRecordRemovalDurabilityOutcome(t *testing.T) {
+func testHookRunRecordRemovalNeverDeletesSubstitutedGeneration(t *testing.T) {
 	path, record := hookRecordTestPathAndValue(t)
 	if err := WriteHookRunRecord(path, record); err != nil {
 		t.Fatal(err)
 	}
-	hookRunRemoveSync = func(*os.File) error { return os.ErrPermission }
-	defer func() { hookRunRemoveSync = fsutil.Sync }()
-	if err := RemoveHookRunRecord(path); err != ErrHookRunRemovalDurabilityUnconfirmed {
+	opened := path + ".opened"
+	hookRunRemoveStepHook = func(step string) error {
+		if step != "before-quarantine" {
+			return nil
+		}
+		hookRunRemoveStepHook = nil
+		if err := os.Rename(path, opened); err != nil {
+			t.Fatal(err)
+		}
+		return os.WriteFile(path, []byte("replacement"), 0o600)
+	}
+	defer func() { hookRunRemoveStepHook = nil }()
+	if err := RemoveHookRunRecord(path); !errors.Is(err, fsutil.ErrPrivateRemovalAmbiguous) {
 		t.Fatalf("RemoveHookRunRecord()=%v", err)
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("record remains: %v", err)
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "replacement" {
+		t.Fatalf("replacement=%q %v", data, err)
+	}
+}
+
+func testHookRunRecordRemovalNeverOverwritesConcurrentRestoreTarget(t *testing.T) {
+	path, record := hookRecordTestPathAndValue(t)
+	if err := WriteHookRunRecord(path, record); err != nil {
+		t.Fatal(err)
+	}
+	opened := path + ".opened"
+	hookRunRemoveStepHook = func(step string) error {
+		switch step {
+		case "before-quarantine":
+			if err := os.Rename(path, opened); err != nil {
+				t.Fatal(err)
+			}
+			return os.WriteFile(path, []byte("replacement"), 0o600)
+		case "after-quarantine":
+			return os.WriteFile(path, []byte("concurrent"), 0o600)
+		default:
+			return nil
+		}
+	}
+	defer func() { hookRunRemoveStepHook = nil }()
+	if err := RemoveHookRunRecord(path); !errors.Is(err, fsutil.ErrPrivateRemovalAmbiguous) {
+		t.Fatalf("RemoveHookRunRecord()=%v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "concurrent" {
+		t.Fatalf("concurrent target=%q %v", data, err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundReplacement := false
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".remove-") {
+			quarantined, readErr := os.ReadFile(filepath.Join(filepath.Dir(path), entry.Name()))
+			if readErr != nil || string(quarantined) != "replacement" {
+				t.Fatalf("quarantine=%q %v", quarantined, readErr)
+			}
+			foundReplacement = true
+		}
+	}
+	if !foundReplacement {
+		t.Fatal("substituted generation was not preserved in quarantine")
 	}
 }
 
@@ -251,7 +359,11 @@ func hookRecordTestPathAndValue(t *testing.T) (string, HookRunRecord) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	authority, err := openHookRecordPath(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.Close(); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

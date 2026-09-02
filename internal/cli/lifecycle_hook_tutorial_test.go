@@ -28,13 +28,15 @@ func TestLifecycleHookTutorialAcceptance(t *testing.T) {
 	}
 	program, good, failing := "hooks/setup", "#!/bin/sh\nexit 0\n", "#!/bin/sh\nexit 23\n"
 	if runtime.GOOS == "windows" {
-		program, good, failing = "hooks/setup.cmd", "@exit /b 0\r\n", "@exit /b 23\r\n"
+		program, good, failing = "hooks/setup.exe", "", ""
 	}
 	script := filepath.Join(author.Path, filepath.FromSlash(program))
 	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(script, []byte(good), 0o755); err != nil {
+	if runtime.GOOS == "windows" {
+		copyLifecycleNativeHook(t, script)
+	} else if err := os.WriteFile(script, []byte(good), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if runtime.GOOS != "windows" {
@@ -102,7 +104,11 @@ func TestLifecycleHookTutorialAcceptance(t *testing.T) {
 		t.Fatalf("install shared local consent = %#v", result)
 	}
 	installedScript := filepath.Join(destination, filepath.FromSlash(program))
-	if err := os.WriteFile(installedScript, []byte(failing), 0o755); err != nil {
+	if runtime.GOOS == "windows" {
+		if err := os.WriteFile(filepath.Join(destination, ".wtree-hook-fail-once"), []byte("fail"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	} else if err := os.WriteFile(installedScript, []byte(failing), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if runtime.GOOS != "windows" {
@@ -143,8 +149,10 @@ func TestLifecycleHookTutorialAcceptance(t *testing.T) {
 	if record, err := store.ReadHookRunRecord(recordPath); err != nil || record.NextIndex != 0 || record.Failure == nil {
 		t.Fatalf("failed record = %#v, %v", record, err)
 	}
-	if err := os.WriteFile(installedScript, []byte(good), 0o755); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS != "windows" {
+		if err := os.WriteFile(installedScript, []byte(good), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if result := testutil.RunCommand(t, cli.Execute, "hooks", "retry", "feature/tutorial", "--project", destination, "--data-dir", data); result.Err != nil || !strings.Contains(result.Stdout, "Status: completed") {
 		t.Fatalf("retry = %#v", result)
@@ -169,6 +177,35 @@ func TestLifecycleHookTutorialAcceptance(t *testing.T) {
 		t.Fatalf("authorized clone = %#v", authorized)
 	}
 	assertLifecycleCheckout(t, filepath.Join(parent, "authorized"), "main", expectedHead)
+}
+
+func copyLifecycleNativeHook(t *testing.T, destination string) {
+	t.Helper()
+	data, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLifecycleHookNativeHelper(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	if os.Getenv("WTREE_TEST_NATIVE_HOOK_FAIL") == "1" {
+		os.Exit(23)
+	}
+	if filepath.Base(os.Args[0]) == "fail.exe" {
+		os.Exit(23)
+	}
+	if filepath.Base(os.Args[0]) != "setup.exe" || os.Getenv("WTREE_HOOK") != "post-create" {
+		return
+	}
+	if err := os.Remove(filepath.Join(os.Getenv("WTREE_SOURCE_LOGICAL_ROOT"), ".wtree-hook-fail-once")); err == nil {
+		os.Exit(23)
+	}
 }
 
 func lifecycleGitOutput(t *testing.T, directory string, arguments ...string) string {

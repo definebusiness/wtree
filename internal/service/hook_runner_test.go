@@ -130,17 +130,14 @@ func TestHookProcessClassifiesOutputTimeoutCancellationAndNonZero(t *testing.T) 
 		}
 	})
 	t.Run("writer-cleanup-escalates-within-bound", func(t *testing.T) {
-		original := directProcessTerminate
-		attempts := 0
-		directProcessTerminate = func(*exec.Cmd) error { attempts++; return errors.New("injected termination failure") }
-		defer func() { directProcessTerminate = original }()
+		attempts := installHookWriterCleanupFailure(t)
 		request := base
 		request.Sink = hookFailingSink{}
 		request.Environment = append(os.Environ(), "WTREE_HOOK_PROCESS_HELPER=stdout-block")
 		started := time.Now()
 		_, err := newHookProcessAdapter().Run(context.Background(), request)
-		if !errors.Is(err, errHookProcessOutputWriter) || attempts != 2 || time.Since(started) > directProcessCleanupTimeout+500*time.Millisecond {
-			t.Fatalf("Run() err=%v attempts=%d elapsed=%s", err, attempts, time.Since(started))
+		if !errors.Is(err, errHookProcessOutputWriter) || attempts() != 2 || time.Since(started) > directProcessCleanupTimeout+500*time.Millisecond {
+			t.Fatalf("Run() err=%v attempts=%d elapsed=%s", err, attempts(), time.Since(started))
 		}
 	})
 	t.Run("nonzero", func(t *testing.T) {
@@ -831,6 +828,38 @@ func TestHookRunnerRestoredFinalizingOnlyCleansOnNextRunner(t *testing.T) {
 	}
 }
 
+func TestHookRunnerCompletesVerifiedQuarantinedFinalizingWithoutProcess(t *testing.T) {
+	plan := mustHookRunnerPlan(t)
+	dataDir := t.TempDir()
+	path, err := store.HookRunRecordPath(dataDir, "project", "default", "post-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteHookRunRecord(path, hookTestRecord(plan, "finalizing", 1)); err != nil {
+		t.Fatal(err)
+	}
+	var resolves, runs int
+	runner := NewHookRunnerWith(HookRunnerDependencies{
+		Locker: hookTestLocker{},
+		Process: hookTestProcess{
+			resolve: func() { resolves++ },
+			runCall: func(HookProcessRequest) { runs++ },
+		},
+	})
+	request := hookTestRunRequest(t, plan)
+	request.DataDir = dataDir
+
+	// RED before the R10c-n2 fix: the redundant store sync translated fsutil's
+	// verified quarantine marker into an error, so Run restored finalizing.
+	result, err := runner.Run(context.Background(), request)
+	if err != nil || result.Status != "completed" || result.Failure != nil || resolves != 0 || runs != 0 {
+		t.Fatalf("Run()=%#v %v resolves=%d runs=%d", result, err, resolves, runs)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("finalizing record=%v, want absent", err)
+	}
+}
+
 func TestHookRunnerSerializesConcurrentSameEvent(t *testing.T) {
 	plan := mustHookRunnerPlan(t)
 	locker := &hookSerialLocker{}
@@ -1000,14 +1029,14 @@ func (p hookTestProcess) Resolve(_ context.Context, request HookExecutableReques
 	if p.factSet {
 		return p.fact, nil
 	}
-	return HookExecutableFact{Resolved: "/target/h", Available: true}, nil
+	return HookExecutableFact{Resolved: filepath.Join(request.Directory, request.Program), Available: true}, nil
 }
 
 func TestHookRunnerRequiresPlannedExecutableAuthority(t *testing.T) {
 	plan := mustHookRunnerPlan(t)
 	var runs int
 	var records []store.HookRunRecord
-	runner := NewHookRunnerWith(HookRunnerDependencies{Locker: hookTestLocker{}, Process: hookTestProcess{factSet: true, fact: HookExecutableFact{Resolved: "/changed/h", Available: true}, runCall: func(HookProcessRequest) { runs++ }}, Clock: fixedHookClock, Read: func(string) (store.HookRunRecord, error) { return store.HookRunRecord{}, os.ErrNotExist }, Write: func(_ string, r store.HookRunRecord) error { records = append(records, r); return nil }})
+	runner := NewHookRunnerWith(HookRunnerDependencies{Locker: hookTestLocker{}, Process: hookTestProcess{factSet: true, fact: HookExecutableFact{Resolved: hookPlanTestPath("changed", "h"), Available: true}, runCall: func(HookProcessRequest) { runs++ }}, Clock: fixedHookClock, Read: func(string) (store.HookRunRecord, error) { return store.HookRunRecord{}, os.ErrNotExist }, Write: func(_ string, r store.HookRunRecord) error { records = append(records, r); return nil }})
 	result, err := runner.Run(context.Background(), hookTestRunRequest(t, plan))
 	if err != nil || result.Failure == nil || result.Failure.Kind != HookFailureGeneration || runs != 0 || len(records) != 2 || records[1].State != "failed" {
 		t.Fatalf("Run=%#v %v runs=%d records=%#v", result, err, runs, records)
@@ -1140,11 +1169,12 @@ func mustHookRunnerPlanEntries(t *testing.T, ids ...string) HookPlan {
 
 func mustHookRunnerPlanWithArguments(t *testing.T, ids, arguments []string) HookPlan {
 	t.Helper()
+	source, target := hookPlanTestPath("source"), hookPlanTestPath("target")
 	entries := make([]hookPlanInputEntry, len(ids))
 	for i, id := range ids {
-		entries[i] = hookPlanInputEntry{ID: id, Repository: "root", SourceRepository: "/source", TargetRepository: "/target", Branch: "main", Head: strings.Repeat("a", 40), ConfiguredExecutable: "h", ResolvedExecutable: "/target/h", Availability: "available", Arguments: append([]string(nil), arguments...), Timeout: time.Second}
+		entries[i] = hookPlanInputEntry{ID: id, Repository: "root", SourceRepository: source, TargetRepository: target, Branch: "main", Head: strings.Repeat("a", 40), ConfiguredExecutable: "h", ResolvedExecutable: filepath.Join(target, "h"), Availability: "available", Arguments: append([]string(nil), arguments...), Timeout: time.Second}
 	}
-	p, err := newHookPlan(hookPlanInput{Operation: "create", Source: "local", Event: "post-create", Policy: "automatic", ProjectID: "project", ProjectName: "Project", BaseRepository: "root", WorkspaceID: "default", WorkspaceName: "Default", SourceLogicalRoot: "/source", TargetLogicalRoot: "/target", SourceBytes: []byte("source"), WorkspaceStateBytes: []byte("state"), Entries: entries})
+	p, err := newHookPlan(hookPlanInput{Operation: "create", Source: "local", Event: "post-create", Policy: "automatic", ProjectID: "project", ProjectName: "Project", BaseRepository: "root", WorkspaceID: "default", WorkspaceName: "Default", SourceLogicalRoot: source, TargetLogicalRoot: target, SourceBytes: []byte("source"), WorkspaceStateBytes: []byte("state"), Entries: entries})
 	if err != nil {
 		t.Fatal(err)
 	}

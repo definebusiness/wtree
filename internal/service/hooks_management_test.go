@@ -435,14 +435,9 @@ func TestHookSharePropagatesTrackerFailuresAtBeforeRename(t *testing.T) {
 		t.Run(failure.Error(), func(t *testing.T) {
 			root, data := t.TempDir(), t.TempDir()
 			manifestPath, configPath := filepath.Join(root, "project.wtree.yml"), filepath.Join(root, ".wtree.yml")
-			if err := os.MkdirAll(filepath.Join(root, ".wtree-hooks"), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(root, ".wtree-hooks", "setup"), []byte("x"), 0o700); err != nil {
-				t.Fatal(err)
-			}
+			executable := writeHookManagementPortableExecutable(t, root)
 			local := hookManagementLocal(manifestPath)
-			local.Hooks = config.HookEvents{"post-create": {{ID: "setup", Command: []string{".wtree-hooks/setup"}}}}
+			local.Hooks = config.HookEvents{"post-create": {{ID: "setup", Command: []string{executable}}}}
 			if err := config.WriteProjectFile(configPath, local); err != nil {
 				t.Fatal(err)
 			}
@@ -1044,14 +1039,9 @@ func TestHookShareMissingBoundariesFailBeforeMutation(t *testing.T) {
 func TestHookShareTrackerCancellationAfterObservationDoesNotMutate(t *testing.T) {
 	root, data := t.TempDir(), t.TempDir()
 	manifestPath, configPath := filepath.Join(root, "project.wtree.yml"), filepath.Join(root, ".wtree.yml")
-	if err := os.MkdirAll(filepath.Join(root, ".wtree-hooks"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, ".wtree-hooks", "setup"), []byte("x"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	executable := writeHookManagementPortableExecutable(t, root)
 	local := hookManagementLocal(manifestPath)
-	local.Hooks = config.HookEvents{"post-create": {{ID: "setup", Command: []string{".wtree-hooks/setup"}}}}
+	local.Hooks = config.HookEvents{"post-create": {{ID: "setup", Command: []string{executable}}}}
 	if err := config.WriteProjectFile(configPath, local); err != nil {
 		t.Fatal(err)
 	}
@@ -1076,6 +1066,21 @@ type hookTrackerError struct{ err error }
 
 func (tracker hookTrackerError) WorkingFileTracked(context.Context, string, string) (bool, error) {
 	return false, tracker.err
+}
+
+func writeHookManagementPortableExecutable(t *testing.T, root string) string {
+	t.Helper()
+	name, command, data := "setup", ".wtree-hooks/setup", []byte("#!/bin/sh\n")
+	if runtime.GOOS == "windows" {
+		name, command, data = "setup.cmd", ".wtree-hooks/setup.cmd", []byte("@echo off\r\n")
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".wtree-hooks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".wtree-hooks", name), data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return command
 }
 
 func TestHookManagementContainsNoExecutionBoundary(t *testing.T) {
@@ -1106,8 +1111,17 @@ func TestHookExecutableAvailabilityCrossPlatformRules(t *testing.T) {
 	}
 	exeInfo, _ := os.Stat(executable)
 	textInfo, _ := os.Stat(text)
-	if !hookExecutableAvailableForPlatform(executable, exeInfo, true) || hookExecutableAvailableForPlatform(text, textInfo, true) || hookExecutableAvailableForPlatform(executable, exeInfo, false) || !hookExecutableAvailableForPlatform(text, textInfo, false) {
+	if !hookExecutableAvailableWithEnvironment(executable, exeInfo, true, []string{"PATHEXT=.EXE"}) || hookExecutableAvailableWithEnvironment(text, textInfo, true, []string{"PATHEXT=.EXE"}) {
 		t.Fatal("platform executable availability mismatch")
+	}
+	if runtime.GOOS == "windows" {
+		if !hookExecutableAvailable(executable, exeInfo) {
+			t.Fatal("real Windows .exe availability mismatch")
+		}
+		return
+	}
+	if hookExecutableAvailableForPlatform(executable, exeInfo, false) || !hookExecutableAvailableForPlatform(text, textInfo, false) {
+		t.Fatal("POSIX executable availability mismatch")
 	}
 }
 
@@ -1374,10 +1388,7 @@ func TestHookManagementGenerationIdentityAndModeChangesAbortMutations(t *testing
 				if err != nil {
 					t.Fatal(err)
 				}
-				changedMode := os.FileMode(0o600)
-				if beforeInfo.Mode().Perm() == changedMode {
-					changedMode = 0o640
-				}
+				changedMode := hookGenerationChangedMode(beforeInfo.Mode().Perm())
 				mutate := func() {
 					if err := os.Chmod(target, changedMode); err != nil {
 						t.Fatal(err)
@@ -1401,6 +1412,19 @@ func TestHookManagementGenerationIdentityAndModeChangesAbortMutations(t *testing
 			})
 		}
 	}
+}
+
+func hookGenerationChangedMode(before os.FileMode) os.FileMode {
+	if runtime.GOOS == "windows" {
+		if before&0o200 != 0 {
+			return 0o444
+		}
+		return 0o666
+	}
+	if before == 0o600 {
+		return 0o640
+	}
+	return 0o600
 }
 
 func TestHookShareRejectsSameByteIdentityAndTypeSwapsUnderAuthority(t *testing.T) {
@@ -1475,6 +1499,73 @@ func TestHookShareRejectsSameByteIdentityAndTypeSwapsUnderAuthority(t *testing.T
 				t.Fatal("identity swap content changed")
 			}
 		})
+	}
+}
+
+func TestHookFileGenerationRetainsIdentityAcrossSameByteReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "generation.yml")
+	data := []byte("same bytes\n")
+	if err := os.WriteFile(path, data, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	generation, err := captureHookFileGeneration(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := generation.file
+	if held == nil {
+		t.Fatal("capture did not retain the generation descriptor")
+	}
+	defer generation.close()
+	before, err := held.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("replacement reused an identity still retained by the capture")
+	}
+	if err := generation.verify(); !errors.Is(err, errHookDefinitionGenerationChanged) {
+		t.Fatalf("verify() = %v, want changed generation", err)
+	}
+	generation.close()
+	if _, err := held.Stat(); err == nil {
+		t.Fatal("generation descriptor remains open after close")
+	}
+}
+
+func TestHookFileGenerationAllowsAtomicReplacement(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "generation.yml")
+	if err := os.WriteFile(path, []byte("old\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	generation, err := captureHookFileGeneration(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generation.file == nil {
+		t.Fatal("capture did not retain the generation descriptor")
+	}
+	defer generation.close()
+	temporary := filepath.Join(directory, "replacement.yml")
+	if err := os.WriteFile(temporary, []byte("new\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(temporary, path); err != nil {
+		t.Fatalf("atomic replacement with captured generation = %v", err)
+	}
+	if err := generation.verify(); !errors.Is(err, errHookDefinitionGenerationChanged) {
+		t.Fatalf("verify() after replacement = %v, want changed generation", err)
 	}
 }
 

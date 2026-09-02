@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
@@ -287,8 +288,12 @@ func TestCreateHookRejectsInconsistentRunnerCompletionProjection(t *testing.T) {
 func TestTrustedLocalSourceExecutableUsesProductionResolutionAndContainment(t *testing.T) {
 	source := t.TempDir()
 	outside := t.TempDir()
-	outsideProgram := filepath.Join(outside, "outside")
-	if err := os.WriteFile(outsideProgram, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	name, script := "setup", "#!/bin/sh\n"
+	if runtime.GOOS == "windows" {
+		name, script = "setup.cmd", "@exit /b 0\r\n"
+	}
+	outsideProgram := filepath.Join(outside, "outside"+filepath.Ext(name))
+	if err := os.WriteFile(outsideProgram, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	adapter := newHookProcessAdapter()
@@ -299,24 +304,24 @@ func TestTrustedLocalSourceExecutableUsesProductionResolutionAndContainment(t *t
 		wantErr     bool
 		wantTrusted string
 	}{
-		{name: "lexical-parent-escape", program: filepath.Join("..", filepath.Base(outside), "outside"), wantErr: true},
-		{name: "symlink-escape", program: filepath.Join("hooks", "escape"), prepare: func(t *testing.T) {
+		{name: "lexical-parent-escape", program: filepath.Join("..", filepath.Base(outside), filepath.Base(outsideProgram)), wantErr: true},
+		{name: "symlink-escape", program: filepath.Join("hooks", "escape"+filepath.Ext(name)), prepare: func(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(source, "hooks"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Symlink(outsideProgram, filepath.Join(source, "hooks", "escape")); err != nil {
+			if err := os.Symlink(outsideProgram, filepath.Join(source, "hooks", "escape"+filepath.Ext(name))); err != nil {
 				t.Fatal(err)
 			}
 		}, wantErr: true},
-		{name: "nested-regular", program: filepath.Join("hooks", "nested", "setup"), prepare: func(t *testing.T) {
-			path := filepath.Join(source, "hooks", "nested", "setup")
+		{name: "nested-regular", program: filepath.Join("hooks", "nested", name), prepare: func(t *testing.T) {
+			path := filepath.Join(source, "hooks", "nested", name)
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 				t.Fatal(err)
 			}
-		}, wantTrusted: filepath.Join(source, "hooks", "nested", "setup")},
+		}, wantTrusted: filepath.Join(source, "hooks", "nested", name)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.prepare != nil {

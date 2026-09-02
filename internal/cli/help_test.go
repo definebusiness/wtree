@@ -95,7 +95,7 @@ func TestLifecycleHookPublicDocumentationKeepsInstalledContractAligned(t *testin
 			"A lifecycle hook left setup incomplete", "wtree hooks retry", "starts a fresh run", "shared_hooks", "hook-free", "explicitly version 3",
 		},
 		"tutorial/LIFECYCLE-HOOKS.md": {
-			"make tutorial-test", "TestLifecycleHookTutorialAcceptance", "tracked `sh` fixture on Unix", "`.cmd`", "generated Go helpers", "--run-hooks", "--no-hooks", "PATHEXT",
+			"make tutorial-test", "TestLifecycleHookTutorialAcceptance", "tracked `sh` fixture on Unix", "native `.exe` test-binary helper on Windows", "`.cmd` fixtures remain availability/PATHEXT-only", "generated Go helpers", "--run-hooks", "--no-hooks", "PATHEXT",
 		},
 		"Makefile": {
 			"lifecycle-hook-tutorial-test:", "HookRunnerSerializesConcurrentSameEvent", "HookRunRecordRoundTripAndPrivacy",
