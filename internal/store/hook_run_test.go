@@ -56,6 +56,9 @@ func TestHookRunRecordReadAndWriteRejectIntermediateAncestorChange(t *testing.T)
 					hookRunAuthorityStepHook = nil
 					dataDir := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(path)))))
 					if err := os.Rename(filepath.Join(dataDir, "projects"), filepath.Join(dataDir, "old-projects")); err != nil {
+						if os.IsPermission(err) {
+							t.Skipf("directory replacement fixture unavailable: %v", err)
+						}
 						return err
 					}
 					if scenario == "replacement" {
@@ -296,7 +299,10 @@ func TestHookRunRecordReplacementCompletedRequiresExactReadableGeneration(t *tes
 		name  string
 		after func(string) error
 	}{
-		{"corrupt", func(path string) error { return os.WriteFile(path, []byte("not-json"), 0o600) }},
+		// A generic atomic replacement remains valid while the private writer
+		// retains the published handle. os.WriteFile opens without delete-share
+		// on Windows and therefore cannot model a competing generation.
+		{"corrupt", func(path string) error { return fsutil.WriteFileAtomicMode(path, []byte("not-json"), 0o600) }},
 		{"missing", func(path string) error { return os.Remove(path) }},
 	} {
 		t.Run(test.name, func(t *testing.T) {

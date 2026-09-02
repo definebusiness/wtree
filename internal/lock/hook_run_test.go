@@ -118,6 +118,9 @@ func TestProjectAndHookRunLocksRejectIntermediateAncestorReplacementBeforeLease(
 					}
 					privateLockAuthorityStepHook = nil
 					if err := os.Rename(filepath.Join(dataDir, "projects"), filepath.Join(dataDir, "old-projects")); err != nil {
+						if os.IsPermission(err) {
+							t.Skipf("directory replacement fixture unavailable: %v", err)
+						}
 						return err
 					}
 					if scenario == "replacement" {

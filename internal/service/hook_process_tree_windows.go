@@ -22,6 +22,7 @@ type hookWindowsProcessOperations struct {
 	openThread               func(uint32, bool, uint32) (windows.Handle, error)
 	resumeThread             func(windows.Handle) (uint32, error)
 	terminateJobObject       func(windows.Handle, uint32) error
+	killProcess              func(*exec.Cmd) error
 	closeHandle              func(windows.Handle) error
 }
 
@@ -35,6 +36,7 @@ var hookWindowsProcessOps = hookWindowsProcessOperations{
 	openThread:               windows.OpenThread,
 	resumeThread:             windows.ResumeThread,
 	terminateJobObject:       windows.TerminateJobObject,
+	killProcess:              func(command *exec.Cmd) error { return command.Process.Kill() },
 	closeHandle:              windows.CloseHandle,
 }
 
@@ -147,7 +149,7 @@ func (tree hookProcessTree) Terminate() error {
 			return nil
 		}
 	}
-	directErr := tree.command.Process.Kill()
+	directErr := tree.operations.killProcess(tree.command)
 	if directErr == nil {
 		return jobErr
 	}

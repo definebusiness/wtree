@@ -72,6 +72,9 @@ func TestHookRunInventoryRejectsIntermediateAncestorChange(t *testing.T) {
 				}
 				hookRunInventoryStepHook = nil
 				if err := os.Rename(filepath.Join(data, "projects"), filepath.Join(data, "old-projects")); err != nil {
+					if os.IsPermission(err) {
+						t.Skipf("directory replacement fixture unavailable: %v", err)
+					}
 					return err
 				}
 				if scenario == "replacement" {
@@ -303,7 +306,8 @@ func TestHookRetryRejectsChangedPlanAuthorityBeforeRunnerOrRecordMutation(t *tes
 	root, data := t.TempDir(), t.TempDir()
 	project := hookManagementProject(filepath.Join(root, ".wtree.yml"), root)
 	workspace := domain.Workspace{ID: "workspace", Name: "Workspace", RootPath: root}
-	planValue, err := newHookPlan(hookPlanInput{Operation: "create", Source: "local", Event: "post-create", Policy: "automatic", ProjectID: project.ID, ProjectName: project.Name, BaseRepository: project.BaseRepository, WorkspaceID: workspace.ID, WorkspaceName: workspace.Name, SourceLogicalRoot: root, TargetLogicalRoot: root, SourceBytes: []byte("source"), WorkspaceStateBytes: []byte("state"), Entries: []hookPlanInputEntry{{ID: "first", Repository: project.BaseRepository, SourceRepository: root, TargetRepository: root, Branch: "main", Head: "0123456789abcdef0123456789abcdef01234567", ConfiguredExecutable: "/bin/true", ResolvedExecutable: "/bin/true", Availability: "available", Timeout: time.Minute}, {ID: "second", Repository: project.BaseRepository, SourceRepository: root, TargetRepository: root, Branch: "main", Head: "0123456789abcdef0123456789abcdef01234567", ConfiguredExecutable: "/bin/true", ResolvedExecutable: "/bin/true", Availability: "available", Timeout: time.Minute}}})
+	executable := hookInventoryTestExecutable(t)
+	planValue, err := newHookPlan(hookPlanInput{Operation: "create", Source: "local", Event: "post-create", Policy: "automatic", ProjectID: project.ID, ProjectName: project.Name, BaseRepository: project.BaseRepository, WorkspaceID: workspace.ID, WorkspaceName: workspace.Name, SourceLogicalRoot: root, TargetLogicalRoot: root, SourceBytes: []byte("source"), WorkspaceStateBytes: []byte("state"), Entries: []hookPlanInputEntry{{ID: "first", Repository: project.BaseRepository, SourceRepository: root, TargetRepository: root, Branch: "main", Head: "0123456789abcdef0123456789abcdef01234567", ConfiguredExecutable: executable, ResolvedExecutable: executable, Availability: "available", Timeout: time.Minute}, {ID: "second", Repository: project.BaseRepository, SourceRepository: root, TargetRepository: root, Branch: "main", Head: "0123456789abcdef0123456789abcdef01234567", ConfiguredExecutable: executable, ResolvedExecutable: executable, Availability: "available", Timeout: time.Minute}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,15 +349,25 @@ func TestHookRetryRejectsChangedPlanAuthorityBeforeRunnerOrRecordMutation(t *tes
 
 func hookRetryChangedPlan(t *testing.T, project domain.Project, workspace domain.Workspace, ids, arguments []string) HookPlan {
 	t.Helper()
+	executable := hookInventoryTestExecutable(t)
 	entries := make([]hookPlanInputEntry, 0, len(ids))
 	for _, id := range ids {
-		entries = append(entries, hookPlanInputEntry{ID: id, Repository: project.BaseRepository, SourceRepository: workspace.RootPath, TargetRepository: workspace.RootPath, Branch: "main", Head: "0123456789abcdef0123456789abcdef01234567", ConfiguredExecutable: "/bin/true", ResolvedExecutable: "/bin/true", Availability: "available", Arguments: append([]string(nil), arguments...), Timeout: time.Minute})
+		entries = append(entries, hookPlanInputEntry{ID: id, Repository: project.BaseRepository, SourceRepository: workspace.RootPath, TargetRepository: workspace.RootPath, Branch: "main", Head: "0123456789abcdef0123456789abcdef01234567", ConfiguredExecutable: executable, ResolvedExecutable: executable, Availability: "available", Arguments: append([]string(nil), arguments...), Timeout: time.Minute})
 	}
 	value, err := newHookPlan(hookPlanInput{Operation: "create", Source: "local", Event: "post-create", Policy: "automatic", ProjectID: project.ID, ProjectName: project.Name, BaseRepository: project.BaseRepository, WorkspaceID: workspace.ID, WorkspaceName: workspace.Name, SourceLogicalRoot: workspace.RootPath, TargetLogicalRoot: workspace.RootPath, SourceBytes: []byte("source"), WorkspaceStateBytes: []byte("state"), Entries: entries})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return value
+}
+
+func hookInventoryTestExecutable(t *testing.T) string {
+	t.Helper()
+	path, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestHookRunInventoryRejectsMultipleAndSymlinkedRecordsWithoutFollowingThem(t *testing.T) {
@@ -462,7 +476,8 @@ func TestHookRunInventoryUsesInjectedRebuildAndVerifierForExactAuthority(t *test
 	root, data := t.TempDir(), t.TempDir()
 	project := hookManagementProject(filepath.Join(root, ".wtree.yml"), root)
 	workspace := domain.Workspace{ID: "workspace", Name: "Workspace", RootPath: root}
-	planValue, err := newHookPlan(hookPlanInput{Operation: "create", Source: "local", Event: "post-create", Policy: "automatic", ProjectID: project.ID, ProjectName: project.Name, BaseRepository: project.BaseRepository, WorkspaceID: workspace.ID, WorkspaceName: workspace.Name, SourceLogicalRoot: root, TargetLogicalRoot: root, SourceBytes: []byte("source"), WorkspaceStateBytes: []byte("state"), Entries: []hookPlanInputEntry{{ID: "setup", Repository: project.BaseRepository, SourceRepository: root, TargetRepository: root, Branch: "main", Head: "0123456789abcdef0123456789abcdef01234567", ConfiguredExecutable: "/bin/true", ResolvedExecutable: "/bin/true", Availability: "available", Arguments: []string{}, Timeout: time.Minute}}})
+	executable := hookInventoryTestExecutable(t)
+	planValue, err := newHookPlan(hookPlanInput{Operation: "create", Source: "local", Event: "post-create", Policy: "automatic", ProjectID: project.ID, ProjectName: project.Name, BaseRepository: project.BaseRepository, WorkspaceID: workspace.ID, WorkspaceName: workspace.Name, SourceLogicalRoot: root, TargetLogicalRoot: root, SourceBytes: []byte("source"), WorkspaceStateBytes: []byte("state"), Entries: []hookPlanInputEntry{{ID: "setup", Repository: project.BaseRepository, SourceRepository: root, TargetRepository: root, Branch: "main", Head: "0123456789abcdef0123456789abcdef01234567", ConfiguredExecutable: executable, ResolvedExecutable: executable, Availability: "available", Arguments: []string{}, Timeout: time.Minute}}})
 	if err != nil {
 		t.Fatal(err)
 	}

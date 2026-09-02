@@ -93,6 +93,32 @@ func TestHookProcessWindowsSuspensionIsHookSpecific(t *testing.T) {
 	}
 }
 
+func TestHookProcessTreeWindowsJobTerminationFailureFallsBackOnce(t *testing.T) {
+	jobFailure := errors.New("injected Job termination failure")
+	jobCalls, leaderCalls := 0, 0
+	tree := hookProcessTree{
+		command:  &exec.Cmd{},
+		job:      windows.Handle(1),
+		assigned: true,
+		operations: hookWindowsProcessOperations{
+			terminateJobObject: func(windows.Handle, uint32) error {
+				jobCalls++
+				return jobFailure
+			},
+			killProcess: func(*exec.Cmd) error {
+				leaderCalls++
+				return nil
+			},
+		},
+	}
+	if err := tree.Terminate(); !errors.Is(err, jobFailure) {
+		t.Fatalf("Terminate() = %v, want Job termination failure", err)
+	}
+	if jobCalls != 1 || leaderCalls != 1 {
+		t.Fatalf("Job calls=%d leader-kill calls=%d, want one each", jobCalls, leaderCalls)
+	}
+}
+
 func TestHookProcessWindowsSetupFailuresTerminateAndReap(t *testing.T) {
 	switch os.Getenv("WTREE_HOOK_WINDOWS_FAILURE_HELPER") {
 	case "leader":

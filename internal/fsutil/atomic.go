@@ -28,20 +28,20 @@ type AtomicStepHook func(string) error
 // WriteFileAtomicMode durably replaces one regular file while preserving the
 // caller-selected mode. The temporary is co-located so rename is atomic.
 func WriteFileAtomicMode(path string, data []byte, mode os.FileMode) error {
-	return writeFileAtomicMode(path, data, mode, nil, os.Rename)
+	return writeFileAtomicMode(path, data, mode, nil, atomicReplace)
 }
 
 // WriteFileAtomicCreateMode durably creates a file using creation permissions
 // that remain subject to the process umask.
 func WriteFileAtomicCreateMode(path string, data []byte, mode os.FileMode) error {
-	return writeFileAtomicModeCreate(path, data, mode, nil, os.Rename)
+	return writeFileAtomicModeCreate(path, data, mode, nil, atomicReplace)
 }
 
 // WriteFileAtomicCreateModeWithReplace retains umask-correct creation while
 // allowing transaction tests to inject the final replacement boundary.
 func WriteFileAtomicCreateModeWithReplace(path string, data []byte, mode os.FileMode, replace func(string, string) error) error {
 	if replace == nil {
-		replace = os.Rename
+		replace = atomicReplace
 	}
 	return writeFileAtomicModeCreate(path, data, mode, nil, replace)
 }
@@ -50,21 +50,21 @@ func WriteFileAtomicCreateModeWithReplace(path string, data []byte, mode os.File
 // WriteFileAtomicModeWithHook. The hook may reject a changed target at the
 // final replacement boundary while retaining umask-correct creation modes.
 func WriteFileAtomicCreateModeWithHook(path string, data []byte, mode os.FileMode, hook AtomicStepHook) error {
-	return writeFileAtomicModeCreate(path, data, mode, hook, os.Rename)
+	return writeFileAtomicModeCreate(path, data, mode, hook, atomicReplace)
 }
 
 // WriteFileAtomicModeWithHook is WriteFileAtomicMode with test-only step
 // observation. The temporary is always created beside the target, flushed and
 // closed before replacement, then the containing directory is flushed.
 func WriteFileAtomicModeWithHook(path string, data []byte, mode os.FileMode, hook AtomicStepHook) error {
-	return writeFileAtomicMode(path, data, mode, hook, os.Rename)
+	return writeFileAtomicMode(path, data, mode, hook, atomicReplace)
 }
 
 // WriteFileAtomicModeWithReplace retains the same durability protocol while
 // allowing a narrowly injected replacement operation in transaction tests.
 func WriteFileAtomicModeWithReplace(path string, data []byte, mode os.FileMode, replace func(string, string) error) error {
 	if replace == nil {
-		replace = os.Rename
+		replace = atomicReplace
 	}
 	return writeFileAtomicMode(path, data, mode, nil, replace)
 }

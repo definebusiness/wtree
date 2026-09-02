@@ -214,6 +214,9 @@ func TestHookShareRejectsUntrackedRelativeExecutableWithoutMutation(t *testing.T
 func TestHookShareUsesLiteralTrackedNestedExecutableWithoutGitMutation(t *testing.T) {
 	repository, data := testutil.NewGitRepository(t), t.TempDir()
 	relative := ".wtree hooks/ü setup"
+	if runtime.GOOS == "windows" {
+		relative += ".exe"
+	}
 	repository.CommitFile(relative, "setup\n", "hook")
 	if runtime.GOOS != "windows" {
 		if err := os.Chmod(filepath.Join(repository.Path, filepath.FromSlash(relative)), 0o700); err != nil {
@@ -1557,11 +1560,7 @@ func TestHookFileGenerationAllowsAtomicReplacement(t *testing.T) {
 		t.Fatal("capture did not retain the generation descriptor")
 	}
 	defer generation.close()
-	temporary := filepath.Join(directory, "replacement.yml")
-	if err := os.WriteFile(temporary, []byte("new\n"), 0o640); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(temporary, path); err != nil {
+	if err := fsutil.WriteFileAtomicMode(path, []byte("new\n"), 0o640); err != nil {
 		t.Fatalf("atomic replacement with captured generation = %v", err)
 	}
 	if err := generation.verify(); !errors.Is(err, errHookDefinitionGenerationChanged) {

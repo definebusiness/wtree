@@ -136,8 +136,8 @@ func TestHookProcessClassifiesOutputTimeoutCancellationAndNonZero(t *testing.T) 
 		request.Environment = append(os.Environ(), "WTREE_HOOK_PROCESS_HELPER=stdout-block")
 		started := time.Now()
 		_, err := newHookProcessAdapter().Run(context.Background(), request)
-		if !errors.Is(err, errHookProcessOutputWriter) || attempts() != 2 || time.Since(started) > directProcessCleanupTimeout+500*time.Millisecond {
-			t.Fatalf("Run() err=%v attempts=%d elapsed=%s", err, attempts(), time.Since(started))
+		if !errors.Is(err, errHookProcessOutputWriter) || attempts() != hookWriterCleanupTerminationAttempts() || time.Since(started) > directProcessCleanupTimeout+500*time.Millisecond {
+			t.Fatalf("Run() err=%v attempts=%d want=%d elapsed=%s", err, attempts(), hookWriterCleanupTerminationAttempts(), time.Since(started))
 		}
 	})
 	t.Run("nonzero", func(t *testing.T) {
@@ -304,6 +304,9 @@ func TestHookProcessResolveUsesSuppliedPATHAndPATHEXT(t *testing.T) {
 }
 
 func TestHookProcessResolvePATHAuthority(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable-bit PATH fixture is not representable on Windows")
+	}
 	directory := t.TempDir()
 	path := filepath.Join(directory, "tool")
 	if err := os.WriteFile(path, []byte("x"), 0o700); err != nil {
@@ -1073,6 +1076,12 @@ func TestHookRunnerRejectsRetargetedLocalSourceRelativeSymlinkBeforeRun(t *testi
 	source, target, outside := t.TempDir(), t.TempDir(), t.TempDir()
 	inside := filepath.Join(source, "hooks", "inside")
 	link := filepath.Join(source, "hooks", "setup")
+	configured := filepath.Join("hooks", "setup")
+	if runtime.GOOS == "windows" {
+		inside += ".exe"
+		link += ".exe"
+		configured += ".exe"
+	}
 	if err := os.MkdirAll(filepath.Dir(inside), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1082,7 +1091,7 @@ func TestHookRunnerRejectsRetargetedLocalSourceRelativeSymlinkBeforeRun(t *testi
 	if err := os.Symlink(inside, link); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := newHookPlan(hookPlanInput{Operation: "create", Source: "local", Event: "post-create", Policy: "automatic", ProjectID: "project", ProjectName: "Project", BaseRepository: "root", WorkspaceID: "default", WorkspaceName: "Default", SourceLogicalRoot: source, TargetLogicalRoot: target, SourceBytes: []byte("source"), WorkspaceStateBytes: []byte("state"), Entries: []hookPlanInputEntry{{ID: "setup", Repository: "root", SourceRepository: source, TargetRepository: target, Branch: "main", Head: strings.Repeat("a", 40), ConfiguredExecutable: filepath.Join("hooks", "setup"), ResolvedExecutable: inside, Availability: "available", Timeout: time.Second}}})
+	plan, err := newHookPlan(hookPlanInput{Operation: "create", Source: "local", Event: "post-create", Policy: "automatic", ProjectID: "project", ProjectName: "Project", BaseRepository: "root", WorkspaceID: "default", WorkspaceName: "Default", SourceLogicalRoot: source, TargetLogicalRoot: target, SourceBytes: []byte("source"), WorkspaceStateBytes: []byte("state"), Entries: []hookPlanInputEntry{{ID: "setup", Repository: "root", SourceRepository: source, TargetRepository: target, Branch: "main", Head: strings.Repeat("a", 40), ConfiguredExecutable: configured, ResolvedExecutable: inside, Availability: "available", Timeout: time.Second}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1109,6 +1118,12 @@ func TestHookRunnerRejectsRetargetedPortableRelativeSymlinkBeforeRun(t *testing.
 	source, target, outside := t.TempDir(), t.TempDir(), t.TempDir()
 	target = source
 	inside, link := filepath.Join(source, "hooks", "inside"), filepath.Join(source, "hooks", "setup")
+	configured := "hooks/setup"
+	if runtime.GOOS == "windows" {
+		inside += ".exe"
+		link += ".exe"
+		configured += ".exe"
+	}
 	if err := os.MkdirAll(filepath.Dir(inside), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1118,7 +1133,7 @@ func TestHookRunnerRejectsRetargetedPortableRelativeSymlinkBeforeRun(t *testing.
 	if err := os.Symlink(inside, link); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := newHookPlan(hookPlanInput{Operation: "clone", Source: "portable", Event: "post-clone", Policy: "requires-run-hooks", ProjectID: "project", ProjectName: "Project", BaseRepository: "root", WorkspaceID: "default", WorkspaceName: "Default", SourceLogicalRoot: source, TargetLogicalRoot: target, SourceBytes: []byte("source"), WorkspaceStateBytes: []byte("state"), Entries: []hookPlanInputEntry{{ID: "setup", Repository: "root", SourceRepository: source, TargetRepository: target, Branch: "main", Head: strings.Repeat("a", 40), ConfiguredExecutable: "hooks/setup", ResolvedExecutable: inside, Availability: "available", Timeout: time.Second}}})
+	plan, err := newHookPlan(hookPlanInput{Operation: "clone", Source: "portable", Event: "post-clone", Policy: "requires-run-hooks", ProjectID: "project", ProjectName: "Project", BaseRepository: "root", WorkspaceID: "default", WorkspaceName: "Default", SourceLogicalRoot: source, TargetLogicalRoot: target, SourceBytes: []byte("source"), WorkspaceStateBytes: []byte("state"), Entries: []hookPlanInputEntry{{ID: "setup", Repository: "root", SourceRepository: source, TargetRepository: target, Branch: "main", Head: strings.Repeat("a", 40), ConfiguredExecutable: configured, ResolvedExecutable: inside, Availability: "available", Timeout: time.Second}}})
 	if err != nil {
 		t.Fatal(err)
 	}
