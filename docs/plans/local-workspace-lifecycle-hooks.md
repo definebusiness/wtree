@@ -1,6 +1,6 @@
 # Local and shared workspace lifecycle hooks implementation plan
 
-Status: initial
+Status: implemented
 Source specification: [Local and shared workspace lifecycle hooks specification](../spec/local-workspace-lifecycle-hooks.md)
 Implementation context: [Local and shared workspace lifecycle hooks context](local-workspace-lifecycle-hooks-context.md)
 Source idea: [Machine-local and shared workspace lifecycle hooks](../ideas/local-workspace-lifecycle-hooks.md)
@@ -536,7 +536,7 @@ and the same durable failure semantics as local hooks, shared hooks remain
 provably inert, and update preserves the separation of portable distribution
 from local consent.
 
-### [ ] M06 — Complete documentation and cross-platform lifecycle acceptance
+### [x] M06 — Complete documentation and cross-platform lifecycle acceptance
 
 Specification coverage: [§§13–15](../spec/local-workspace-lifecycle-hooks.md#13-safety-and-compatibility-requirements) and the complete specification
 
@@ -603,3 +603,4 @@ Append entries during execution; do not rewrite earlier evidence.
 | 2026-08-31 | M03 | Trusted local post-create planning/execution, lifecycle-owned registry CAS authority, physical source-relative executable containment, post-publication durable sequencing, explicit no-hooks bypass, bounded setup-incomplete results, escaped dry-run arguments, exact hook-free v2 compatibility, focused normal/race, full normal/race, vet, format, build, release, and scoped diff checks passed; one transient cwd-loss full-suite run was superseded by a clean retained rerun, and repository-wide diff check reports only the preserved unrelated immutable-ledger EOF blank | Approved by the normal reviewer after R1–R4 remediation; no material findings remain | None (not authorized) |
 | 2026-08-31 | M04 | Exact local/portable retry authority, strict read-only run inventory, next-index/finalizing resume, byte-identical no-mutation rejection, conditional status setup projection, bounded non-fixable doctor findings, production cancellation propagation, platform-scoped path identity, focused normal/race, retained full normal/race, vet, format, build, release, and scoped diff checks passed; repository-wide diff check reports only the preserved unrelated immutable-ledger EOF blank | Approved by the normal reviewer after R1–R5 remediation and final Escalation Implementer correction of the two remaining R4 executable-check cancellation boundaries; no material findings remain | None (not authorized) |
 | 2026-09-01 | M05 | Invocation-scoped portable post-clone consent, exact manifest-bound hook projection, private-stage and under-lock tracked/physical authority, post-publication durable setup recovery and retry, inert shared declarations, v2/v3 update/local-consent preservation, strict runner-result prefixes, focused normal/race, retained full normal/race, vet, format, build, release, and scoped diff checks passed; repository-wide diff check reports only the preserved unrelated immutable-ledger EOF blank | Approved by the normal reviewer after R1–R3 remediation and a narrowed R3 structured-prefix correction; no material findings remain | None (not authorized) |
+| 2026-09-03 | M06 | Complete lifecycle tutorial, public-contract/security/concurrency matrices, documentation and traceability gates passed locally and in exact-tree CI run 33763942454: Ubuntu 9m20s, macOS 26m08s, and native Windows 1h19m35s at `5ba2f75`; Windows normal/race partitions and all format, vet, build, and release gates passed | Approved by the normal reviewer after the recorded R6–R24 Windows portability, publication, absence-classification, and native-helper remediations; no material findings remain | Authorized delivery series on PR #2 ending at `5ba2f75` |

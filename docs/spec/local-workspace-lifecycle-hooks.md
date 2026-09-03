@@ -1,6 +1,6 @@
 # Local and shared workspace lifecycle hooks specification
 
-Status: planned
+Status: implemented
 Source idea: [Machine-local and shared workspace lifecycle hooks](../ideas/local-workspace-lifecycle-hooks.md)
 Implementation plan: [Local and shared workspace lifecycle hooks implementation plan](../plans/local-workspace-lifecycle-hooks.md)
 Related capability specification: [Full multi-repository experience §8.2](full-multi-repository-experience.md#82-lifecycle-hooks)
