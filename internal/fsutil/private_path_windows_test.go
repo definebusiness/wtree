@@ -55,6 +55,36 @@ func TestWindowsPrivatePathProtectsOwnedDescendantsAndReplacement(t *testing.T) 
 	}
 }
 
+func TestWindowsPrivatePathReleasesPublicationAuthorityBeforeDirSync(t *testing.T) {
+	anchor := t.TempDir()
+	authority, err := OpenPrivatePath(anchor, []string{"projects"}, "event.json", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close()
+	leaf := filepath.Join(anchor, "projects", "event.json")
+	completed := errors.New("dir sync observed concurrent record")
+	err = authority.WriteFileAtomicModeWithHook([]byte("published record"), 0o600, func(step string) error {
+		if step != "dir-sync" {
+			return nil
+		}
+		if err := os.WriteFile(leaf, []byte("concurrent record"), 0o600); err != nil {
+			t.Fatalf("concurrent private record write during dir-sync: %v", err)
+		}
+		return completed
+	})
+	if err == nil || !ReplacementCompleted(err) || !errors.Is(err, completed) {
+		t.Fatalf("error=%v completed=%t", err, ReplacementCompleted(err))
+	}
+	if err := authority.WriteFileAtomicModeWithHook([]byte("next record"), 0o600, nil); err != nil {
+		t.Fatalf("subsequent private transition: %v", err)
+	}
+	data, err := authority.ReadFile()
+	if err != nil || string(data) != "next record" {
+		t.Fatalf("next private record=%q error=%v", data, err)
+	}
+}
+
 func TestWindowsPrivatePathRejectsUnsafeDirectoryAndLeafSecurityWithoutMutation(t *testing.T) {
 	anchor := t.TempDir()
 	authority, err := OpenPrivatePath(anchor, []string{"projects"}, "event.json", true)

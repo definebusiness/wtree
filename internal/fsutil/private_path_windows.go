@@ -18,6 +18,9 @@ const privateWindowsAllAccess windows.ACCESS_MASK = windows.STANDARD_RIGHTS_REQU
 
 var privateTemporarySequence atomic.Uint64
 var privateWindowsBeforeIdentityReopen func(string)
+var reopenPrivateWindowsHandle = func(handle windows.Handle) (windows.Handle, error) {
+	return reopenWindowsHandle(handle, uint32(privateWindowsAllAccess))
+}
 
 func privatePathNotExist(err error) bool {
 	return errors.Is(err, windows.STATUS_OBJECT_NAME_NOT_FOUND) || errors.Is(err, windows.STATUS_OBJECT_PATH_NOT_FOUND) || errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND)
@@ -517,37 +520,54 @@ func (path *privatePath) writeFileAtomic(data []byte, mode os.FileMode, hook Ato
 		return err
 	}
 	name := fmt.Sprintf(".%s-%d-%d", path.leaf, os.Getpid(), privateTemporarySequence.Add(1))
-	handle, err := openPrivateWindowsRelative(path.directory, name, privateWindowsAllAccess,
+	writerHandle, err := openPrivateWindowsRelative(path.directory, name,
+		windows.GENERIC_WRITE|windows.FILE_READ_ATTRIBUTES|windows.READ_CONTROL|windows.SYNCHRONIZE,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_CREATE,
 		windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT, descriptor)
 	if err != nil {
 		return err
 	}
-	file := os.NewFile(uintptr(handle), name)
-	if file == nil {
-		windows.CloseHandle(handle)
+	writer := os.NewFile(uintptr(writerHandle), name)
+	if writer == nil {
+		windows.CloseHandle(writerHandle)
 		return errors.New("adopt private temporary handle")
 	}
-	renamed := false
+	renamed, disposeTemporary := false, true
+	publisherHandle := windows.InvalidHandle
+	var publisher *os.File
 	defer func() {
-		if !renamed {
-			_ = removePrivateWindowsHandle(handle)
+		if !renamed && disposeTemporary {
+			cleanup := publisherHandle
+			if cleanup == windows.InvalidHandle && writer != nil {
+				cleanup, _ = reopenPrivateWindowsHandle(writerHandle)
+			}
+			if cleanup != windows.InvalidHandle {
+				_ = removePrivateWindowsHandle(cleanup)
+				if cleanup != publisherHandle {
+					_ = windows.CloseHandle(cleanup)
+				}
+			}
 		}
-		file.Close()
+		if publisher != nil {
+			_ = publisher.Close()
+		}
+		if writer != nil {
+			_ = writer.Close()
+		}
 	}()
-	if err := validatePrivateWindowsHandle(handle, path.user, false); err != nil {
+	if err := validatePrivateWindowsHandle(writerHandle, path.user, false); err != nil {
 		return err
 	}
 	if err := atomicStep(hook, "write"); err != nil {
 		return err
 	}
-	if _, err := file.Write(data); err != nil {
+	if _, err := writer.Write(data); err != nil {
 		return err
 	}
 	if err := atomicStep(hook, "sync"); err != nil {
 		return err
 	}
-	if err := Sync(file); err != nil {
+	if err := Sync(writer); err != nil {
 		return err
 	}
 	if err := atomicStep(hook, "close"); err != nil {
@@ -559,16 +579,36 @@ func (path *privatePath) writeFileAtomic(data []byte, mode os.FileMode, hook Ato
 	if err := path.validateDirectory(); err != nil {
 		return err
 	}
-	if err := renamePrivateWindowsHandle(handle, path.directory, path.leaf); err != nil {
+	publisherHandle, err = reopenPrivateWindowsHandle(writerHandle)
+	if err != nil {
+		return err
+	}
+	publisher = os.NewFile(uintptr(publisherHandle), name)
+	if publisher == nil {
+		windows.CloseHandle(publisherHandle)
+		publisherHandle = windows.InvalidHandle
+		return errors.New("adopt private publication handle")
+	}
+	if err := writer.Close(); err != nil {
+		writer = nil
+		return err
+	}
+	writer = nil
+	if err := renamePrivateWindowsHandle(publisherHandle, path.directory, path.leaf); err != nil {
 		return err
 	}
 	renamed = true
-	if err := validatePrivateWindowsRelativeIdentity(path.directory, path.leaf, handle, false); err != nil {
+	if err := validatePrivateWindowsRelativeIdentity(path.directory, path.leaf, publisherHandle, false); err != nil {
 		return &postReplacementError{Err: err}
 	}
 	if err := path.validateLeaf(true); err != nil {
 		return &postReplacementError{Err: err}
 	}
+	if err := publisher.Close(); err != nil {
+		publisher = nil
+		return &postReplacementError{Err: fmt.Errorf("close private publication handle: %w", err)}
+	}
+	publisher = nil
 	if err := atomicStep(hook, "dir-sync"); err != nil {
 		return &postReplacementError{Err: err}
 	}

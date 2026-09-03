@@ -36,32 +36,48 @@ func writeFileAtomicPlatform(path string, data []byte, mode os.FileMode, hook At
 		return true, err
 	}
 	defer windows.CloseHandle(directoryHandle)
-	handle, name, err := createAtomicReplacementTemp(directoryHandle, leaf)
+	writerHandle, name, err := createAtomicReplacementTemp(directoryHandle, leaf)
 	if err != nil {
 		return true, err
 	}
-	file := os.NewFile(uintptr(handle), name)
-	if file == nil {
-		windows.CloseHandle(handle)
+	writer := os.NewFile(uintptr(writerHandle), name)
+	if writer == nil {
+		windows.CloseHandle(writerHandle)
 		return true, errors.New("adopt atomic temporary handle")
 	}
 	published, disposeTemporary := false, true
+	publisherHandle := windows.InvalidHandle
+	var publisher *os.File
 	defer func() {
 		if !published && disposeTemporary {
-			_ = removeAtomicReplacement(handle)
+			cleanup := publisherHandle
+			if cleanup == windows.InvalidHandle && writer != nil {
+				cleanup, _ = reopenAtomicReplacementHandle(writerHandle)
+			}
+			if cleanup != windows.InvalidHandle {
+				_ = removeAtomicReplacement(cleanup)
+				if cleanup != publisherHandle {
+					_ = windows.CloseHandle(cleanup)
+				}
+			}
 		}
-		_ = file.Close()
+		if publisher != nil {
+			_ = publisher.Close()
+		}
+		if writer != nil {
+			_ = writer.Close()
+		}
 	}()
 	if err := atomicStep(hook, "write"); err != nil {
 		return true, err
 	}
-	if _, err := file.Write(data); err != nil {
+	if _, err := writer.Write(data); err != nil {
 		return true, err
 	}
 	if err := atomicStep(hook, "sync"); err != nil {
 		return true, err
 	}
-	if err := Sync(file); err != nil {
+	if err := Sync(writer); err != nil {
 		return true, err
 	}
 	if err := atomicStep(hook, "close"); err != nil {
@@ -70,17 +86,32 @@ func writeFileAtomicPlatform(path string, data []byte, mode os.FileMode, hook At
 	if err := atomicStep(hook, "before-rename"); err != nil {
 		return true, err
 	}
+	publisherHandle, err = reopenAtomicReplacementHandle(writerHandle)
+	if err != nil {
+		return true, err
+	}
+	publisher = os.NewFile(uintptr(publisherHandle), name)
+	if publisher == nil {
+		windows.CloseHandle(publisherHandle)
+		publisherHandle = windows.InvalidHandle
+		return true, errors.New("adopt atomic publication handle")
+	}
+	if err := writer.Close(); err != nil {
+		writer = nil
+		return true, err
+	}
+	writer = nil
 	// A rename can change the namespace and still report an error. Do not
 	// dispose the source by handle until we independently prove that it still
 	// names the temporary leaf.
 	disposeTemporary = false
-	renameErr := renameAtomicReplacementRelativeHandle(handle, directoryHandle, leaf, windows.FileRenameInfoEx, windows.FILE_RENAME_REPLACE_IF_EXISTS|windows.FILE_RENAME_POSIX_SEMANTICS)
+	renameErr := renameAtomicReplacementRelativeHandle(publisherHandle, directoryHandle, leaf, windows.FileRenameInfoEx, windows.FILE_RENAME_REPLACE_IF_EXISTS|windows.FILE_RENAME_POSIX_SEMANTICS)
 	if isUnsupportedAtomicRenameError(renameErr) {
-		renameErr = renameAtomicReplacementRelativeHandle(handle, directoryHandle, leaf, windows.FileRenameInfo, windows.FILE_RENAME_REPLACE_IF_EXISTS)
+		renameErr = renameAtomicReplacementRelativeHandle(publisherHandle, directoryHandle, leaf, windows.FileRenameInfo, windows.FILE_RENAME_REPLACE_IF_EXISTS)
 	}
-	if err := verifyAtomicReplacementRelative(directoryHandle, leaf, handle, false); err != nil {
+	if err := verifyAtomicReplacementRelative(directoryHandle, leaf, publisherHandle, false); err != nil {
 		result := errors.Join(renameErr, fmt.Errorf("verify atomic replacement destination: %w", err))
-		if temporaryErr := verifyAtomicReplacementRelative(directoryHandle, name, handle, false); temporaryErr == nil {
+		if temporaryErr := verifyAtomicReplacementRelative(directoryHandle, name, publisherHandle, false); temporaryErr == nil {
 			disposeTemporary = true
 		} else {
 			result = errors.Join(result, fmt.Errorf("preserve atomic temporary after unproven publication: %w", temporaryErr))
@@ -95,18 +126,23 @@ func writeFileAtomicPlatform(path string, data []byte, mode os.FileMode, hook At
 	if renameErr != nil {
 		result = errors.Join(result, renameErr)
 	}
-	if err := chmodAtomicReplacement(file, mode); err != nil {
+	if err := chmodAtomicReplacement(publisher, mode); err != nil {
 		result = errors.Join(result, fmt.Errorf("set mode on renamed atomic replacement: %w", err))
 	}
-	if err := flushAtomicReplacement(handle); err != nil {
+	if err := flushAtomicReplacement(publisherHandle); err != nil {
 		result = errors.Join(result, fmt.Errorf("flush renamed atomic replacement source: %w", err))
 	}
-	if err := verifyAtomicReplacementRelative(directoryHandle, leaf, handle, false); err != nil {
+	if err := verifyAtomicReplacementRelative(directoryHandle, leaf, publisherHandle, false); err != nil {
 		result = errors.Join(result, fmt.Errorf("verify atomic replacement destination after flush: %w", err))
 	}
 	if result != nil {
 		return true, &postReplacementError{Err: result}
 	}
+	if err := publisher.Close(); err != nil {
+		publisher = nil
+		return true, &postReplacementError{Err: fmt.Errorf("close atomic publication handle: %w", err)}
+	}
+	publisher = nil
 	if err := atomicStep(hook, "dir-sync"); err != nil {
 		return true, &postReplacementError{Err: err}
 	}
@@ -139,7 +175,7 @@ func createAtomicWindowsTemp(directory windows.Handle, base string) (windows.Han
 		}
 		name := "." + base + "-" + hex.EncodeToString(token[:])
 		handle, err := openAtomicWindowsRelative(directory, name,
-			windows.GENERIC_WRITE|windows.DELETE|windows.FILE_READ_ATTRIBUTES|windows.SYNCHRONIZE,
+			windows.GENERIC_WRITE|windows.FILE_READ_ATTRIBUTES|windows.SYNCHRONIZE,
 			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_CREATE,
 			windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_WRITE_THROUGH, nil)
 		if err == nil {
@@ -150,6 +186,30 @@ func createAtomicWindowsTemp(directory windows.Handle, base string) (windows.Han
 		}
 	}
 	return windows.InvalidHandle, "", os.ErrExist
+}
+
+var reopenAtomicReplacementHandle = reopenAtomicReplacement
+
+var reopenWindowsFileProc = windows.NewLazySystemDLL("kernel32.dll").NewProc("ReOpenFile")
+
+func reopenAtomicReplacement(handle windows.Handle) (windows.Handle, error) {
+	const access = windows.GENERIC_WRITE | windows.DELETE | windows.FILE_READ_ATTRIBUTES | windows.SYNCHRONIZE
+	return reopenWindowsHandle(handle, access)
+}
+
+// reopenWindowsHandle upgrades access through an already-held file object,
+// avoiding a pathname reopen between writing and publication.
+func reopenWindowsHandle(handle windows.Handle, access uint32) (windows.Handle, error) {
+	value, _, callErr := reopenWindowsFileProc.Call(uintptr(handle), uintptr(access),
+		uintptr(windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE),
+		uintptr(windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_WRITE_THROUGH))
+	if windows.Handle(value) == windows.InvalidHandle {
+		if callErr == syscall.Errno(0) {
+			callErr = errors.New("ReOpenFile failed")
+		}
+		return windows.InvalidHandle, callErr
+	}
+	return windows.Handle(value), nil
 }
 
 func renameAtomicReplacementRelative(handle, root windows.Handle, name string, class uint32, flags uint32) error {

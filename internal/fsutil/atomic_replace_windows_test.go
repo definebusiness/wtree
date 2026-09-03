@@ -307,6 +307,7 @@ func TestWindowsAtomicProductionAuthorityUsesRelativeHandlesAndFinalModeBeforeFl
 	restoreAtomicWindowsSeams(t)
 	originalOpen := openAtomicWindowsRelative
 	originalRename := renameAtomicReplacementRelativeHandle
+	originalReopen := reopenAtomicReplacementHandle
 	originalSet := setAtomicReplacementInformation
 	originalVerify := verifyAtomicReplacementRelative
 	originalChmod := chmodAtomicReplacement
@@ -319,7 +320,7 @@ func TestWindowsAtomicProductionAuthorityUsesRelativeHandlesAndFinalModeBeforeFl
 	var access windows.ACCESS_MASK
 	var share, disposition, options uint32
 	var order []string
-	verifyCalls := 0
+	verifyCalls, reopenCalls := 0, 0
 	openAtomicWindowsRelative = func(parent windows.Handle, name string, gotAccess windows.ACCESS_MASK, gotShare, gotDisposition, gotOptions uint32, descriptor *windows.SECURITY_DESCRIPTOR) (windows.Handle, error) {
 		temporaryParent, temporaryName, access, share, disposition, options = parent, name, gotAccess, gotShare, gotDisposition, gotOptions
 		return originalOpen(parent, name, gotAccess, gotShare, gotDisposition, gotOptions, descriptor)
@@ -327,6 +328,10 @@ func TestWindowsAtomicProductionAuthorityUsesRelativeHandlesAndFinalModeBeforeFl
 	renameAtomicReplacementRelativeHandle = func(handle, root windows.Handle, name string, class, flags uint32) error {
 		renameParent, renameName = root, name
 		return originalRename(handle, root, name, class, flags)
+	}
+	reopenAtomicReplacementHandle = func(handle windows.Handle) (windows.Handle, error) {
+		reopenCalls++
+		return originalReopen(handle)
 	}
 	setAtomicReplacementInformation = func(handle windows.Handle, status *windows.IO_STATUS_BLOCK, buffer *byte, length, class uint32) error {
 		information := (*privateWindowsRenameInformation)(unsafe.Pointer(buffer))
@@ -357,14 +362,34 @@ func TestWindowsAtomicProductionAuthorityUsesRelativeHandlesAndFinalModeBeforeFl
 	if nativeRoot != renameParent || nativeName != filepath.Base(path) || nativeClass != nativeFileRenameInformationEx || nativeFlags != windows.FILE_RENAME_REPLACE_IF_EXISTS|windows.FILE_RENAME_POSIX_SEMANTICS {
 		t.Fatalf("native rename root=%v name=%q class=%d flags=%#x", nativeRoot, nativeName, nativeClass, nativeFlags)
 	}
-	wantAccess := windows.ACCESS_MASK(windows.GENERIC_WRITE | windows.DELETE | windows.FILE_READ_ATTRIBUTES | windows.SYNCHRONIZE)
+	wantAccess := windows.ACCESS_MASK(windows.GENERIC_WRITE | windows.FILE_READ_ATTRIBUTES | windows.SYNCHRONIZE)
 	wantShare := uint32(windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE)
 	wantOptions := uint32(windows.FILE_NON_DIRECTORY_FILE | windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT | windows.FILE_WRITE_THROUGH)
 	if access != wantAccess || share != wantShare || disposition != windows.FILE_CREATE || options != wantOptions {
 		t.Fatalf("temporary access=%#x share=%#x disposition=%#x options=%#x", access, share, disposition, options)
 	}
-	if len(order) != 2 || order[0] != "chmod" || order[1] != "flush" || verifyCalls != 2 {
-		t.Fatalf("post-publication order=%v verification calls=%d", order, verifyCalls)
+	if len(order) != 2 || order[0] != "chmod" || order[1] != "flush" || verifyCalls != 2 || reopenCalls != 1 {
+		t.Fatalf("post-publication order=%v verification calls=%d reopen calls=%d", order, verifyCalls, reopenCalls)
+	}
+}
+
+func TestWindowsAtomicProductionReleasesDeleteAuthorityBeforeDirSync(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "target")
+	completed := errors.New("dir sync observed concurrent generation")
+	err := WriteFileAtomicModeWithHook(path, []byte("published generation"), 0o600, func(step string) error {
+		if step != "dir-sync" {
+			return nil
+		}
+		if err := os.WriteFile(path, []byte("concurrent generation"), 0o600); err != nil {
+			t.Fatalf("concurrent write during dir-sync: %v", err)
+		}
+		return completed
+	})
+	if err == nil || !ReplacementCompleted(err) || !errors.Is(err, completed) {
+		t.Fatalf("error=%v completed=%t", err, ReplacementCompleted(err))
+	}
+	if data, readErr := os.ReadFile(path); readErr != nil || string(data) != "concurrent generation" {
+		t.Fatalf("concurrent generation=%q error=%v", data, readErr)
 	}
 }
 
@@ -526,10 +551,10 @@ func writeAtomicWindowsSource(t *testing.T, contents string) string {
 
 func restoreAtomicWindowsSeams(t *testing.T) {
 	t.Helper()
-	directory, temporary, relativeOpen, relativeRename, relativeSet, relativeVerify, chmod := openAtomicReplacementDirectory, createAtomicReplacementTemp, openAtomicWindowsRelative, renameAtomicReplacementRelativeHandle, setAtomicReplacementInformation, verifyAtomicReplacementRelative, chmodAtomicReplacement
+	directory, temporary, relativeOpen, relativeRename, relativeSet, relativeVerify, chmod, reopen := openAtomicReplacementDirectory, createAtomicReplacementTemp, openAtomicWindowsRelative, renameAtomicReplacementRelativeHandle, setAtomicReplacementInformation, verifyAtomicReplacementRelative, chmodAtomicReplacement, reopenAtomicReplacementHandle
 	open, rename, verify, flush, remove, before := openAtomicReplacementSource, renameAtomicReplacement, verifyAtomicReplacement, flushAtomicReplacement, removeAtomicReplacement, atomicBeforeTemporaryCleanupIdentity
 	t.Cleanup(func() {
-		openAtomicReplacementDirectory, createAtomicReplacementTemp, openAtomicWindowsRelative, renameAtomicReplacementRelativeHandle, setAtomicReplacementInformation, verifyAtomicReplacementRelative, chmodAtomicReplacement = directory, temporary, relativeOpen, relativeRename, relativeSet, relativeVerify, chmod
+		openAtomicReplacementDirectory, createAtomicReplacementTemp, openAtomicWindowsRelative, renameAtomicReplacementRelativeHandle, setAtomicReplacementInformation, verifyAtomicReplacementRelative, chmodAtomicReplacement, reopenAtomicReplacementHandle = directory, temporary, relativeOpen, relativeRename, relativeSet, relativeVerify, chmod, reopen
 		openAtomicReplacementSource, renameAtomicReplacement, verifyAtomicReplacement, flushAtomicReplacement, removeAtomicReplacement, atomicBeforeTemporaryCleanupIdentity = open, rename, verify, flush, remove, before
 	})
 }
