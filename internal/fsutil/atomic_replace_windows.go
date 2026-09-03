@@ -15,6 +15,11 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// nativeFileRenameInformationEx is the NtSetInformationFile information
+// class for FILE_RENAME_INFORMATION_EX. x/sys exposes the Win32
+// FileRenameInfoEx class (22), but not this native class (65).
+const nativeFileRenameInformationEx uint32 = 65
+
 // writeFileAtomicPlatform keeps the writer-created source handle open from
 // CREATE_NEW through publication. The generic path remains for injected
 // source/destination replacement seams only.
@@ -148,17 +153,18 @@ func createAtomicWindowsTemp(directory windows.Handle, base string) (windows.Han
 }
 
 func renameAtomicReplacementRelative(handle, root windows.Handle, name string, class uint32, flags uint32) error {
-	encoded, err := windows.UTF16FromString(name)
-	if err != nil {
-		return err
+	switch class {
+	case windows.FileRenameInfoEx:
+		// Match the native pairing used by Go's Windows rename-at primitive:
+		// POSIX replacement flags require FileRenameInformationEx (65).
+		return renamePrivateWindowsHandleWithInformation(handle, root, name, flags, nativeFileRenameInformationEx, setAtomicReplacementInformation)
+	case windows.FileRenameInfo:
+		// The compatibility retry intentionally uses the basic native class
+		// (10) with only REPLACE_IF_EXISTS.
+		return renamePrivateWindowsHandleWithInformation(handle, root, name, flags, windows.FileRenameInformation, setAtomicReplacementInformation)
+	default:
+		return windows.ERROR_INVALID_PARAMETER
 	}
-	length := len(encoded)*2 - 2
-	var layout windowsRenameInformation
-	buffer := make([]byte, int(unsafe.Offsetof(layout.FileName))+length)
-	information := (*windowsRenameInformation)(unsafe.Pointer(&buffer[0]))
-	information.Flags, information.RootDirectory, information.FileNameLength = flags, root, uint32(length)
-	copy(unsafe.Slice(&information.FileName[0], length/2), encoded[:len(encoded)-1])
-	return windows.SetFileInformationByHandle(handle, class, &buffer[0], uint32(len(buffer)))
 }
 
 // windowsRenameInformation has the layout required by
@@ -176,6 +182,7 @@ var (
 	createAtomicReplacementTemp           = createAtomicWindowsTemp
 	openAtomicWindowsRelative             = openPrivateWindowsRelative
 	renameAtomicReplacementRelativeHandle = renameAtomicReplacementRelative
+	setAtomicReplacementInformation       = privateWindowsSetInformationFile(windows.NtSetInformationFile)
 	verifyAtomicReplacementRelative       = validatePrivateWindowsRelativeIdentity
 	chmodAtomicReplacement                = func(file *os.File, mode os.FileMode) error { return file.Chmod(mode) }
 	openAtomicReplacementSource           = openAtomicReplacementSourceHandle
@@ -296,6 +303,9 @@ func isUnsupportedAtomicRenameError(err error) bool {
 	return errors.Is(err, windows.ERROR_INVALID_PARAMETER) ||
 		errors.Is(err, windows.ERROR_INVALID_FUNCTION) ||
 		errors.Is(err, windows.ERROR_NOT_SUPPORTED) ||
+		errors.Is(err, windows.STATUS_INVALID_PARAMETER) ||
+		errors.Is(err, windows.STATUS_INVALID_INFO_CLASS) ||
+		errors.Is(err, windows.STATUS_NOT_SUPPORTED) ||
 		errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, errors.ErrUnsupported)
 }
 

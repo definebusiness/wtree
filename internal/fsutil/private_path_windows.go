@@ -45,6 +45,8 @@ type privateWindowsRenameInformation struct {
 	FileName       [1]uint16
 }
 
+type privateWindowsSetInformationFile func(windows.Handle, *windows.IO_STATUS_BLOCK, *byte, uint32, uint32) error
+
 func containsPathSeparator(name string) bool {
 	return filepath.Base(name) != name || filepath.Clean(name) != name || filepath.IsAbs(name) || name == string(filepath.Separator) || len(name) >= 2 && name[1] == ':'
 }
@@ -577,6 +579,10 @@ func (path *privatePath) writeFileAtomic(data []byte, mode os.FileMode, hook Ato
 }
 
 func renamePrivateWindowsHandle(handle, root windows.Handle, name string) error {
+	return renamePrivateWindowsHandleWithInformation(handle, root, name, windows.FILE_RENAME_REPLACE_IF_EXISTS, windows.FileRenameInformation, windows.NtSetInformationFile)
+}
+
+func renamePrivateWindowsHandleWithInformation(handle, root windows.Handle, name string, flags, class uint32, setInformation privateWindowsSetInformationFile) error {
 	encoded, err := windows.UTF16FromString(name)
 	if err != nil {
 		return err
@@ -585,12 +591,12 @@ func renamePrivateWindowsHandle(handle, root windows.Handle, name string) error 
 	var layout privateWindowsRenameInformation
 	buffer := make([]byte, int(unsafe.Offsetof(layout.FileName))+length)
 	information := (*privateWindowsRenameInformation)(unsafe.Pointer(&buffer[0]))
-	information.Flags = windows.FILE_RENAME_REPLACE_IF_EXISTS
+	information.Flags = flags
 	information.RootDirectory = root
 	information.FileNameLength = uint32(length)
 	copy((*[windows.MAX_LONG_PATH]uint16)(unsafe.Pointer(&information.FileName[0]))[:length/2:length/2], encoded)
 	var status windows.IO_STATUS_BLOCK
-	return windows.NtSetInformationFile(handle, &status, &buffer[0], uint32(len(buffer)), windows.FileRenameInformation)
+	return setInformation(handle, &status, &buffer[0], uint32(len(buffer)), class)
 }
 
 func removePrivateWindowsHandle(handle windows.Handle) error {

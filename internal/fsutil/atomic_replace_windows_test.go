@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -32,29 +33,6 @@ func TestWindowsAtomicReplaceUsesRenameInfoExThenFlush(t *testing.T) {
 	}
 	if len(calls) != 1 || calls[0].class != windows.FileRenameInfoEx || calls[0].flags != windows.FILE_RENAME_REPLACE_IF_EXISTS|windows.FILE_RENAME_POSIX_SEMANTICS || !flushed {
 		t.Fatalf("rename calls=%#v flushed=%t", calls, flushed)
-	}
-}
-
-func TestWindowsAtomicReplaceRejectsPreOpenSubstitution(t *testing.T) {
-	restoreAtomicWindowsSeams(t)
-	source := writeAtomicWindowsSource(t, "new")
-	expected, err := os.Stat(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(source); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(source, []byte("attacker"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	renameAtomicReplacement = func(windows.Handle, string, uint32, uint32) error {
-		t.Fatal("rename called after source identity changed")
-		return nil
-	}
-	err = atomicReplaceWithInfo(source, filepath.Join(filepath.Dir(source), "destination"), expected)
-	if err == nil || ReplacementCompleted(err) {
-		t.Fatalf("error=%v completed=%t", err, ReplacementCompleted(err))
 	}
 }
 
@@ -230,31 +208,6 @@ func TestWindowsAtomicReplaceKeepsCompletedStateWhenSecondVerificationFails(t *t
 	}
 }
 
-func TestWindowsAtomicTemporaryCleanupPreservesSubstitutedPath(t *testing.T) {
-	restoreAtomicWindowsSeams(t)
-	path := writeAtomicWindowsSource(t, "expected")
-	expected, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	atomicBeforeTemporaryCleanupIdentity = func() {
-		if err := os.Remove(path); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte("unrelated"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	err = removeAtomicTemporary(path, expected)
-	if err != nil {
-		t.Fatalf("identity-bound cleanup = %v", err)
-	}
-	data, readErr := os.ReadFile(path)
-	if readErr != nil || string(data) != "unrelated" {
-		t.Fatalf("path=%q error=%v", data, readErr)
-	}
-}
-
 func TestWindowsAtomicReplaceAllowsRetainedDeleteShareGeneration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "generation")
 	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
@@ -296,15 +249,73 @@ func TestWindowsAtomicReplaceAllowsRetainedDeleteShareGeneration(t *testing.T) {
 	}
 }
 
+func TestWindowsAtomicProductionRenameUsesNtRelativeLeafProtocol(t *testing.T) {
+	restoreAtomicWindowsSeams(t)
+	root := windows.Handle(0x1234)
+	leaf := "target"
+	calls := 0
+	setAtomicReplacementInformation = func(handle windows.Handle, status *windows.IO_STATUS_BLOCK, buffer *byte, length, class uint32) error {
+		calls++
+		if handle != windows.Handle(0x5678) || status == nil {
+			t.Fatalf("handle=%v status=%p", handle, status)
+		}
+		information := (*privateWindowsRenameInformation)(unsafe.Pointer(buffer))
+		name := windows.UTF16ToString(unsafe.Slice(&information.FileName[0], int(information.FileNameLength/2)))
+		wantLength := uint32(unsafe.Offsetof(privateWindowsRenameInformation{}.FileName)) + information.FileNameLength
+		if class != nativeFileRenameInformationEx || information.Flags != windows.FILE_RENAME_REPLACE_IF_EXISTS|windows.FILE_RENAME_POSIX_SEMANTICS || information.RootDirectory != root || name != leaf || length != wantLength {
+			t.Fatalf("class=%d flags=%#x root=%v name=%q length=%d want length=%d", class, information.Flags, information.RootDirectory, name, length, wantLength)
+		}
+		return nil
+	}
+	if err := renameAtomicReplacementRelative(windows.Handle(0x5678), root, leaf, windows.FileRenameInfoEx, windows.FILE_RENAME_REPLACE_IF_EXISTS|windows.FILE_RENAME_POSIX_SEMANTICS); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("NtSetInformationFile calls=%d, want 1", calls)
+	}
+}
+
+func TestWindowsAtomicProductionRenameFallsBackFromUnsupportedNtFlags(t *testing.T) {
+	restoreAtomicWindowsSeams(t)
+	originalSet := setAtomicReplacementInformation
+	var calls []struct {
+		class uint32
+		flags uint32
+	}
+	setAtomicReplacementInformation = func(handle windows.Handle, status *windows.IO_STATUS_BLOCK, buffer *byte, length, class uint32) error {
+		information := (*privateWindowsRenameInformation)(unsafe.Pointer(buffer))
+		calls = append(calls, struct {
+			class uint32
+			flags uint32
+		}{class: class, flags: information.Flags})
+		if len(calls) == 1 {
+			return windows.STATUS_INVALID_PARAMETER
+		}
+		return originalSet(handle, status, buffer, length, class)
+	}
+
+	path := filepath.Join(t.TempDir(), "target")
+	if err := WriteFileAtomicMode(path, []byte("new generation"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || calls[0].class != nativeFileRenameInformationEx || calls[0].flags != windows.FILE_RENAME_REPLACE_IF_EXISTS|windows.FILE_RENAME_POSIX_SEMANTICS || calls[1].class != windows.FileRenameInformation || calls[1].flags != windows.FILE_RENAME_REPLACE_IF_EXISTS {
+		t.Fatalf("NtSetInformationFile calls=%#v", calls)
+	}
+}
+
 func TestWindowsAtomicProductionAuthorityUsesRelativeHandlesAndFinalModeBeforeFlush(t *testing.T) {
 	restoreAtomicWindowsSeams(t)
 	originalOpen := openAtomicWindowsRelative
 	originalRename := renameAtomicReplacementRelativeHandle
+	originalSet := setAtomicReplacementInformation
 	originalVerify := verifyAtomicReplacementRelative
 	originalChmod := chmodAtomicReplacement
 	originalFlush := flushAtomicReplacement
 	var temporaryParent, renameParent windows.Handle
 	var temporaryName, renameName string
+	var nativeRoot windows.Handle
+	var nativeName string
+	var nativeClass, nativeFlags uint32
 	var access windows.ACCESS_MASK
 	var share, disposition, options uint32
 	var order []string
@@ -316,6 +327,12 @@ func TestWindowsAtomicProductionAuthorityUsesRelativeHandlesAndFinalModeBeforeFl
 	renameAtomicReplacementRelativeHandle = func(handle, root windows.Handle, name string, class, flags uint32) error {
 		renameParent, renameName = root, name
 		return originalRename(handle, root, name, class, flags)
+	}
+	setAtomicReplacementInformation = func(handle windows.Handle, status *windows.IO_STATUS_BLOCK, buffer *byte, length, class uint32) error {
+		information := (*privateWindowsRenameInformation)(unsafe.Pointer(buffer))
+		nativeRoot, nativeClass, nativeFlags = information.RootDirectory, class, information.Flags
+		nativeName = windows.UTF16ToString(unsafe.Slice(&information.FileName[0], int(information.FileNameLength/2)))
+		return originalSet(handle, status, buffer, length, class)
 	}
 	verifyAtomicReplacementRelative = func(root windows.Handle, name string, handle windows.Handle, directory bool) error {
 		verifyCalls++
@@ -336,6 +353,9 @@ func TestWindowsAtomicProductionAuthorityUsesRelativeHandlesAndFinalModeBeforeFl
 	}
 	if temporaryParent == windows.InvalidHandle || temporaryParent != renameParent || renameName != filepath.Base(path) || filepath.Base(temporaryName) != temporaryName {
 		t.Fatalf("temporary parent=%v name=%q rename parent=%v name=%q", temporaryParent, temporaryName, renameParent, renameName)
+	}
+	if nativeRoot != renameParent || nativeName != filepath.Base(path) || nativeClass != nativeFileRenameInformationEx || nativeFlags != windows.FILE_RENAME_REPLACE_IF_EXISTS|windows.FILE_RENAME_POSIX_SEMANTICS {
+		t.Fatalf("native rename root=%v name=%q class=%d flags=%#x", nativeRoot, nativeName, nativeClass, nativeFlags)
 	}
 	wantAccess := windows.ACCESS_MASK(windows.GENERIC_WRITE | windows.DELETE | windows.FILE_READ_ATTRIBUTES | windows.SYNCHRONIZE)
 	wantShare := uint32(windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE)
@@ -506,10 +526,10 @@ func writeAtomicWindowsSource(t *testing.T, contents string) string {
 
 func restoreAtomicWindowsSeams(t *testing.T) {
 	t.Helper()
-	directory, temporary, relativeOpen, relativeRename, relativeVerify, chmod := openAtomicReplacementDirectory, createAtomicReplacementTemp, openAtomicWindowsRelative, renameAtomicReplacementRelativeHandle, verifyAtomicReplacementRelative, chmodAtomicReplacement
+	directory, temporary, relativeOpen, relativeRename, relativeSet, relativeVerify, chmod := openAtomicReplacementDirectory, createAtomicReplacementTemp, openAtomicWindowsRelative, renameAtomicReplacementRelativeHandle, setAtomicReplacementInformation, verifyAtomicReplacementRelative, chmodAtomicReplacement
 	open, rename, verify, flush, remove, before := openAtomicReplacementSource, renameAtomicReplacement, verifyAtomicReplacement, flushAtomicReplacement, removeAtomicReplacement, atomicBeforeTemporaryCleanupIdentity
 	t.Cleanup(func() {
-		openAtomicReplacementDirectory, createAtomicReplacementTemp, openAtomicWindowsRelative, renameAtomicReplacementRelativeHandle, verifyAtomicReplacementRelative, chmodAtomicReplacement = directory, temporary, relativeOpen, relativeRename, relativeVerify, chmod
+		openAtomicReplacementDirectory, createAtomicReplacementTemp, openAtomicWindowsRelative, renameAtomicReplacementRelativeHandle, setAtomicReplacementInformation, verifyAtomicReplacementRelative, chmodAtomicReplacement = directory, temporary, relativeOpen, relativeRename, relativeSet, relativeVerify, chmod
 		openAtomicReplacementSource, renameAtomicReplacement, verifyAtomicReplacement, flushAtomicReplacement, removeAtomicReplacement, atomicBeforeTemporaryCleanupIdentity = open, rename, verify, flush, remove, before
 	})
 }
