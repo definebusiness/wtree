@@ -143,7 +143,9 @@ func clonePlanCopy(plan ClonePlan) ClonePlan {
 	for index := range copyOfPlan.Actions {
 		copyOfPlan.Actions[index].ChildInitialCommits = append([]string(nil), plan.Actions[index].ChildInitialCommits...)
 	}
+	copyOfPlan.Hooks = cloneHookPlanEntries(plan.Hooks)
 	copyOfPlan.manifestData = append([]byte(nil), plan.manifestData...)
+	copyOfPlan.hookEnvironment = append([]string(nil), plan.hookEnvironment...)
 	return copyOfPlan
 }
 

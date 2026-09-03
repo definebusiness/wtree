@@ -13,6 +13,7 @@ import (
 
 func TestDoctorPrunesOnlyRegisteredMissingWorktreeMetadata(t *testing.T) {
 	project, root, _, data := createFixture(t)
+	trackDoctorManifest(t, root)
 	target := filepath.Join(t.TempDir(), "gone")
 	root.Run(t, "branch", "feature/gone")
 	root.Run(t, "worktree", "add", target, "feature/gone")

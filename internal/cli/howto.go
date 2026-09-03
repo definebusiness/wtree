@@ -87,9 +87,25 @@ const globalHowTo = `WTREE HOW-TO
     push reports whether every checkout is already at its exact configured
     upstream tip. It never runs git push, fetches, or creates refs or tags;
     publication remains manual until a future publishing workflow is specified.
-31. Important safety semantics
+32. Manage lifecycle hooks safely
+    Local .wtree.yml version 3 may define post-create hooks. They run after a
+    successful create unless --no-hooks is supplied. Portable project.wtree.yml
+    version 3 may define post-clone hooks, but clone runs them only for that
+    invocation when --run-hooks is supplied. shared_hooks are inert until
+    explicitly installed locally with wtree hooks install. Use wtree hooks list
+    to inspect definitions, wtree hooks share post-create to distribute a
+    portable shared definition, and wtree hooks retry <workspace> only to resume
+    a recorded incomplete run. Keep every hook idempotent: an interruption after
+    a child side effect can require that hook to run again. Commands are direct
+    argument arrays, not shell text; review literal command arguments before
+    sharing. Portable hooks receive a sanitized environment. wtree never stores
+    environments, literal command arguments, executable paths, or command output
+    in durable hook-run records or execution-result/error JSON. hooks list and
+    create/clone plan or dry-run inspection intentionally show configured or
+    resolved executables and literal arguments.
+33. Important safety semantics
     Every available mutation preflights first; destructive reconciliation requires explicit intent.
-30. Update a project safely
+34. Update a project safely
     Run: wtree update. It captures one complete snapshot and only then applies
     the transaction. Use --dry-run to render the plan. Both modes refuse dirty, divergent, missing,
     structurally inconsistent, unresolved-operation, and unsafe repository-set
@@ -215,6 +231,31 @@ EXAMPLES
   wtree project unregister project-id --dry-run
   wtree project unregister project-id --json
 `,
+	"hooks": `HOW TO: hooks
+
+Inspect, explicitly share, install, and safely resume lifecycle hook setup.
+Local .wtree.yml version 3 accepts only post-create hooks. They run after a
+successful create unless --no-hooks is supplied. Portable project.wtree.yml
+version 3 accepts post-clone hooks, but clone runs them only for the explicit
+invocation that supplies --run-hooks. Portable shared_hooks are never executed
+directly: install them into the ignored local configuration first.
+
+EXAMPLES
+  wtree hooks list
+  wtree hooks share post-create
+  wtree hooks install --missing
+  wtree hooks retry <workspace>
+
+Hook commands are direct argument arrays, not shell syntax. Make hooks
+idempotent because an interruption after a child side effect can require a
+hook to run again. Review literal command arguments before sharing. Portable
+hooks use a sanitized environment; wtree never stores environments, literal
+command arguments, executable paths, or command output in durable records or
+execution-result/error JSON. hooks list and create/clone plan or dry-run
+inspection intentionally show configured or resolved executables and literal
+arguments. A retry resumes only a matching incomplete record and never
+starts a fresh run or reruns a durably completed hook.
+`,
 }
 
 func renderHowToIfRequested(writer io.Writer, arguments []string) (bool, error) {
@@ -240,5 +281,5 @@ func renderHowToIfRequested(writer io.Writer, arguments []string) (bool, error) 
 			return true, err
 		}
 	}
-	return true, invalidArgumentsError{cause: fmt.Errorf("--how-to is valid only as `wtree --how-to` or `wtree {project,init,clone,update,create,import,remove,delete,doctor} --how-to`")}
+	return true, invalidArgumentsError{cause: fmt.Errorf("--how-to is valid only as `wtree --how-to` or `wtree {project,init,clone,update,create,import,remove,delete,doctor,hooks} --how-to`")}
 }

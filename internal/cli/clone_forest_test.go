@@ -21,6 +21,7 @@ func TestRenderClonePlanForestStatesVerificationOwners(t *testing.T) {
 			{ID: "sibling", Mount: "web", Verification: service.CloneVerification{}},
 			{ID: "child", Parent: "base", Mount: "packages/child", Verification: service.CloneVerification{CommittedParentIgnore: true}},
 		},
+		Hooks: []service.HookPlanEntry{{Source: "portable", Event: "post-clone", ID: "setup", Repository: "base", WorkingDirectory: "/tmp/logical-root/services/base", ConfiguredExecutable: "hooks/setup", Availability: "deferred", Timeout: "1m0s", ExecutionPolicy: "requires-run-hooks"}, {Source: "shared", Event: "post-create", ID: "inert", Repository: "base", WorkingDirectory: "/tmp/logical-root/services/base", ConfiguredExecutable: "hooks/shared", Availability: "deferred", Timeout: "1m0s", ExecutionPolicy: "inert"}},
 	}
 	var output bytes.Buffer
 	if err := renderClonePlan(&output, plan); err != nil {
@@ -32,5 +33,8 @@ func TestRenderClonePlanForestStatesVerificationOwners(t *testing.T) {
 	}
 	if strings.Count(text, "tracked manifest") != 1 || !strings.Contains(text, "child\n    remote:") {
 		t.Fatalf("verification owner render = %s", text)
+	}
+	if !strings.Contains(text, "Hooks:\n  portable/setup (post-clone)") || !strings.Contains(text, "policy: inert") || strings.Contains(text, "Resolved executable") {
+		t.Fatalf("hook dry-run render = %s", text)
 	}
 }

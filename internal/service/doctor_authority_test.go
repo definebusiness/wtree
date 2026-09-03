@@ -62,6 +62,13 @@ func TestDoctorFixRefusesActiveUpdateJournalBeforeRepair(t *testing.T) {
 	}
 }
 
+func trackDoctorManifest(t *testing.T, root testutil.GitRepository) {
+	t.Helper()
+	root.CommitFile(".gitignore", "/backend/\n", "commit portable parent ignore")
+	root.Run(t, "add", "--", ".wtree.yml", "project.wtree.yml")
+	root.Run(t, "commit", "-m", "track doctor manifest authority")
+}
+
 func TestDoctorFixRechecksJournalCreatedWhileWaitingForLock(t *testing.T) {
 	project, root, workspace, data, statePath, target := doctorPruneAuthorityFixture(t)
 	locker := &doctorSynchronizedLocker{entered: make(chan struct{}), release: make(chan struct{})}
@@ -108,6 +115,7 @@ func TestDoctorReadOnlyAndDryRunRemainAvailableWithActiveUpdateJournal(t *testin
 func doctorPruneAuthorityFixture(t *testing.T) (project domain.Project, root testutil.GitRepository, workspace domain.Workspace, data, statePath, target string) {
 	t.Helper()
 	project, root, _, data = createFixture(t)
+	trackDoctorManifest(t, root)
 	target = filepath.Join(t.TempDir(), "gone")
 	root.Run(t, "branch", "feature/authority")
 	root.Run(t, "worktree", "add", target, "feature/authority")

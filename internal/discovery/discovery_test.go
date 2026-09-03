@@ -23,7 +23,7 @@ func TestDiscoverFindsRootAndIndependentNestedRepositories(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := exec.Command("git", "init", "--initial-branch=main", nested).CombinedOutput(); err != nil {
+	if output, err := testutil.GitCommand(t, "init", "--initial-branch=main", nested).CombinedOutput(); err != nil {
 		t.Fatalf("init nested: %v %s", err, output)
 	}
 	got, err := discovery.Discover(root.Path, nil)
@@ -42,7 +42,7 @@ func TestDiscoverUsesExplicitPlainLogicalRootForGroupedTopLevelRepositories(t *t
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if output, err := exec.Command("git", "init", "--initial-branch=main", path).CombinedOutput(); err != nil {
+		if output, err := testutil.GitCommand(t, "init", "--initial-branch=main", path).CombinedOutput(); err != nil {
 			t.Fatalf("init %q: %v %s", relative, err, output)
 		}
 	}
@@ -63,7 +63,7 @@ func TestDiscoverDerivesNearestParentsAcrossThreeLevelsBelowPlainBoundary(t *tes
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if output, err := exec.Command("git", "init", "--initial-branch=main", path).CombinedOutput(); err != nil {
+		if output, err := testutil.GitCommand(t, "init", "--initial-branch=main", path).CombinedOutput(); err != nil {
 			t.Fatalf("init %q: %v %s", relative, err, output)
 		}
 	}
@@ -91,7 +91,7 @@ func TestDiscoverDoesNotFollowRepositorySymlinkOutsideBoundary(t *testing.T) {
 	if err := os.MkdirAll(inside, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := exec.Command("git", "init", "--initial-branch=main", inside).CombinedOutput(); err != nil {
+	if output, err := testutil.GitCommand(t, "init", "--initial-branch=main", inside).CombinedOutput(); err != nil {
 		t.Fatalf("init inside: %v %s", err, output)
 	}
 	if err := os.Symlink(outside.Path, filepath.Join(logicalRoot, "escape")); err != nil {
@@ -218,7 +218,7 @@ func TestDiscoverDerivesParentsAndMountsForTwoLevelsAndSiblings(t *testing.T) {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if output, err := exec.Command("git", "init", "--initial-branch=main", path).CombinedOutput(); err != nil {
+		if output, err := testutil.GitCommand(t, "init", "--initial-branch=main", path).CombinedOutput(); err != nil {
 			t.Fatalf("init %q: %v %s", relative, err, output)
 		}
 	}
@@ -279,7 +279,7 @@ func TestDiscoverSkipsIgnoredDirectories(t *testing.T) {
 	if err := os.MkdirAll(ignored, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := exec.Command("git", "init", ignored).CombinedOutput(); err != nil {
+	if output, err := testutil.GitCommand(t, "init", ignored).CombinedOutput(); err != nil {
 		t.Fatalf("init ignored: %v %s", err, output)
 	}
 	got, err := discovery.Discover(root.Path, []string{"vendor"})
@@ -298,7 +298,7 @@ func TestDiscoverSupportsGlobIgnores(t *testing.T) {
 	if err := os.MkdirAll(ignored, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := exec.Command("git", "init", ignored).CombinedOutput(); err != nil {
+	if output, err := testutil.GitCommand(t, "init", ignored).CombinedOutput(); err != nil {
 		t.Fatal(string(output))
 	}
 	got, err := discovery.Discover(root.Path, []string{"build/**"})
@@ -336,7 +336,7 @@ func TestDiscoverSkipsBuiltInDependencyAndBuildDirectories(t *testing.T) {
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if output, err := exec.Command("git", "init", "--initial-branch=main", directory).CombinedOutput(); err != nil {
+		if output, err := testutil.GitCommand(t, "init", "--initial-branch=main", directory).CombinedOutput(); err != nil {
 			t.Fatalf("init %q: %v %s", relative, err, output)
 		}
 	}
@@ -357,14 +357,14 @@ func TestDiscoverSkipsBuiltInDependencyDirectoriesBelowNestedRepositories(t *tes
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := exec.Command("git", "init", "--initial-branch=main", nested).CombinedOutput(); err != nil {
+	if output, err := testutil.GitCommand(t, "init", "--initial-branch=main", nested).CombinedOutput(); err != nil {
 		t.Fatal(string(output))
 	}
 	dependency := filepath.Join(nested, "node_modules", "dependency")
 	if err := os.MkdirAll(dependency, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := exec.Command("git", "init", "--initial-branch=main", dependency).CombinedOutput(); err != nil {
+	if output, err := testutil.GitCommand(t, "init", "--initial-branch=main", dependency).CombinedOutput(); err != nil {
 		t.Fatal(string(output))
 	}
 
@@ -395,7 +395,7 @@ func TestDiscoverRejectsSubmoduleConfigurationInsideNestedRepository(t *testing.
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := exec.Command("git", "init", "--initial-branch=main", nested).CombinedOutput(); err != nil {
+	if output, err := testutil.GitCommand(t, "init", "--initial-branch=main", nested).CombinedOutput(); err != nil {
 		t.Fatal(string(output))
 	}
 	if err := os.WriteFile(filepath.Join(nested, ".gitmodules"), []byte("[submodule \"shared\"]\n"), 0o644); err != nil {
@@ -454,7 +454,7 @@ func TestDiscoverUsesSafeNonEmptyIDForUnicodeOnlyDirectory(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := exec.Command("git", "init", nested).CombinedOutput(); err != nil {
+	if output, err := testutil.GitCommand(t, "init", nested).CombinedOutput(); err != nil {
 		t.Fatal(string(output))
 	}
 	got, err := discovery.Discover(root.Path, nil)
@@ -473,7 +473,7 @@ func TestDiscoverAssignsCollisionSafeIDWhenNestedDirectoryIsNamedRoot(t *testing
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := exec.Command("git", "init", "--initial-branch=main", nested).CombinedOutput(); err != nil {
+	if output, err := testutil.GitCommand(t, "init", "--initial-branch=main", nested).CombinedOutput(); err != nil {
 		t.Fatal(string(output))
 	}
 
@@ -494,7 +494,7 @@ func TestDiscoverAssignsDeterministicDistinctIDsForSlugCollisions(t *testing.T) 
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if output, err := exec.Command("git", "init", "--initial-branch=main", path).CombinedOutput(); err != nil {
+		if output, err := testutil.GitCommand(t, "init", "--initial-branch=main", path).CombinedOutput(); err != nil {
 			t.Fatal(string(output))
 		}
 	}

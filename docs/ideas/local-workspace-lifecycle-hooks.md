@@ -1,6 +1,7 @@
 # Idea: machine-local and shared workspace lifecycle hooks
 
-Status: initial
+Status: specified
+Resulting specification: [Local and shared workspace lifecycle hooks specification](../spec/local-workspace-lifecycle-hooks.md)
 
 ## Problem
 

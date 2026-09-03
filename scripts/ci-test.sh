@@ -2,6 +2,8 @@
 # Run the Windows CI test inventory in bounded, exact-once service shards.
 set -euo pipefail
 
+declare -A service_subprocess_helpers=()
+
 escape_annotation_message() {
   local value=$1
   value=${value//'%'/'%25'}
@@ -109,6 +111,39 @@ build_service_shards() {
   validate_exact_once
 }
 
+# The tracked inventory is shared with the local runner. It records exact
+# helper/ordinary-parent pairs; unlisted helper-like names remain schedulable.
+load_service_subprocess_helpers() {
+  local inventory_file=${CI_TEST_HELPER_INVENTORY:-}
+  if [[ -z $inventory_file ]]; then
+    local script_root
+    script_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+    inventory_file="$script_root/tools/test-runner/service-subprocess-helpers.tsv"
+  fi
+  [[ -r $inventory_file ]] || {
+    printf 'cannot read service subprocess helper inventory: %s\n' "$inventory_file" >&2
+    return 1
+  }
+  service_subprocess_helpers=()
+  local helper parent extra
+  while IFS=$'\t' read -r helper parent extra || [[ -n ${helper:-}${parent:-}${extra:-} ]]; do
+    [[ -z ${helper:-} || $helper == \#* ]] && continue
+    if [[ -z ${parent:-} || -n ${extra:-} || ! $helper =~ ^(Test|Example|Fuzz) || ! $parent =~ ^(Test|Example|Fuzz) ]]; then
+      printf 'invalid service subprocess helper inventory entry: %s\n' "$helper" >&2
+      return 1
+    fi
+    service_subprocess_helpers["$helper"]=1
+  done <"$inventory_file"
+  ((${#service_subprocess_helpers[@]} > 0)) || {
+    printf 'service subprocess helper inventory is empty\n' >&2
+    return 1
+  }
+}
+
+is_service_subprocess_helper() {
+  [[ -n ${service_subprocess_helpers[$1]+present} ]]
+}
+
 # These exact subprocess entry points call os.Exit, sleep for parent-owned
 # cancellation, or spawn descendants. Their parent tests invoke them by exact
 # -test.run name; every other discovered target remains fail-closed in the
@@ -210,6 +245,11 @@ main() {
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
+
+  if ! load_service_subprocess_helpers; then
+    fatal_with_annotation "Windows CI $mode helper inventory" 1 \
+      'service subprocess helper inventory cannot be read'
+  fi
 
   local package_inventory="$temp_dir/packages"
   if "$go_bin" list ./... >"$package_inventory" 2>&1; then

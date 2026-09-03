@@ -7,11 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 
 	"github.com/definebusiness/wtree/internal/domain"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
+	"github.com/definebusiness/wtree/internal/pathutil"
 )
 
 // WorkspaceStatus is a read-only reconciliation of persisted workspace state
@@ -24,6 +26,7 @@ type WorkspaceStatus struct {
 	MissingRepositoryIDs []string           `json:"missingRepositoryIds,omitempty"`
 	Repositories         []RepositoryStatus `json:"repositories"`
 	Drift                []StatusDrift      `json:"drift,omitempty"`
+	Setup                []HookSetupStatus  `json:"setup,omitempty"`
 }
 
 // StatusDrift is additive local manifest/state/disk evidence. It is kept
@@ -148,6 +151,13 @@ func (s *StatusService) status(ctx context.Context, project domain.Project, work
 		value.Repositories = append(value.Repositories, status)
 	}
 	if dataDir != "" {
+		inventory, inventoryErr := newAuthoritativeHookRunInventory().Inspect(ctx, HookRunInventoryRequest{Project: project, Workspace: workspace, DataDir: dataDir, Environment: os.Environ(), Windows: runtime.GOOS == "windows"})
+		if inventoryErr != nil {
+			return WorkspaceStatus{}, inventoryErr
+		}
+		if inventory.Classification != HookRunAbsent {
+			value.Setup = append([]HookSetupStatus(nil), inventory.Setup...)
+		}
 		snapshot, err := collectLocalDriftSnapshot(ctx, s.git, project, dataDir)
 		if err != nil {
 			var unavailable doctorTrackedManifestUnavailable
@@ -524,10 +534,44 @@ func summarizedStatus(status RepositoryStatus) string {
 }
 
 func sameCheckoutPath(left, right string) bool {
-	left, leftErr := filepath.EvalSymlinks(left)
-	right, rightErr := filepath.EvalSymlinks(right)
-	if leftErr != nil || rightErr != nil {
-		return filepath.Clean(left) == filepath.Clean(right)
+	return sameCheckoutPathForPlatform(left, right, runtime.GOOS == "windows")
+}
+
+// sameCheckoutPathForPlatform keeps the operating-system case policy at this
+// read-only checkout-identity boundary. POSIX paths remain byte-exact after
+// canonicalization; only an explicitly Windows caller may treat case-only
+// spellings as aliases.
+func sameCheckoutPathForPlatform(left, right string, windows bool) bool {
+	left = canonicalCheckoutPath(left)
+	right = canonicalCheckoutPath(right)
+	left, right = filepath.Clean(left), filepath.Clean(right)
+	if windows {
+		return pathutil.CaseFoldedPathEqual(left, right)
 	}
-	return filepath.Clean(left) == filepath.Clean(right)
+	return left == right
+}
+
+// canonicalCheckoutPath preserves the intended missing leaf while resolving
+// any existing symlinked ancestor. This is necessary when Git reports a
+// deleted worktree through /private while the persisted path used /var.
+func canonicalCheckoutPath(value string) string {
+	if canonical, err := filepath.EvalSymlinks(value); err == nil {
+		return canonical
+	}
+	current := filepath.Clean(value)
+	missing := []string{}
+	for {
+		parent := filepath.Dir(current)
+		if parent == current {
+			return value
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+		if canonical, err := filepath.EvalSymlinks(current); err == nil {
+			for index := len(missing) - 1; index >= 0; index-- {
+				canonical = filepath.Join(canonical, missing[index])
+			}
+			return canonical
+		}
+	}
 }

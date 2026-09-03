@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -121,6 +122,147 @@ func TestCloneHTTPDefaultDestinationVerboseAndArgumentRejection(t *testing.T) {
 		if attempt.Err == nil || cli.ExitCode(attempt.Err) != 2 {
 			t.Fatalf("arguments %v = %#v", arguments, attempt)
 		}
+	}
+}
+
+func TestCloneV3PortableHooksDryRunAndUnauthorizedSkipPublicContracts(t *testing.T) {
+	manifestPath, _ := publishedCloneFixture(t)
+	manifestBytes, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := config.LoadPortableManifest(manifestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, script := "hooks/setup", "#!/bin/sh\nexit 0\n"
+	if runtime.GOOS == "windows" {
+		program, script = "hooks/setup.exe", ""
+	}
+	hookPath := filepath.Join(filepath.Dir(manifestPath), filepath.FromSlash(program))
+	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		copyLifecycleNativeHook(t, hookPath)
+	} else if err := os.WriteFile(hookPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(hookPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, arguments := range [][]string{{"add", filepath.ToSlash(program)}, {"commit", "-m", "add portable hook executable"}} {
+		command := exec.Command("git", append([]string{"-C", filepath.Dir(manifestPath)}, arguments...)...)
+		command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+		if output, commandErr := command.CombinedOutput(); commandErr != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, commandErr, output)
+		}
+	}
+	manifest.Version = config.PortableManifestVersion3
+	command := []string{program, "--literal"}
+	if runtime.GOOS == "windows" {
+		command = []string{program, "-test.run=^TestLifecycleHookNativeHelper$"}
+	}
+	manifest.Hooks = config.HookEvents{config.HookEventPostClone: {{ID: "deferred", Command: command}}}
+	manifest.SharedHooks = config.HookEvents{config.HookEventPostCreate: {{ID: "inert", Command: []string{"hooks/shared"}}}}
+	manifestBytes, err = config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, manifestBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"add", "project.wtree.yml"}, {"commit", "-m", "add v3 portable hooks"}, {"push", "origin", "main"}} {
+		command := exec.Command("git", append([]string{"-C", filepath.Dir(manifestPath)}, arguments...)...)
+		command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+		if output, commandErr := command.CombinedOutput(); commandErr != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, commandErr, output)
+		}
+	}
+	parent := cloneWorkingDirectory(t)
+	dryDestination, dryData := filepath.Join(parent, "dry"), t.TempDir()
+	dry := testutil.RunCommand(t, cli.Execute, "clone", manifestPath, dryDestination, "--data-dir", dryData, "--dry-run")
+	if dry.Err != nil || !strings.Contains(dry.Stdout, "Hooks:\n  portable/deferred (post-clone)") || !strings.Contains(dry.Stdout, "policy: inert") || strings.Contains(dry.Stdout, "Resolved executable") {
+		t.Fatalf("hook dry-run human=%#v", dry)
+	}
+	if _, statErr := os.Lstat(dryDestination); !os.IsNotExist(statErr) {
+		t.Fatalf("hook dry-run created destination: %v", statErr)
+	}
+	jsonDry := testutil.RunCommand(t, cli.Execute, "clone", manifestPath, filepath.Join(parent, "dry-json"), "--data-dir", t.TempDir(), "--dry-run", "--json")
+	if jsonDry.Err != nil || !strings.Contains(jsonDry.Stdout, `"availability":"deferred"`) || !strings.Contains(jsonDry.Stdout, `"executionPolicy":"inert"`) || strings.Contains(jsonDry.Stdout, `"resolvedExecutable"`) {
+		t.Fatalf("hook dry-run JSON=%#v", jsonDry)
+	}
+	data, destination := t.TempDir(), filepath.Join(parent, "unauthorized")
+	skip := testutil.RunCommand(t, cli.Execute, "clone", manifestPath, destination, "--data-dir", data)
+	if skip.Err != nil || !strings.Contains(skip.Stdout, "Portable hooks: skipped (use --run-hooks to authorize)") {
+		t.Fatalf("hook skip human=%#v", skip)
+	}
+	if _, statErr := os.Stat(filepath.Join(data, "projects")); statErr == nil {
+		if entries, readErr := os.ReadDir(filepath.Join(data, "projects")); readErr == nil {
+			for _, entry := range entries {
+				if _, hookErr := os.Stat(filepath.Join(data, "projects", entry.Name(), "hooks")); !os.IsNotExist(hookErr) {
+					t.Fatalf("unauthorized clone created hook record: %v", hookErr)
+				}
+			}
+		}
+	}
+	jsonSkip := testutil.RunCommand(t, cli.Execute, "clone", manifestPath, filepath.Join(parent, "unauthorized-json"), "--data-dir", t.TempDir(), "--json")
+	if jsonSkip.Err != nil || !strings.Contains(jsonSkip.Stdout, `"hooksCompleted":false`) || !strings.Contains(jsonSkip.Stdout, `"hooksSkipped":true`) {
+		t.Fatalf("hook skip JSON=%#v", jsonSkip)
+	}
+	success := testutil.RunCommand(t, cli.Execute, "clone", manifestPath, filepath.Join(parent, "authorized"), "--data-dir", t.TempDir(), "--run-hooks")
+	if success.Err != nil || !strings.Contains(success.Stdout, "Portable hooks: completed") {
+		t.Fatalf("hook authorized human=%#v", success)
+	}
+	jsonSuccess := testutil.RunCommand(t, cli.Execute, "clone", manifestPath, filepath.Join(parent, "authorized-json"), "--data-dir", t.TempDir(), "--run-hooks", "--json")
+	if jsonSuccess.Err != nil || !strings.Contains(jsonSuccess.Stdout, `"hooksCompleted":true`) || !strings.Contains(jsonSuccess.Stdout, `"hooksSkipped":false`) || !strings.Contains(jsonSuccess.Stdout, `"completedHookIds":["deferred"]`) {
+		t.Fatalf("hook authorized JSON=%#v", jsonSuccess)
+	}
+
+	failingProgram, failingScript := "hooks/fail", "#!/bin/sh\nexit 23\n"
+	if runtime.GOOS == "windows" {
+		failingProgram, failingScript = "hooks/fail.exe", ""
+	}
+	failingPath := filepath.Join(filepath.Dir(manifestPath), filepath.FromSlash(failingProgram))
+	if runtime.GOOS == "windows" {
+		copyLifecycleNativeHook(t, failingPath)
+	} else if err := os.WriteFile(failingPath, []byte(failingScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(failingPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failingCommand := []string{failingProgram}
+	if runtime.GOOS == "windows" {
+		failingCommand = []string{failingProgram, "-test.run=^TestLifecycleHookNativeHelper$"}
+	}
+	manifest.Hooks = config.HookEvents{config.HookEventPostClone: {{ID: "failure", Command: failingCommand}}}
+	manifestBytes, err = config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, manifestBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"add", "project.wtree.yml", filepath.ToSlash(failingProgram)}, {"commit", "-m", "add failing portable hook"}, {"push", "origin", "main"}} {
+		command := exec.Command("git", append([]string{"-C", filepath.Dir(manifestPath)}, arguments...)...)
+		command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+		if output, commandErr := command.CombinedOutput(); commandErr != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, commandErr, output)
+		}
+	}
+	failingData := t.TempDir()
+	failure := testutil.RunCommand(t, cli.Execute, "clone", manifestPath, filepath.Join(parent, "failure"), "--data-dir", failingData, "--run-hooks")
+	if _, incomplete := service.SetupIncompleteFrom(failure.Err); !incomplete || !strings.Contains(failure.Stdout, "Cloned project:") {
+		t.Fatalf("hook failure human=%#v", failure)
+	}
+	jsonFailure := testutil.RunCommand(t, cli.Execute, "clone", manifestPath, filepath.Join(parent, "failure-json"), "--data-dir", t.TempDir(), "--run-hooks", "--json")
+	if _, incomplete := service.SetupIncompleteFrom(jsonFailure.Err); !incomplete || !strings.Contains(jsonFailure.Stdout, `"code":"setup_incomplete"`) || !strings.Contains(jsonFailure.Stdout, `"operation":"clone"`) {
+		t.Fatalf("hook failure JSON=%#v", jsonFailure)
 	}
 }
 

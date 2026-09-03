@@ -107,7 +107,7 @@ reports whether each checkout is already at its exact configured upstream tip;
 it never runs `git push`, fetches, or creates refs or tags. Publication remains
 a manual workflow until a separately specified publishing command exists.
 
-Portable manifests use schema version 2. The `project.base_repository` field
+Hook-free local configuration and portable manifests use schema version 2. The `project.base_repository` field
 names exactly one top-level metadata owner. It may be mounted below grouping
 directories and need not be the only top-level repository:
 
@@ -131,6 +131,58 @@ repositories:
     mount: clients/web
     # clone, upstream, identity, and default_branch are written by `wtree init`
 ```
+
+## Lifecycle hooks: explicit local consent
+
+Version 3 adds lifecycle declarations without changing any hook-free version 2
+contract. A version 2 document must remain hook-free: adding `hooks` or
+`shared_hooks` requires the relevant version 3 document. Local and portable
+versions are independent, and loading a version 3 manifest never upgrades the
+ignored local `.wtree.yml` or installs anything.
+
+There are three intentionally separate sources:
+
+- Local `.wtree.yml` `hooks.post-create` runs after a successful `wtree create`.
+  Use `--no-hooks` when intentionally bypassing that trusted local setup.
+- Portable `project.wtree.yml` `hooks.post-clone` runs only for a real clone
+  invoked with `--run-hooks`. It is never implied by reading, cloning, or
+  updating a manifest.
+- Portable `shared_hooks.post-create` is distribution metadata only. It never
+  executes from a manifest; inspect it with `wtree hooks list` and explicitly
+  copy it into local configuration with `wtree hooks install`.
+
+Hook commands use direct argument arrays, not an implicit shell. Review every
+literal argument before sharing a definition. A portable executable with a
+path separator must be source-relative, tracked, and contained; a bare command
+name resolves through the sanitized effective `PATH` (and `PATHEXT` on Windows).
+Durable hook-run records and execution-result/error JSON never carry ambient
+environment values, credentials, command output, literal arguments, or
+executable paths. Those facts are intentionally visible only on inspection
+surfaces such as `hooks list` and create/clone plan or dry-run output.
+
+```sh
+# Author and inspect trusted local post-create setup.
+wtree hooks list
+wtree hooks share post-create
+
+# On another checkout, opt in to the shared declaration.
+wtree hooks install --missing
+
+# A portable post-clone hook needs per-invocation authority.
+wtree clone ./project.wtree.yml ./product --run-hooks
+
+# Resume only one matching, incomplete setup run.
+wtree hooks retry feature/login
+```
+
+Hook failure never rolls back a published workspace. Inspect its bounded setup
+diagnostic with `wtree status <workspace>` and `wtree doctor <workspace>`, then
+use the printed retry command after fixing the external cause. Retry validates
+the exact source, plan, and workspace state and never starts a fresh run or
+reruns a durably completed hook. Make hook programs idempotent: an interruption
+after a child side effect but before durable success recording can require that
+same hook to run again. Hooks are not sandboxed; local hooks are trusted
+programs and may access the resources available to their process.
 
 Clone a published project from a local manifest file or an HTTP(S) URL. The
 optional destination defaults to the manifest's safe project name. A dry run
@@ -295,9 +347,11 @@ and later mutations remain blocked until the retained work is inspected and
 reconciled. Start with `wtree doctor <workspace>` and follow the
 [incomplete-rollback guidance](docs/TROUBLESHOOTING.md#an-operation-reports-an-incomplete-rollback).
 
-Local project configuration is strictly schema version 2. A version 1
+Local project configuration is strictly schema version 2 or version 3 when it
+contains lifecycle hooks. A version 1
 `.wtree.yml` is rejected with reinitialization guidance; it is never silently
-rewritten. Portable manifests remain version 2, while global configuration,
+rewritten. Hook-free portable manifests remain version 2; hook-bearing portable
+manifests are explicitly version 3. Global configuration,
 workspace state/plans, registry, and recovery records retain their established
 versions.
 
@@ -316,6 +370,29 @@ Run `wtree --how-to` for the installed workflow guide, or
 - See the [AI-assisted delivery process](docs/ai/README.md) for this
   repository's planning, implementation, independent-review, and verification
   loop.
+
+### Testing locally
+
+Use `make check-local` for fast local feedback: it formats and vets the tree,
+runs the short suite, bounded integration smoke checks, runner contracts, and
+a build. For a changed area, use `make test-changed BASE_REF=<commit>`; select
+race-sensitive packages deliberately with
+`make test-changed-race PACKAGES='./path/...'`. The race lane is for process,
+shared-state, filesystem, lock, cancellation, or similar concurrency risk; a
+path name alone is not enough to select it.
+
+`make test-full` and `make test-full-race` are exhaustive normal and race
+lanes. `make test`, `make test-race`, `make check`, and `make check-full`
+retain exhaustive compatibility meanings. `TEST_JOBS` bounds runner-owned
+commands from 1 through 4 and defaults to 4.
+
+Iterate with focused owning tests and use `check-local`, changed-area normal,
+and a selected focused race check for a complete milestone submission. A frozen
+candidate needs a complete normal run; terminal evidence also includes complete
+race, tutorial, and release checks. An exception requires explicit user
+authorization recorded in that plan and its durable ledger. See
+[plan-authoring guidance](docs/ai/plan-authoring.md#tiered-verification-for-local-test-plans)
+for the complete verification and amendment rules.
 
 ## License
 

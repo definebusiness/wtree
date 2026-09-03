@@ -70,6 +70,23 @@ type Adapter struct {
 	env    []string
 }
 
+// WorkingFileTracked reports whether a literal repository-relative working
+// tree path is tracked. It never reads content or modifies the index.
+func (a *Adapter) WorkingFileTracked(ctx context.Context, repository, relativePath string) (bool, error) {
+	if relativePath == "" || filepath.IsAbs(relativePath) {
+		return false, fmt.Errorf("tracked file path must be relative")
+	}
+	_, err := a.runFact(ctx, repository, "ls-files", "--error-unmatch", "--", relativePath)
+	if err == nil {
+		return true, nil
+	}
+	var commandError *Error
+	if errors.As(err, &commandError) && commandError.ExitCode == 1 {
+		return false, nil
+	}
+	return false, err
+}
+
 // NewAdapter constructs an adapter using binary, or git when binary is empty.
 func NewAdapter(binary string) *Adapter {
 	return NewAdapterWithEnv(binary, os.Environ())

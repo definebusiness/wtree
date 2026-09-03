@@ -74,7 +74,7 @@ func renderWorkspaceStatus(stdout io.Writer, value service.WorkspaceStatus) erro
 		return err
 	}
 	if len(value.Drift) == 0 {
-		return nil
+		return renderHookSetupStatus(stdout, value.Setup)
 	}
 	if err := render.Line(stdout, ""); err != nil {
 		return err
@@ -86,7 +86,34 @@ func renderWorkspaceStatus(stdout io.Writer, value service.WorkspaceStatus) erro
 	for _, drift := range value.Drift {
 		driftRows = append(driftRows, []string{drift.ID, drift.Origin, drift.Check, drift.Status})
 	}
-	return render.Table(stdout, driftRows)
+	if err := render.Table(stdout, driftRows); err != nil {
+		return err
+	}
+	return renderHookSetupStatus(stdout, value.Setup)
+}
+
+func renderHookSetupStatus(stdout io.Writer, setup []service.HookSetupStatus) error {
+	if len(setup) == 0 {
+		return nil
+	}
+	if err := render.Line(stdout, ""); err != nil {
+		return err
+	}
+	if err := render.Line(stdout, "Setup:"); err != nil {
+		return err
+	}
+	rows := [][]string{{"EVENT", "STATE", "NEXT", "COMPLETED", "FAILURE"}}
+	for _, entry := range setup {
+		next, failure := entry.NextHookID, entry.FailureKind
+		if next == "" {
+			next = "-"
+		}
+		if failure == "" {
+			failure = "-"
+		}
+		rows = append(rows, []string{entry.Event, entry.State, next, strconv.Itoa(entry.CompletedCount), failure})
+	}
+	return render.Table(stdout, rows)
 }
 
 func renderUpstreamStatus(repository service.RepositoryStatus) string {

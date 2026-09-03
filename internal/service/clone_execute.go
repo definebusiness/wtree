@@ -29,6 +29,11 @@ type CloneExecutionResult struct {
 	ConfigPath     string
 	StatePath      string
 	Repositories   map[string]store.CheckoutState
+	// workspaceStateBytes is the exact generation that the executor published.
+	// It is deliberately private: the post-publication hook coordinator needs
+	// it to establish a retry record even if a subsequent state-file read is
+	// interrupted or unavailable.
+	workspaceStateBytes []byte
 }
 
 // ClonePublicationLocker is the established registry-then-project lock
@@ -349,6 +354,12 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		heads[repository.ID] = head
 		checkouts[repository.ID] = store.CheckoutState{Branch: repository.LocalBranch, Mount: repository.Mount, ResolvedPath: finalRepositoryPath(plan, repository.ID), Head: head}
 	}
+	// Portable code is authorized only by the invocation flag. Validate its
+	// staged, tracked executable authority while every checkout is still
+	// private; a failure here cannot publish a project or a hook record.
+	if err := executor.validateStagedCloneHooks(ctx, plan, paths, heads); err != nil {
+		return CloneExecutionResult{}, cleanup(NewError(ErrorValidation, err))
+	}
 
 	configuration := cloneLocalConfiguration(plan)
 	baseRepository := planRepository(plan, plan.BaseRepository)
@@ -646,7 +657,7 @@ func (executor *CloneExecutor) Execute(ctx context.Context, plan ClonePlan, prog
 		return CloneExecutionResult{}, cleanup(errors.Join(NewError(ErrorConflict, err), registryErr, stateErr))
 	}
 	stateWritten = false
-	return CloneExecutionResult{ProjectID: plan.Project.ID, Destination: plan.Destination.Path, LogicalRoot: plan.LogicalRoot, BaseRepository: plan.BaseRepository, ConfigPath: filepath.Join(finalRepositoryPath(plan, plan.BaseRepository), ".wtree.yml"), StatePath: statePath, Repositories: checkouts}, nil
+	return CloneExecutionResult{ProjectID: plan.Project.ID, Destination: plan.Destination.Path, LogicalRoot: plan.LogicalRoot, BaseRepository: plan.BaseRepository, ConfigPath: filepath.Join(finalRepositoryPath(plan, plan.BaseRepository), ".wtree.yml"), StatePath: statePath, Repositories: checkouts, workspaceStateBytes: append([]byte(nil), stateBytes...)}, nil
 }
 
 type cloneEffectProgress struct {

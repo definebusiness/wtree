@@ -39,13 +39,17 @@ func WriteGlobalFile(path string, value GlobalConfig) error {
 }
 
 func WriteProjectFile(path string, value ProjectConfig) error {
-	if value.Version != ProjectConfigVersion {
+	if value.Version != ProjectConfigVersion && value.Version != ProjectConfigVersion3 {
 		return fmt.Errorf("unsupported project config version %d", value.Version)
 	}
 	if err := value.Validate(); err != nil {
 		return err
 	}
-	return writeYAML(path, value)
+	data, err := MarshalProject(value)
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteFileAtomicModeWithHook(path, data, 0o600, configAtomicHook)
 }
 
 func writeYAML(path string, value any) error {

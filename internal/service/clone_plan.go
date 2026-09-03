@@ -29,6 +29,10 @@ type ClonePlanRequest struct {
 	CWD            string
 	DataDir        string
 	WorktreeRoot   string
+	// RunHooks is an invocation-scoped consent gate. It is deliberately not
+	// persisted in the plan JSON: portable declarations remain observable in a
+	// dry run, while permission to execute them belongs only to this command.
+	RunHooks bool
 }
 
 type ClonePlanSource struct {
@@ -91,18 +95,22 @@ type ClonePlanAction struct {
 // ClonePlan is a complete read-only observation for a later executor. Private
 // manifest bytes are copied on access and deliberately excluded from JSON.
 type ClonePlan struct {
-	Version        int                    `json:"version"`
-	Operation      string                 `json:"operation"`
-	Source         ClonePlanSource        `json:"source"`
-	Destination    CloneDestinationFacts  `json:"destination"`
-	Project        config.PortableProject `json:"project"`
-	LogicalRoot    string                 `json:"logicalRoot"`
-	BaseRepository string                 `json:"baseRepository"`
-	Repositories   []ClonePlanRepository  `json:"repositories"`
-	Actions        []ClonePlanAction      `json:"actions"`
-	WorktreeRoot   string                 `json:"worktreeRoot,omitempty"`
-	DataDir        string                 `json:"dataDir"`
-	manifestData   []byte
+	Version         int                    `json:"version"`
+	Operation       string                 `json:"operation"`
+	Source          ClonePlanSource        `json:"source"`
+	Destination     CloneDestinationFacts  `json:"destination"`
+	Project         config.PortableProject `json:"project"`
+	LogicalRoot     string                 `json:"logicalRoot"`
+	BaseRepository  string                 `json:"baseRepository"`
+	Repositories    []ClonePlanRepository  `json:"repositories"`
+	Actions         []ClonePlanAction      `json:"actions"`
+	Hooks           []HookPlanEntry        `json:"hooks,omitempty"`
+	WorktreeRoot    string                 `json:"worktreeRoot,omitempty"`
+	DataDir         string                 `json:"dataDir"`
+	runHooks        bool
+	hookEnvironment []string
+	hookWindows     bool
+	manifestData    []byte
 }
 
 func (plan ClonePlan) ManifestBytes() []byte { return append([]byte(nil), plan.manifestData...) }
@@ -202,8 +210,11 @@ func (plan ClonePlan) Validate() error {
 			return errors.New("clone plan manifest bytes do not match their digest")
 		}
 		decoded, err := config.LoadPortableManifest(plan.manifestData)
-		if err != nil || !reflect.DeepEqual(decoded, manifest) {
+		if err != nil || decoded.Project != manifest.Project || !reflect.DeepEqual(decoded.Repositories, manifest.Repositories) {
 			return errors.New("clone plan decisions do not match its validated manifest bytes")
+		}
+		if !reflect.DeepEqual(plan.Hooks, cloneDryRunHookEntries(plan, decoded)) {
+			return errors.New("clone plan hook projection does not match manifest authority")
 		}
 	}
 	return nil
@@ -378,7 +389,9 @@ func (planner *ClonePlanner) planAttempt(ctx context.Context, request ClonePlanR
 		Source:      ClonePlanSource{Kind: loaded.Kind, Value: loaded.Source, SHA256: hex.EncodeToString(digest[:])},
 		Destination: destination, Project: manifest.Project, LogicalRoot: destination.Path, BaseRepository: manifest.Project.BaseRepository, Repositories: repositories,
 		Actions: actions, WorktreeRoot: request.WorktreeRoot, DataDir: dataDir, manifestData: loaded.Bytes(),
+		runHooks: request.RunHooks,
 	}
+	plan.Hooks = cloneDryRunHookEntries(plan, manifest)
 	if err := plan.Validate(); err != nil {
 		attempt.stage = CloneResultStageInternal
 		return ClonePlan{}, attempt, NewError(ErrorInternal, err)

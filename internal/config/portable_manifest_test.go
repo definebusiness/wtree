@@ -354,11 +354,6 @@ func TestPortableManifestV2RejectsInvalidBaseTopologyWithoutMutation(t *testing.
 			want:  "logical-root manifest format version 2 is required",
 		},
 		{
-			name:  "version 3",
-			input: strings.Replace(validPortableManifest, "version: 2", "version: 3", 1),
-			want:  "logical-root manifest format version 2 is required",
-		},
-		{
 			name:  "missing base",
 			input: strings.Replace(validPortableManifest, "  base_repository: root\n", "", 1),
 			want:  "project base repository",

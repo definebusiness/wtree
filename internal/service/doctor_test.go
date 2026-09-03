@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/definebusiness/wtree/internal/domain"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
@@ -77,6 +78,81 @@ func TestDoctorReportsAndRepairsVerifiedMovedMountOnlyWithFix(t *testing.T) {
 	path, err := fixed.ResolveRepository("backend")
 	if err != nil || path != filepath.Join(target, "api") {
 		t.Fatalf("fixed backend path = %q, %v", path, err)
+	}
+}
+
+func TestDoctorReportsStaleHookRunFindingWithoutMakingItFixable(t *testing.T) {
+	project, _, _, data := createFixture(t)
+	workspace, err := service.RequireWorkspace(project, data, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.HookRunRecordPath(data, project.ID, workspace.ID, "post-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC)
+	record := store.HookRunRecord{Version: store.HookRunRecordVersion, ProjectID: project.ID, WorkspaceID: workspace.ID, WorkspaceName: workspace.Name, Operation: "create", Event: "post-create", Source: "local", SourceSHA256: strings.Repeat("a", 64), PlanSHA256: strings.Repeat("b", 64), WorkspaceStateSHA256: strings.Repeat("c", 64), HookIDs: []string{"setup"}, CompletedHookIDs: []string{}, NextIndex: 0, State: "failed", Failure: &store.HookRunFailure{Kind: "missing-executable", HookID: "setup", RepositoryID: project.BaseRepository}, CreatedAt: now, UpdatedAt: now}
+	if err := store.WriteHookRunRecord(path, record); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doctor := service.NewDoctorService()
+	report, err := doctor.Doctor(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var finding *service.DoctorFinding
+	for index := range report.Findings {
+		if report.Findings[index].Code == "hook-run-stale" {
+			finding = &report.Findings[index]
+			break
+		}
+	}
+	if finding == nil || finding.Severity != "warning" || finding.Fixable || finding.Message != "hook run no longer matches its source or workspace; a fresh run is required" {
+		t.Fatalf("hook finding = %#v", finding)
+	}
+	if _, err := doctor.Fix(context.Background(), project, workspace, service.DoctorFixRequest{DataDir: data}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("doctor fix changed hook record: %v\nbefore=%s\nafter=%s", err, before, after)
+	}
+}
+
+func TestDoctorClassifiesLifecycleIncompatibleHookRunAsNonFixableError(t *testing.T) {
+	project, _, _, data := createFixture(t)
+	workspace, err := service.RequireWorkspace(project, data, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.HookRunRecordPath(data, project.ID, workspace.ID, "post-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC)
+	// Strict storage accepts this structurally valid record. Inventory must
+	// still reject a portable clone record that claims the local event as
+	// invalid rather than attributing it to a changed generation.
+	record := store.HookRunRecord{Version: store.HookRunRecordVersion, ProjectID: project.ID, WorkspaceID: workspace.ID, WorkspaceName: workspace.Name, Operation: "clone", Event: "post-create", Source: "portable", SourceSHA256: strings.Repeat("a", 64), PlanSHA256: strings.Repeat("b", 64), WorkspaceStateSHA256: strings.Repeat("c", 64), HookIDs: []string{"setup"}, CompletedHookIDs: []string{}, NextIndex: 0, State: "running", CreatedAt: now, UpdatedAt: now}
+	if err := store.WriteHookRunRecord(path, record); err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.NewDoctorService().Doctor(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !doctorHasFinding(report, "invalid-hook-run-record", "", false) {
+		t.Fatalf("doctor report = %#v", report)
+	}
+	for _, finding := range report.Findings {
+		if finding.Code == "invalid-hook-run-record" && (finding.Severity != "error" || finding.Message != "hook run record is invalid and requires manual inspection") {
+			t.Fatalf("invalid finding = %#v", finding)
+		}
 	}
 }
 

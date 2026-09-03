@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/definebusiness/wtree/internal/cli"
+	"github.com/definebusiness/wtree/internal/config"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
 	"github.com/definebusiness/wtree/internal/service"
 	"github.com/definebusiness/wtree/internal/store"
@@ -85,6 +86,60 @@ func TestExecuteStatusRendersCleanWorkspaceJSON(t *testing.T) {
 	after, err := os.ReadFile(statePath)
 	if err != nil || !bytes.Equal(before, after) {
 		t.Fatalf("status mutated state: before=%q after=%q error=%v", before, after, err)
+	}
+}
+
+func TestExecuteStatusAppendsHookSetupOnlyWhenAnExactRunRecordExists(t *testing.T) {
+	project := testutil.NewPushedGitRepository(t)
+	project.CommitFile("root.txt", "root\n", "root")
+	data, target := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
+	if result := testutil.RunCommand(t, cli.Execute, "init", project.Path, "--data-dir", data); result.Err != nil {
+		t.Fatalf("init = %#v", result)
+	}
+	executable, command := filepath.Join(project.Path, "fail-hook"), []string{}
+	if runtime.GOOS == "windows" {
+		executable, command = filepath.Join(project.Path, "fail.exe"), []string{"-test.run=^TestLifecycleHookNativeHelper$"}
+		copyLifecycleNativeHook(t, executable)
+	} else if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 23\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(executable, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	configPath := filepath.Join(project.Path, ".wtree.yml")
+	local, err := config.ReadProjectFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local.Version = config.ProjectConfigVersion3
+	local.Hooks = config.HookEvents{config.HookEventPostCreate: {{ID: "setup", Command: append([]string{executable}, command...)}}}
+	if err := config.WriteProjectFile(configPath, local); err != nil {
+		t.Fatal(err)
+	}
+	if result := testutil.RunCommand(t, cli.Execute, "create", "--project", project.Path, "feature/hooks-status", "--data-dir", data, "--path", target); result.Err == nil {
+		t.Fatalf("create unexpectedly succeeded: %#v", result)
+	}
+	result := testutil.RunCommand(t, cli.Execute, "status", "--project", project.Path, "feature/hooks-status", "--data-dir", data, "--json")
+	if result.Err != nil || result.Stderr != "" {
+		t.Fatalf("status JSON = %#v", result)
+	}
+	var value struct {
+		Setup []struct {
+			Event          string `json:"event"`
+			State          string `json:"state"`
+			NextHookID     string `json:"nextHookId"`
+			CompletedCount int    `json:"completedCount"`
+			FailureKind    string `json:"failureKind"`
+		} `json:"setup"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &value); err != nil || len(value.Setup) != 1 || value.Setup[0].Event != "post-create" || value.Setup[0].State != "failed" || value.Setup[0].NextHookID != "setup" || value.Setup[0].CompletedCount != 0 || value.Setup[0].FailureKind != "non-zero-exit" {
+		t.Fatalf("status hook setup = %q %#v err=%v", result.Stdout, value, err)
+	}
+	human := testutil.RunCommand(t, cli.Execute, "status", "--project", project.Path, "feature/hooks-status", "--data-dir", data)
+	if human.Err != nil || !strings.Contains(human.Stdout, "\nSetup:\nEVENT        STATE   NEXT   COMPLETED  FAILURE\npost-create  failed  setup  0          non-zero-exit\n") {
+		t.Fatalf("status hook human = %#v", human)
 	}
 }
 

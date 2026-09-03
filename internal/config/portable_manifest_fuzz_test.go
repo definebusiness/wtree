@@ -18,7 +18,9 @@ func Fuzz(f *testing.F) {
 	}{
 		{0, "version: 1\n"},
 		{0, "version: 1\nproject:\n  id: p\nrepositories:\n  root:\n    source: .\n    mount: .\n"},
+		{0, localV3Hooks},
 		{1, validPortableManifest},
+		{1, portableV3Hooks},
 		{1, "version: 1\nrepositories: null\n"},
 		{2, "https://example.test/repo.git"},
 		{2, "HTTPS://example.test/repo.git"},
