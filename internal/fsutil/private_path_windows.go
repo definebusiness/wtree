@@ -62,6 +62,23 @@ type privateWindowsRenameInformation struct {
 
 type privateWindowsSetInformationFile func(windows.Handle, *windows.IO_STATUS_BLOCK, *byte, uint32, uint32) error
 
+// privateWindowsDirectoryAuthorityError intentionally does not unwrap its
+// cause. A detached retained directory can contain a native not-found status,
+// but callers must not mistake that authority failure for safe leaf absence.
+type privateWindowsDirectoryAuthorityError struct{ cause error }
+
+func (err *privateWindowsDirectoryAuthorityError) Error() string {
+	return errPrivateDirectoryAuthority.Error() + "\n" + err.cause.Error()
+}
+
+func (err *privateWindowsDirectoryAuthorityError) Is(target error) bool {
+	return target == errPrivateDirectoryAuthority
+}
+
+func privateWindowsDirectoryAuthorityFailure(cause error) error {
+	return &privateWindowsDirectoryAuthorityError{cause: cause}
+}
+
 func containsPathSeparator(name string) bool {
 	return filepath.Base(name) != name || filepath.Clean(name) != name || filepath.IsAbs(name) || name == string(filepath.Separator) || len(name) >= 2 && name[1] == ':'
 }
@@ -115,7 +132,7 @@ func openPrivatePath(anchor string, components []string, leaf string, create, pr
 				if validationErr := validatePrivatePartialDirectory(partial); validationErr == nil {
 					openErr = markPrivatePathNotExist(openErr)
 				} else {
-					openErr = errors.Join(errPrivateDirectoryAuthority, openErr, validationErr)
+					openErr = privateWindowsDirectoryAuthorityFailure(errors.Join(openErr, validationErr))
 				}
 			}
 			closePrivateWindowsChain(chain)

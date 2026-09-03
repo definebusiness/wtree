@@ -85,6 +85,8 @@ func TestWindowsPrivatePathInitialComponentMissAfterDetachedParentIsNotAbsence(t
 			_ = authority.Close()
 		}
 		t.Fatalf("detached parent initial component miss = %v, want non-absence authority error", err)
+	} else if !errors.Is(err, errPrivateDirectoryAuthority) {
+		t.Fatalf("detached parent initial component miss = %v, want retained authority marker", err)
 	}
 }
 
@@ -97,6 +99,8 @@ func TestWindowsPrivatePathInitialComponentMissWithInvalidPartialChainIsNotAbsen
 			_ = authority.Close()
 		}
 		t.Fatalf("invalid partial-chain initial component miss = %v, want non-absence authority error", err)
+	} else if !errors.Is(err, errPrivateDirectoryAuthority) {
+		t.Fatalf("invalid partial-chain initial component miss = %v, want retained authority marker", err)
 	}
 }
 

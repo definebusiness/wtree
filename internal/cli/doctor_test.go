@@ -80,8 +80,8 @@ func TestExecuteDoctorRendersIncompleteHookRunWithoutFixingIt(t *testing.T) {
 	}
 	executable, command := filepath.Join(projectPath.Path, "fail-hook"), []string{}
 	if runtime.GOOS == "windows" {
-		executable, command = os.Args[0], []string{"-test.run=^TestLifecycleHookNativeHelper$"}
-		t.Setenv("WTREE_TEST_NATIVE_HOOK_FAIL", "1")
+		executable, command = filepath.Join(projectPath.Path, "fail.exe"), []string{"-test.run=^TestLifecycleHookNativeHelper$"}
+		copyLifecycleNativeHook(t, executable)
 	} else if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 23\n"), 0o755); err != nil {
 		t.Fatal(err)
 	} else {

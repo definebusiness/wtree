@@ -27,8 +27,10 @@ func TestLifecycleHookTutorialAcceptance(t *testing.T) {
 		t.Fatalf("author init = %#v", result)
 	}
 	program, good, failing := "hooks/setup", "#!/bin/sh\nexit 0\n", "#!/bin/sh\nexit 23\n"
+	command := []string{program}
 	if runtime.GOOS == "windows" {
 		program, good, failing = "hooks/setup.exe", "", ""
+		command = []string{program, "-test.run=^TestLifecycleHookNativeHelper$"}
 	}
 	script := filepath.Join(author.Path, filepath.FromSlash(program))
 	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
@@ -54,7 +56,7 @@ func TestLifecycleHookTutorialAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	local.Version = config.ProjectConfigVersion3
-	local.Hooks = config.HookEvents{config.HookEventPostCreate: {{ID: "setup", Command: []string{program}}}}
+	local.Hooks = config.HookEvents{config.HookEventPostCreate: {{ID: "setup", Command: command}}}
 	if err := config.WriteProjectFile(localPath, local); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +72,7 @@ func TestLifecycleHookTutorialAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest.Hooks = config.HookEvents{config.HookEventPostClone: {{ID: "clone-setup", Command: []string{program}}}}
+	manifest.Hooks = config.HookEvents{config.HookEventPostClone: {{ID: "clone-setup", Command: command}}}
 	manifestBytes, err = config.MarshalPortableManifest(manifest)
 	if err != nil {
 		t.Fatal(err)
