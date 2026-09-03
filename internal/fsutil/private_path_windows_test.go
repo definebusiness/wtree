@@ -85,6 +85,36 @@ func TestWindowsPrivatePathReleasesPublicationAuthorityBeforeDirSync(t *testing.
 	}
 }
 
+func TestWindowsPrivateRecordTransitionsUnderRetainedHookLock(t *testing.T) {
+	anchor := t.TempDir()
+	components := []string{"projects", "project", "hooks", "workspace"}
+	lockPath, err := OpenPrivatePath(anchor, components, "post-create.lock", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := lockPath.TryLock(context.Background())
+	if err != nil {
+		lockPath.Close()
+		t.Fatal(err)
+	}
+	defer lease.Unlock()
+	record, err := OpenPrivatePath(anchor, components, "post-create.json", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer record.Close()
+	for _, state := range []string{"running", "succeeded", "finalizing"} {
+		data := []byte(`{"state":"` + state + `"}` + "\n")
+		if err := record.WriteFileAtomicModeWithHook(data, 0o600, nil); err != nil {
+			t.Fatalf("write %s record: %v", state, err)
+		}
+		got, err := record.ReadFile()
+		if err != nil || string(got) != string(data) {
+			t.Fatalf("read %s record = %q, %v", state, got, err)
+		}
+	}
+}
+
 func TestWindowsPrivatePathRejectsUnsafeDirectoryAndLeafSecurityWithoutMutation(t *testing.T) {
 	anchor := t.TempDir()
 	authority, err := OpenPrivatePath(anchor, []string{"projects"}, "event.json", true)

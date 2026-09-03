@@ -16,10 +16,16 @@ import (
 
 const privateWindowsAllAccess windows.ACCESS_MASK = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
 
+// privateWindowsPublicationAccess is deliberately narrower than the private
+// creation DACL. Publication needs deletion and identity validation, not DACL
+// or ownership mutation rights; keeping the ReOpenFile request minimal avoids
+// turning a record transition into a security-descriptor mutation request.
+const privateWindowsPublicationAccess = windows.DELETE | windows.FILE_READ_ATTRIBUTES | windows.READ_CONTROL | windows.SYNCHRONIZE
+
 var privateTemporarySequence atomic.Uint64
 var privateWindowsBeforeIdentityReopen func(string)
 var reopenPrivateWindowsHandle = func(handle windows.Handle) (windows.Handle, error) {
-	return reopenWindowsHandle(handle, uint32(privateWindowsAllAccess))
+	return reopenWindowsHandle(handle, privateWindowsPublicationAccess)
 }
 
 func privatePathNotExist(err error) bool {
