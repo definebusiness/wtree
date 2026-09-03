@@ -171,7 +171,7 @@ func TestHookRunRecordAtomicFailureAndDurabilityMatrix(t *testing.T) {
 			defer func() { atomicStepHook = nil }()
 			err := WriteHookRunRecord(path, record)
 			if step == "dir-sync" {
-				if err != ErrHookRunDurabilityUnconfirmed {
+				if !errors.Is(err, ErrHookRunDurabilityUnconfirmed) {
 					t.Fatalf("WriteHookRunRecord()=%v", err)
 				}
 				data, readErr := os.ReadFile(path)

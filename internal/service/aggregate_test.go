@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/definebusiness/wtree/internal/testutil"
 )
 
 func TestAggregateFactsAreParentFirstAndDefensive(t *testing.T) {
@@ -72,6 +74,7 @@ func TestAggregateFailureRedactsAndBoundsDiagnostics(t *testing.T) {
 }
 
 func TestDirectProcessRunsWithoutShellAndBoundsStreams(t *testing.T) {
+	testutil.RequireIntegration(t, "direct process")
 	if directProcessHelper() {
 		return
 	}
@@ -118,6 +121,7 @@ func TestDirectProcessRunsWithoutShellAndBoundsStreams(t *testing.T) {
 }
 
 func TestDirectProcessEnvironmentIsExactAndRejectsUnverifiedWTREEKeys(t *testing.T) {
+	testutil.RequireIntegration(t, "direct process")
 	environment := directProcessEnvironment(t, t.TempDir())
 	got, err := sanitizedDirectProcessEnvironment(environment)
 	if err != nil {
@@ -139,6 +143,7 @@ func TestDirectProcessEnvironmentIsExactAndRejectsUnverifiedWTREEKeys(t *testing
 }
 
 func TestDirectProcessCancellationKillsDescendants(t *testing.T) {
+	testutil.RequireIntegration(t, "direct process")
 	if directProcessNestedHelper() {
 		return
 	}
@@ -171,6 +176,7 @@ func TestDirectProcessCancellationKillsDescendants(t *testing.T) {
 }
 
 func TestDirectProcessDrainsDelayedAndInheritedTrailingOutput(t *testing.T) {
+	testutil.RequireIntegration(t, "direct process")
 	if directProcessNestedHelper() {
 		return
 	}
@@ -191,6 +197,7 @@ func TestDirectProcessDrainsDelayedAndInheritedTrailingOutput(t *testing.T) {
 }
 
 func TestDirectProcessReportsTwoTerminationFailuresWithoutLeakingSideEffects(t *testing.T) {
+	testutil.RequireIntegration(t, "direct process")
 	if directProcessNestedHelper() {
 		return
 	}

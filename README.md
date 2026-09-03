@@ -371,6 +371,29 @@ Run `wtree --how-to` for the installed workflow guide, or
   repository's planning, implementation, independent-review, and verification
   loop.
 
+### Testing locally
+
+Use `make check-local` for fast local feedback: it formats and vets the tree,
+runs the short suite, bounded integration smoke checks, runner contracts, and
+a build. For a changed area, use `make test-changed BASE_REF=<commit>`; select
+race-sensitive packages deliberately with
+`make test-changed-race PACKAGES='./path/...'`. The race lane is for process,
+shared-state, filesystem, lock, cancellation, or similar concurrency risk; a
+path name alone is not enough to select it.
+
+`make test-full` and `make test-full-race` are exhaustive normal and race
+lanes. `make test`, `make test-race`, `make check`, and `make check-full`
+retain exhaustive compatibility meanings. `TEST_JOBS` bounds runner-owned
+commands from 1 through 4 and defaults to 4.
+
+Iterate with focused owning tests and use `check-local`, changed-area normal,
+and a selected focused race check for a complete milestone submission. A frozen
+candidate needs a complete normal run; terminal evidence also includes complete
+race, tutorial, and release checks. An exception requires explicit user
+authorization recorded in that plan and its durable ledger. See
+[plan-authoring guidance](docs/ai/plan-authoring.md#tiered-verification-for-local-test-plans)
+for the complete verification and amendment rules.
+
 ## License
 
 `wtree` is licensed under the [MIT License](LICENSE). Copyright © 2026 Define

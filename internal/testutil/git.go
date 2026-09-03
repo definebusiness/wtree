@@ -12,14 +12,39 @@ type GitRepository struct {
 	Path string
 }
 
+// RequireIntegration marks the first boundary that would start a real Git
+// command or a process-heavy test fixture.  Short mode is deliberately a
+// fast, deterministic lane: it retains pure and fake-adapter tests while it
+// skips before an integration process can be created.
+//
+// This helper lives with the fixture rather than in callers so a new fixture
+// operation cannot accidentally start its first Git process before checking
+// the lane policy.
+func RequireIntegration(t testing.TB, capability string) {
+	t.Helper()
+	if testing.Short() {
+		t.Skipf("short mode skips %s integration fixture", capability)
+	}
+}
+
+// GitCommand classifies a direct Git command used by tests that construct a
+// fixture outside GitRepository. Callers use it at the command-creation
+// boundary so short mode cannot start the process before skipping.
+func GitCommand(t testing.TB, args ...string) *exec.Cmd {
+	t.Helper()
+	RequireIntegration(t, "real Git")
+	command := exec.Command("git", args...)
+	command.Env = gitFixtureEnvironment()
+	return command
+}
+
 // NewGitRepository initializes an isolated repository without relying on user
 // Git configuration, credentials, hooks, or network access.
 func NewGitRepository(t testing.TB) GitRepository {
 	t.Helper()
+	RequireIntegration(t, "real Git")
 	path := t.TempDir()
 	runGit(t, path, "init", "--initial-branch=main")
-	runGit(t, path, "config", "user.name", "wtree test")
-	runGit(t, path, "config", "user.email", "wtree@example.invalid")
 	return GitRepository{Path: path}
 }
 
@@ -46,6 +71,7 @@ func (r GitRepository) RunPanic(args ...string) { runGitPanic(r.Path, args...) }
 // reference tests. It shares the fixture's no-network, no-user-config setup.
 func NewBareGitRemote(t testing.TB) string {
 	t.Helper()
+	RequireIntegration(t, "real Git")
 	parent := t.TempDir()
 	path := filepath.Join(parent, "remote.git")
 	runGit(t, parent, "init", "--bare", path)
@@ -98,6 +124,10 @@ func gitFixtureEnvironment() []string {
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_ASKPASS=",
 		"GIT_ATTR_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=wtree test",
+		"GIT_AUTHOR_EMAIL=wtree@example.invalid",
+		"GIT_COMMITTER_NAME=wtree test",
+		"GIT_COMMITTER_EMAIL=wtree@example.invalid",
 		"LC_ALL=C",
 		"LANG=C",
 	}

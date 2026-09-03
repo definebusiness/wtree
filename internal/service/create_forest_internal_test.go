@@ -405,6 +405,7 @@ func TestWorkspaceCreatorPreservesCleanLinkedWorktreeReplacementAtCleanupBoundar
 		{name: "checkout-forest-completed", operation: plan.Checkout, forest: true, phase: "completed"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			parallelM07RealGitTest(t)
 			project, data := rootWorkspaceProject(t)
 			request := WorkspacePlanRequest{WorkspaceName: "feature/linked-" + test.name, TargetPath: filepath.Join(t.TempDir(), "workspace"), DataDir: data, Operation: test.operation}
 			targetID := "root"
@@ -517,7 +518,7 @@ func TestWorkspaceCreatorRejectsDetachedOwnershipReceipt(t *testing.T) {
 	if err := adapter.AddWorktree(context.Background(), sourcePath, path, "receipt-detached"); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command("git", "-C", path, "checkout", "--detach")
+	command := testutil.GitCommand(t, "-C", path, "checkout", "--detach")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("detach worktree: %v: %s", err, output)
 	}
@@ -552,7 +553,7 @@ func newLinkedWorktreeReplacement(t *testing.T, sourcePath, publicPath, displace
 		t.Fatal(err)
 	}
 	if detached {
-		command := exec.Command("git", "-C", alternatePath, "checkout", "--detach")
+		command := testutil.GitCommand(t, "-C", alternatePath, "checkout", "--detach")
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("detach alternate worktree: %v: %s", err, output)
 		}
@@ -1176,6 +1177,7 @@ func TestWorkspaceCreatorForestGitAndIgnoreFailuresRollBackEveryTree(t *testing.
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			parallelM07RealGitTest(t)
 			project, data := forestWorkspaceProject(t)
 			target := filepath.Join(t.TempDir(), "workspace")
 			git := &forestFailureGit{Git: gitadapter.NewAdapter("git"), sources: forestSourceIDs(project), createID: test.createID, addID: test.addID, ignoreCall: test.ignoreCall}

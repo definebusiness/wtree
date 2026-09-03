@@ -936,7 +936,11 @@ func TestHookRunnerRejectsOverlappingRunAfterFinalizingRemoval(t *testing.T) {
 		}
 		first <- result
 	}()
-	<-started
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first Run() did not start the hook process")
+	}
 	secondResult := make(chan HookRunResult, 1)
 	go func() {
 		result, err := runner.Run(context.Background(), request)
@@ -945,12 +949,27 @@ func TestHookRunnerRejectsOverlappingRunAfterFinalizingRemoval(t *testing.T) {
 		}
 		secondResult <- result
 	}()
-	<-locker.attempted
-	close(release)
-	if result := <-first; result.Status != "completed" {
-		t.Fatalf("first Run()=%#v", result)
+	select {
+	case <-locker.attempted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("overlapping Run() did not attempt the lock")
 	}
-	second := <-secondResult
+	close(release)
+	var firstResult HookRunResult
+	select {
+	case firstResult = <-first:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first Run() did not finish after process release")
+	}
+	if firstResult.Status != "completed" {
+		t.Fatalf("first Run()=%#v", firstResult)
+	}
+	var second HookRunResult
+	select {
+	case second = <-secondResult:
+	case <-time.After(5 * time.Second):
+		t.Fatal("overlapping Run() did not finish")
+	}
 	mu.Lock()
 	gotRuns := runs
 	mu.Unlock()

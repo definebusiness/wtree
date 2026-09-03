@@ -357,6 +357,34 @@ the plan says what property it verifies. Do not use reviewers to compensate for
 missing tests: reviewer inspection validates the complete milestone, but tests
 must demonstrate intended behavior.
 
+### Tiered verification for local test plans
+
+Plans that change local test lanes should name verification as a sequence, not
+as an interchangeable list of expensive commands. During partial
+implementation, use the smallest owning focused test or harness first and add
+a focused race check when the changed boundary has concurrency, process, or
+cleanup risk. This keeps iteration evidence attributable to the current
+slice.
+
+A complete milestone submission for such a plan must state the applicable
+`check-local`, changed-area normal, explicitly selected focused-race, and
+milestone-specific gates, together with the inventory or contract each one
+proves. A reviewer-approved frozen candidate then needs one complete normal
+run and the milestone gates. Before a plan is finalized, retain terminal
+complete race, tutorial, and release evidence as well as the frozen normal
+evidence.
+
+An exception is valid only when the user explicitly authorizes it and the
+scope amendment is recorded in both that plan and its durable ledger. The
+amendment must identify the waived command, the retained substitute evidence,
+and the limits of the waiver. It does not weaken the supervision process,
+independent review, remediation limit, ledger requirements, or any historical
+plan. An active or blocked plan can adopt this guidance only through such an
+explicit amendment in its own plan and ledger; do not retrofit a different
+verification contract into another plan's history. Reuse retained command
+output only when the source, mode, flags, environment, and inventory are
+materially unchanged.
+
 ## Scope boundaries and change control
 
 Write boundaries before implementation begins.
@@ -412,6 +440,7 @@ Mark the plan `ready to execute` only after every applicable item is true.
 [ ] Every milestone has a unique checkbox ID, narrow outcome, complete scope, test-first slices, exit criteria, and verification.
 [ ] Dependencies flow only from each milestone to approved earlier work or named existing code.
 [ ] Each scope bullet maps to observable evidence, including negative/safety cases where relevant.
+[ ] A local-test plan names focused iteration, complete-submission, frozen-normal, and terminal race/tutorial/release evidence, or an explicit authorized plan-and-ledger amendment for each waived terminal gate.
 [ ] Mutation, persistence, security, and migration work includes preflight, failure, rollback/recovery, and compatibility evidence as applicable.
 [ ] Public changes include documentation/help/contracts in the same or explicitly named later milestone, with no temporary undocumented gap where unsafe.
 [ ] Out-of-scope work, authority boundaries, and genuine external blockers are explicit.

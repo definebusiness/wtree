@@ -4,4 +4,8 @@ package fsutil
 
 import "os"
 
-func atomicReplace(source, destination string) error { return os.Rename(source, destination) }
+func atomicReplaceWithInfo(source, destination string, _ os.FileInfo) error {
+	return os.Rename(source, destination)
+}
+
+func removeAtomicTemporary(path string, _ os.FileInfo) error { return os.Remove(path) }
