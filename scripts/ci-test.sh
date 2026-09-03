@@ -144,6 +144,35 @@ is_service_subprocess_helper() {
   [[ -n ${service_subprocess_helpers[$1]+present} ]]
 }
 
+# These exact subprocess entry points call os.Exit, sleep for parent-owned
+# cancellation, or spawn descendants. Their parent tests invoke them by exact
+# -test.run name; every other discovered target remains fail-closed in the
+# ordinary service inventory, regardless of its suffix.
+is_service_subprocess_helper() {
+  case "$1" in
+    TestDirectProcessHelper | \
+      TestDirectProcessLargeOutputHelper | \
+      TestDirectProcessExitHelper | \
+      TestDirectProcessSecretOutputHelper | \
+      TestDirectProcessDescendantHelper | \
+      TestDirectProcessTrailingOutputHelper | \
+      TestDirectProcessInheritedPipeParentHelper | \
+      TestDirectProcessInheritedPipeChildHelper | \
+      TestDirectProcessDelayedWriteHelper | \
+      TestExecProcessHelper | \
+      TestExecFailureHelper | \
+      TestExecBlockingHelper | \
+      TestExecLargeSecretHelper | \
+      TestExecMarkerHelper | \
+      TestExecEarlyFailureHelper)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 run_and_annotate() {
   local label=$1
   shift
