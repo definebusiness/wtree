@@ -1,12 +1,14 @@
 # `wtree` all-commands tutorial
 
-This tutorial exercises every `wtree` command in the situations users are
-most likely to encounter: publishing with `init`, consuming with `clone`,
+This tutorial exercises every hook-free `wtree` command in the situations users
+are most likely to encounter: publishing with `init`, consuming with `clone`,
 inspecting configuration and registry state, refreshing declared remote
 revisions, running a direct command across the default composition, checking
 push readiness, creating and checking out workspaces, importing complete and
 partial workspaces, handling dirty worktrees, retaining and restoring state,
-diagnosing it, and deleting it.
+diagnosing it, and deleting it. The companion
+[lifecycle-hook tutorial](LIFECYCLE-HOOKS.md) covers `wtree hooks`, clone's
+`--run-hooks`, and create's `--no-hooks`; `make tutorial-test` runs both suites.
 
 The commands form one ordered scenario. The automated counterpart is
 [`run-all-commands.sh`](run-all-commands.sh); it runs the same lifecycle in an
@@ -35,6 +37,7 @@ isolated temporary directory and compares the normalized end result with
 | `wtree remove` | dry-run, retained state, dirty refusal, narrow `--force` override |
 | `wtree delete` | dry-run, complete deletion, partial-workspace refusal |
 | `wtree doctor` | healthy checkout, retained checkout, partial checkout, fix dry-run |
+| `wtree hooks list/share/install/retry` | local and portable declarations, explicit consent, durable retry; covered by the [lifecycle-hook tutorial](LIFECYCLE-HOOKS.md) |
 | root/help commands | `--version`, `--help`, `--how-to`, and command-specific help |
 
 `--data-dir` is shown where a command must be independent of ambient user
@@ -44,10 +47,11 @@ relevant command's `--help` output.
 
 ### Missing coverage
 
-This tutorial exercises every current command, but it is not exhaustive
-coverage of every input, flag combination, failure injection, platform, or
-concurrent operation. Relative to the situations claimed in the table above,
-full coverage is missing exactly these cases:
+The combined all-command and lifecycle-hook tutorial suite exercises every
+current command, but it is not exhaustive coverage of every input, flag
+combination, failure injection, platform, or concurrent operation. Relative to
+the situations claimed in the table above, full coverage is missing exactly
+these cases:
 
 - listing a genuinely empty registry in text and JSON immediately after the
   last registration is removed;
@@ -86,6 +90,7 @@ wtree --how-to
 wtree clone --help
 wtree project --help
 wtree config --help
+wtree hooks --help
 wtree update --help
 wtree exec --help
 wtree fetch --help

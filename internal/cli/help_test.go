@@ -16,8 +16,12 @@ func TestRootHelpDescribesCommandsConceptsSafetyAndExamples(t *testing.T) {
 	if result.Err != nil || result.Stderr != "" {
 		t.Fatalf("root help = %#v", result)
 	}
+	if strings.Contains(result.Stdout, "\t") {
+		t.Fatalf("root help contains tab-indented entries:\n%s", result.Stdout)
+	}
 	for _, want := range []string{
 		"USAGE", "GLOBAL OPTIONS", "COMMANDS", "CONCEPTS", "WORKTREE LOCATION", "EXAMPLES", "EXIT CODES",
+		"10 lifecycle-hook setup incomplete",
 		"init", "clone", "import", "create", "checkout", "list", "status", "path", "repo", "remove", "delete", "doctor", "config", "hooks",
 		"project", "repository forest", "base repository", "top-level mounts are logical-root-relative", "metadata and ignores", "inspection and recovery", "repository identity", "wtree clone ./project.wtree.yml ./product --dry-run", "wtree create feature/login", "wtree <command> --help",
 	} {
@@ -89,7 +93,7 @@ func TestLifecycleHookPublicDocumentationKeepsInstalledContractAligned(t *testin
 			"Lifecycle hooks: explicit local consent", "version 3", "--run-hooks", "shared_hooks", "--no-hooks", "wtree hooks retry", "execution-result/error JSON", "sanitized effective `PATH`", "hooks list",
 		},
 		"docs/INSTALL.md": {
-			"Lifecycle-hook commands in an installed binary", "wtree hooks --how-to", "--run-hooks", "execution-result/error JSON", "PATHEXT",
+			"Lifecycle-hook commands in an installed binary", "wtree hooks --how-to", "--run-hooks", "execution-result/error JSON", "PATHEXT", "../tutorial/LIFECYCLE-HOOKS.md",
 		},
 		"docs/TROUBLESHOOTING.md": {
 			"A lifecycle hook left setup incomplete", "wtree hooks retry", "starts a fresh run", "shared_hooks", "hook-free", "explicitly version 3",
@@ -112,6 +116,71 @@ func TestLifecycleHookPublicDocumentationKeepsInstalledContractAligned(t *testin
 		}
 		if path == "tutorial/LIFECYCLE-HOOKS.md" && strings.Contains(string(data), "Go helper processes only") {
 			t.Errorf("%s retains the contradictory Go-helper-only fixture claim", path)
+		}
+	}
+}
+
+func TestPublicDocumentationTracksCurrentCLIExtensions(t *testing.T) {
+	root := testRepositoryRoot(t)
+	checks := []struct {
+		path      string
+		required  []string
+		forbidden []string
+	}{
+		{
+			path:     "README.md",
+			required: []string{"tutorial/LIFECYCLE-HOOKS.md", "mutating commands that support it", "download-backend-modules"},
+			forbidden: []string{
+				"Use `--dry-run` on mutating commands to validate",
+			},
+		},
+		{
+			path:     "tutorial/README.md",
+			required: []string{"lifecycle-hook tutorial", "LIFECYCLE-HOOKS.md"},
+		},
+		{
+			path:     "tutorial/ALL-COMMANDS.md",
+			required: []string{"every hook-free `wtree` command", "wtree hooks list/share/install/retry", "make tutorial-test"},
+			forbidden: []string{
+				"This tutorial exercises every `wtree` command",
+				"This tutorial exercises every current command",
+			},
+		},
+		{
+			path:     "tutorial/LIFECYCLE-HOOKS.md",
+			required: []string{"Hands-on configuration", "download-backend-modules", "wtree hooks install --missing", "wtree clone ./project.wtree.yml ./product --run-hooks"},
+		},
+		{
+			path:     "docs/spec/wtree.spec.md",
+			required: []string{"version: 2", "one or more independent top-level Git repositories", "adds the implemented `update`, `exec`, `fetch`, and non-publishing `push`"},
+			forbidden: []string{
+				"`update`, `sync`, and release locking remain future work.",
+				"version: 1\n\nproject:",
+			},
+		},
+		{
+			path:     "docs/spec/wtree.traceability.md",
+			required: []string{"Aggregate command extension", "later aggregate extensions implement `update`, `exec`, `fetch`, and non-publishing `push`"},
+			forbidden: []string{
+				"update/sync/release locking remain future work",
+			},
+		},
+	}
+	for _, check := range checks {
+		data, err := os.ReadFile(filepath.Join(root, check.path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := string(data)
+		for _, required := range check.required {
+			if !strings.Contains(body, required) {
+				t.Errorf("%s missing current documentation contract %q", check.path, required)
+			}
+		}
+		for _, forbidden := range check.forbidden {
+			if strings.Contains(body, forbidden) {
+				t.Errorf("%s retains stale documentation contract %q", check.path, forbidden)
+			}
 		}
 	}
 }

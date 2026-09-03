@@ -179,7 +179,7 @@ COMMANDS
   project    inspect globally registered projects and manage registrations safely
   init       discover repositories and initialize a project
   clone      clone and register a project from a portable manifest
-	  update     reconcile a portable-manifest update safely
+  update     reconcile a portable-manifest update safely
   import     record an existing workspace by Git identity
   create     create synchronized branches and worktrees
   checkout   restore retained workspace state or an existing branch
@@ -187,7 +187,7 @@ COMMANDS
   status     inspect expected versus actual checkout state
   exec       run one direct command in every verified repository checkout
   fetch      explicitly refresh configured remote-tracking references
-	  push       report whether a workspace is ready for manual publication
+  push       report whether a workspace is ready for manual publication
   path       print one workspace path for shell composition
   repo       inspect or print a repository checkout path
   remove     remove worktrees while retaining branches and state
@@ -219,7 +219,7 @@ WORKTREE LOCATION
 EXAMPLES
   wtree init
   wtree clone ./project.wtree.yml ./product --dry-run
-	  wtree update
+  wtree update
   wtree project list
   wtree project prune stale-project-id --dry-run
   wtree project unregister project-id --dry-run
@@ -232,7 +232,7 @@ EXAMPLES
 EXIT CODES
   0 success; 1 internal/operational; 2 invalid arguments; 3 project not found;
   4 workspace not found; 5 validation; 6 Git; 7 dirty workspace; 8 conflict;
-  9 rollback incomplete.
+  9 rollback incomplete; 10 lifecycle-hook setup incomplete.
 
 Run:
   wtree <command> --help
@@ -352,7 +352,7 @@ SAFETY AND OUTPUT
 EXIT CODES
   0 success; 1 internal/operational; 2 invalid arguments; 3 project not found;
   4 workspace not found; 5 validation; 6 Git; 7 dirty workspace; 8 conflict;
-  9 rollback incomplete.
+  9 rollback incomplete; 10 lifecycle-hook setup incomplete.
 `)
 	if command.Example != "" {
 		fmt.Fprintf(&builder, "\nEXAMPLES\n%s", command.Example)

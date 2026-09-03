@@ -104,7 +104,7 @@ itself labels the feature optional; no required MVP section is deferred.
 | 91 | primary product goal | create/path/remove/delete lifecycle | CLI E2E; root help/how-to |
 | 92 | essential design statement | domain `Project → Repository → Workspace → Checkout` | domain/resolver tests; root help concepts |
 | 93 | planning coverage | executed milestone plan and package boundaries | plan test suites, CI, this matrix |
-| 94 | portable manifest authoring and clone extension | [portable manifest clone specification](portable-manifest-clone.md); `service.Initializer`, portable config codec, manifest loader, clone planner/executor, clone CLI | portable-config/init/manifest-source/clone-plan/clone-execute/clone CLI tests and process E2E; update/sync/release locking remain future work |
+| 94 | portable manifest authoring and clone extension | [portable manifest clone specification](portable-manifest-clone.md); `service.Initializer`, portable config codec, manifest loader, clone planner/executor, clone CLI | portable-config/init/manifest-source/clone-plan/clone-execute/clone CLI tests and process E2E; later aggregate extensions implement `update`, `exec`, `fetch`, and non-publishing `push`; `sync` and release locking remain future work |
 
 ## Logical-root repository-forest extension
 
@@ -123,6 +123,19 @@ ledger provide the detailed milestone evidence.
 | Additive topology JSON with scalar compatibility | service result objects and CLI renderers | structural JSON tests for init/clone/workspace/import/status/doctor/project/remove/delete; `path` and `repo path` scalar tests |
 | Safety-first rollback and recovery across repository trees | transaction, receipt/CAS publication, recovery records | failure-injection, replacement, recovery, normal/race and tutorial evidence |
 | Strict local v2 transition with unchanged surrounding schema versions | config/store/plan/result validators | local-v1 rejection and global/registry/workspace/recovery/plan compatibility tests |
+
+## Aggregate command extension
+
+The [full multi-repository experience specification](full-multi-repository-experience.md)
+and its traceability companion extend the installed command surface beyond the
+historical core and clone milestones.
+
+| Extension requirement | Enforcement | Evidence / user surface |
+|---|---|---|
+| Compatible portable-manifest updates | update planner, journaled update service, update CLI | update service/CLI tests; README and executable all-command tutorial |
+| Direct command execution across a verified workspace | exec service and CLI | direct-argv, ordering, cancellation, and composition tests; tutorial |
+| Explicit configured-ref refresh | fetch service and CLI | fetch/status tests proving local branch and HEAD stability; tutorial |
+| Non-publishing readiness inspection | push service and CLI | push tests proving no fetch or ref publication; README, troubleshooting, and tutorial |
 
 ## Required architectural invariants (§90)
 

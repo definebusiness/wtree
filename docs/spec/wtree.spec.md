@@ -11,6 +11,9 @@ Related documents:
 
 - [`wtree` specification traceability](wtree.traceability.md)
 - [Portable manifest clone specification](portable-manifest-clone.md) (implemented command extension)
+- [Logical project root and repository forest specification](logical-project-root-base-repository.md) (implemented topology extension)
+- [Full multi-repository experience specification](full-multi-repository-experience.md) (aggregate command extensions)
+- [Local and shared workspace lifecycle hooks specification](local-workspace-lifecycle-hooks.md) (implemented hook extension)
 
 ## 1. Purpose
 
@@ -18,10 +21,12 @@ Related documents:
 
 The main use case is software development with AI coding agents, where new isolated checkouts need to be created and removed quickly.
 
-A project may contain:
+A project has one logical root, which may be an ordinary directory, and a
+designated top-level base repository that owns project metadata. It may
+contain:
 
-- one root Git repository
-- zero or more nested independent Git repositories
+- one or more independent top-level Git repositories
+- zero or more nested independent Git repositories below any repository
 - arbitrarily nested repositories
 - repositories whose checkout directory names differ between workspaces
 - already existing manually created worktrees that need to be imported
@@ -225,7 +230,7 @@ Configuration representation:
 ```yaml
 repositories:
   root:
-    parent: null
+    parent: ""
     mount: .
 
   backend:
@@ -418,16 +423,19 @@ The project should contain a configuration file such as:
 Example:
 
 ```yaml
-version: 1
+version: 2
 
 project:
   id: 3f97ab90-0d41-4bd1-84a8-4df70dbcd221
   name: product
+  base_repository: root
+
+logical_root: .
 
 repositories:
   root:
     source: .
-    parent: null
+    parent: ""
     mount: .
     default_branch: main
 
@@ -442,6 +450,12 @@ repositories:
     parent: backend
     mount: shared
     default_branch: develop
+
+worktrees: {}
+
+manifest:
+  path: project.wtree.yml
+  source: https://example.com/product/project.wtree.yml
 ```
 
 `source` points to a known checkout used for Git repository administration and discovery.
@@ -465,6 +479,7 @@ Linux example:
 Example:
 
 ```yaml
+version: 1
 worktrees:
   root: ~/.local/share/wtree/worktrees
 ```
@@ -2826,13 +2841,18 @@ Do not defer obvious configuration errors until halfway through a mutation.
 
 # 86. Config Versioning
 
-Config contains:
+Hook-free local project configuration uses:
 
 ```yaml
-version: 1
+version: 2
 ```
 
-State and global registry should also be versioned.
+Local configuration with lifecycle hooks uses version 3. Version 1 local
+configuration is rejected with reinitialization guidance rather than silently
+migrated. Portable-manifest versions are independent: hook-free manifests use
+version 2 and hook-bearing manifests use version 3. State, global
+configuration, and the global registry retain their separately versioned
+contracts.
 
 Future migrations should be explicit.
 
@@ -3190,4 +3210,7 @@ preflight, transaction, error, JSON, and non-goal rules in this specification.
 
 The installed command surface includes `clone` for local and HTTP(S) manifest
 sources, read-only planning, verified private staging, and atomic publication.
-`update`, `sync`, and release locking remain future work.
+The aggregate command extension specified in
+[Full multi-repository experience specification](full-multi-repository-experience.md)
+adds the implemented `update`, `exec`, `fetch`, and non-publishing `push`
+surfaces. `sync` and release locking remain future work.

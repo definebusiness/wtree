@@ -309,7 +309,7 @@ func (repository PortableRepository) validate(id string) error {
 	return validateInitialCommits(repository.Identity.InitialCommits)
 }
 
-// ValidateManifestMetadata validates the additive local v1 manifest block.
+// ValidateManifestMetadata validates the local v2/v3 portable-manifest block.
 func ValidateManifestMetadata(metadata ManifestMetadata) error {
 	if metadata.IsZero() {
 		return nil

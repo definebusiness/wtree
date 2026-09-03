@@ -8,7 +8,7 @@ import (
 	"github.com/definebusiness/wtree/internal/pathutil"
 )
 
-// Fuzz covers both existing local v1 decoders and the portable contract in a
+// Fuzz covers both current local v2/v3 decoders and the portable contract in a
 // single target so `go test -fuzz=Fuzz` remains an unambiguous, repeatable
 // command on every supported Go release.
 func Fuzz(f *testing.F) {

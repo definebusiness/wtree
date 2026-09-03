@@ -1,12 +1,103 @@
-# Lifecycle-hook acceptance tutorial
+# Lifecycle-hook tutorial
 
-This is the executable, offline acceptance path for lifecycle hooks. It uses
-temporary local Git repositories, a tracked `sh` fixture on Unix or tracked
-native `.exe` test-binary helper on Windows for lifecycle ordering, and
-generated Go helpers for direct-process guarantees. `.cmd` fixtures remain
-supplemental PATHEXT/availability coverage and are never directly launched.
-It does not contact a network endpoint or read
-global Git configuration. Run it from the repository root:
+Lifecycle hooks are opt-in setup commands. Local `post-create` hooks are
+trusted machine-local configuration, portable `post-clone` hooks require
+per-clone authority, and shared `post-create` hooks remain inert until a user
+installs them locally.
+
+## Hands-on configuration
+
+Start with a project initialized or cloned by `wtree`. Edit its generated
+`.wtree.yml`, change the top-level version from `2` to `3`, keep every existing
+field, and add a top-level `hooks` fragment like this:
+
+```yaml
+version: 3
+# Keep the existing project, logical_root, repositories, worktrees, discovery,
+# and manifest fields here.
+hooks:
+  post-create:
+    - id: download-backend-modules
+      repository: backend
+      command: ["go", "mod", "download"]
+      timeout: 5m
+```
+
+The `repository` field is optional and defaults to the configured base
+repository. Commands are non-empty direct argument arrays, not shell strings;
+use an explicit shell executable and arguments only when shell behavior is
+needed. Hook IDs must be unique within an event, and an omitted timeout defaults
+to one minute.
+
+Validate and inspect the local declaration, then create a workspace:
+
+```sh
+wtree hooks list
+wtree create feature/hook-demo
+```
+
+To intentionally bypass trusted local setup for one create, use:
+
+```sh
+wtree create feature/without-setup --no-hooks
+```
+
+To offer the local `post-create` event to other users, copy it into the tracked
+portable manifest and commit that manifest yourself:
+
+```sh
+wtree hooks share post-create
+git add project.wtree.yml
+git commit -m 'Share post-create workspace setup'
+```
+
+On another clone, inspect the shared declaration before explicitly copying only
+missing events into that clone's ignored local configuration:
+
+```sh
+wtree hooks list
+wtree hooks install --missing
+wtree hooks list
+```
+
+If an authorized hook fails, the workspace remains published. Inspect it, fix
+the external cause, and resume only the matching incomplete run:
+
+```sh
+wtree status feature/hook-demo
+wtree doctor feature/hook-demo
+wtree hooks retry feature/hook-demo
+```
+
+Portable `hooks.post-clone` declarations use the same hook fields. Change the
+portable manifest to version 3, preserve its existing project and repository
+fields, and add a fragment such as:
+
+```yaml
+version: 3
+# Keep the existing project and repositories fields here.
+hooks:
+  post-clone:
+    - id: verify-cloned-project
+      command: ["go", "test", "./..."]
+      timeout: 10m
+```
+
+This declaration runs only when the individual clone command includes
+`--run-hooks`:
+
+```sh
+wtree clone ./project.wtree.yml ./product --run-hooks
+```
+
+## Executable acceptance path
+
+The offline acceptance path uses temporary local Git repositories, a tracked
+`sh` fixture on Unix or tracked native `.exe` test-binary helper on Windows for
+lifecycle ordering, and generated Go helpers for direct-process guarantees.
+`.cmd` fixtures remain supplemental PATHEXT/availability coverage and are never
+directly launched. It does not contact a network endpoint or read global Git
+configuration. Run it from the repository root:
 
 ```sh
 make tutorial-test

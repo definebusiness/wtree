@@ -7,8 +7,11 @@ executable all-command runner additionally initializes and clones a plain
 logical-root forest with a grouped non-dot base, a sibling top-level tree, and
 a nested child.
 
-For every command, registry cleanup, partial imports, and additional safety
-paths, continue with the [all-commands tutorial](ALL-COMMANDS.md).
+For the complete core command inventory, registry cleanup, partial imports, and
+additional safety paths, continue with the
+[all-commands tutorial](ALL-COMMANDS.md). Lifecycle hooks require explicit
+local consent and are covered separately in the
+[lifecycle-hook tutorial](LIFECYCLE-HOOKS.md).
 
 Run the commands in order in one terminal. Paths are stored in environment
 variables so the examples work regardless of where the `wtree-go` repository

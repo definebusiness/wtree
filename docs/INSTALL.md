@@ -51,6 +51,8 @@ Installed binaries include `wtree hooks list`, `wtree hooks share`, `wtree
 hooks install`, and `wtree hooks retry`, plus clone's `--run-hooks` flag and
 create's `--no-hooks` flag. Use `wtree hooks --how-to` and `wtree hooks --help`
 to inspect the exact installed contract.
+See the [lifecycle-hook tutorial](../tutorial/LIFECYCLE-HOOKS.md) for a complete
+version-3 YAML example and the inspect/share/install/retry workflow.
 
 Hook-free local and portable configuration remains version 2. Lifecycle hooks
 are version 3 declarations: local `hooks.post-create` is trusted local setup,

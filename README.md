@@ -151,6 +151,28 @@ There are three intentionally separate sources:
   executes from a manifest; inspect it with `wtree hooks list` and explicitly
   copy it into local configuration with `wtree hooks install`.
 
+To author trusted local setup, edit the generated `.wtree.yml`, change its
+top-level `version` from `2` to `3`, preserve the existing project fields, and
+add a top-level `hooks` declaration. For example, this fragment runs one direct
+command in the configured `backend` checkout after a workspace is published:
+
+```yaml
+version: 3
+# Keep the existing project, logical_root, repositories, worktrees, discovery,
+# and manifest fields here.
+hooks:
+  post-create:
+    - id: download-backend-modules
+      repository: backend
+      command: ["go", "mod", "download"]
+      timeout: 5m
+```
+
+`id` must be unique within the event. `repository` defaults to the base
+repository when omitted, `command` is a non-empty argument array, and `timeout`
+defaults to one minute. Run `wtree hooks list` after editing to validate and
+inspect the effective declaration before creating a workspace or sharing it.
+
 Hook commands use direct argument arrays, not an implicit shell. Review every
 literal argument before sharing a definition. A portable executable with a
 path separator must be source-relative, tracked, and contained; a bare command
@@ -335,10 +357,11 @@ Permanently remove the worktrees, branches, and retained state:
 wtree delete feature/login
 ```
 
-Use `--dry-run` on mutating commands to validate and preview an operation, and
-use `--force` only when you explicitly intend to override the reported safety
-checks. `wtree doctor feature/login` diagnoses drift; `--fix` applies only its
-listed safe repairs.
+Use `--dry-run` on mutating commands that support it to validate and preview an
+operation. Command help lists whether that option is available. Use `--force`
+only when you explicitly intend to override the reported safety checks. `wtree
+doctor feature/login` diagnoses drift; `--fix` applies only its listed safe
+repairs.
 
 If rollback cannot prove that a path still belongs to the failed operation,
 `wtree` preserves the path instead of risking data loss, reports
@@ -365,6 +388,9 @@ Run `wtree --how-to` for the installed workflow guide, or
 - The [all-commands tutorial](tutorial/ALL-COMMANDS.md) covers publisher,
   consumer, registry, recovery, safety, and partial-import situations and has
   an executable end-to-end check.
+- The [lifecycle-hook tutorial](tutorial/LIFECYCLE-HOOKS.md) shows how to author,
+  inspect, share, install, bypass, and retry explicit hook declarations and
+  identifies the executable acceptance coverage.
 - See [Troubleshooting](docs/TROUBLESHOOTING.md) for duplicate project
   registrations, workspace drift, dirty worktrees, and incomplete rollbacks.
 - See the [AI-assisted delivery process](docs/ai/README.md) for this

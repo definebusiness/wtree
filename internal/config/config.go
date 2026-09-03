@@ -40,8 +40,8 @@ type Discovery struct {
 }
 
 // ManifestMetadata records the portable manifest associated with a local
-// project configuration. It is intentionally optional so existing v1 local
-// configurations remain valid.
+// project configuration. Its zero value remains useful while services build a
+// prospective v2 or v3 configuration before publishing the manifest source.
 type ManifestMetadata struct {
 	Path   string `yaml:"path" json:"path"`
 	Source string `yaml:"source" json:"source"`
