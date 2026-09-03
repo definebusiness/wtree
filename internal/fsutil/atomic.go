@@ -37,13 +37,13 @@ func adaptAtomicReplace(replace func(string, string) error) atomicReplaceFunc {
 // WriteFileAtomicMode durably replaces one regular file while preserving the
 // caller-selected mode. The temporary is co-located so rename is atomic.
 func WriteFileAtomicMode(path string, data []byte, mode os.FileMode) error {
-	return writeFileAtomicModeWithInfo(path, data, mode, nil, atomicReplaceWithInfo)
+	return writeFileAtomicModeWithInfo(path, data, mode, nil, atomicReplaceWithInfo, true)
 }
 
 // WriteFileAtomicCreateMode durably creates a file using creation permissions
 // that remain subject to the process umask.
 func WriteFileAtomicCreateMode(path string, data []byte, mode os.FileMode) error {
-	return writeFileAtomicModeCreateWithInfo(path, data, mode, nil, atomicReplaceWithInfo)
+	return writeFileAtomicModeCreateWithInfo(path, data, mode, nil, atomicReplaceWithInfo, true)
 }
 
 // WriteFileAtomicCreateModeWithReplace retains umask-correct creation while
@@ -56,14 +56,14 @@ func WriteFileAtomicCreateModeWithReplace(path string, data []byte, mode os.File
 // WriteFileAtomicModeWithHook. The hook may reject a changed target at the
 // final replacement boundary while retaining umask-correct creation modes.
 func WriteFileAtomicCreateModeWithHook(path string, data []byte, mode os.FileMode, hook AtomicStepHook) error {
-	return writeFileAtomicModeCreateWithInfo(path, data, mode, hook, atomicReplaceWithInfo)
+	return writeFileAtomicModeCreateWithInfo(path, data, mode, hook, atomicReplaceWithInfo, true)
 }
 
 // WriteFileAtomicModeWithHook is WriteFileAtomicMode with test-only step
 // observation. The temporary is always created beside the target, flushed and
 // closed before replacement, then the containing directory is flushed.
 func WriteFileAtomicModeWithHook(path string, data []byte, mode os.FileMode, hook AtomicStepHook) error {
-	return writeFileAtomicModeWithInfo(path, data, mode, hook, atomicReplaceWithInfo)
+	return writeFileAtomicModeWithInfo(path, data, mode, hook, atomicReplaceWithInfo, true)
 }
 
 // WriteFileAtomicModeWithReplace retains the same durability protocol while
@@ -75,10 +75,15 @@ func WriteFileAtomicModeWithReplace(path string, data []byte, mode os.FileMode, 
 // writeFileAtomicMode retains the legacy injected replacement seam. Production
 // writers use the identity-aware boundary below.
 func writeFileAtomicMode(path string, data []byte, mode os.FileMode, hook AtomicStepHook, replace func(string, string) error) error {
-	return writeFileAtomicModeWithInfo(path, data, mode, hook, adaptAtomicReplace(replace))
+	return writeFileAtomicModeWithInfo(path, data, mode, hook, adaptAtomicReplace(replace), false)
 }
 
-func writeFileAtomicModeWithInfo(path string, data []byte, mode os.FileMode, hook AtomicStepHook, replace atomicReplaceFunc) error {
+func writeFileAtomicModeWithInfo(path string, data []byte, mode os.FileMode, hook AtomicStepHook, replace atomicReplaceFunc, platformAuthority bool) error {
+	if platformAuthority {
+		if handled, err := writeFileAtomicPlatform(path, data, mode, hook); handled {
+			return err
+		}
+	}
 	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
@@ -142,10 +147,15 @@ func writeFileAtomicModeWithInfo(path string, data []byte, mode os.FileMode, hoo
 }
 
 func writeFileAtomicModeCreate(path string, data []byte, mode os.FileMode, hook AtomicStepHook, replace func(string, string) error) error {
-	return writeFileAtomicModeCreateWithInfo(path, data, mode, hook, adaptAtomicReplace(replace))
+	return writeFileAtomicModeCreateWithInfo(path, data, mode, hook, adaptAtomicReplace(replace), false)
 }
 
-func writeFileAtomicModeCreateWithInfo(path string, data []byte, mode os.FileMode, hook AtomicStepHook, replace atomicReplaceFunc) error {
+func writeFileAtomicModeCreateWithInfo(path string, data []byte, mode os.FileMode, hook AtomicStepHook, replace atomicReplaceFunc, platformAuthority bool) error {
+	if platformAuthority {
+		if handled, err := writeFileAtomicPlatform(path, data, mode, hook); handled {
+			return err
+		}
+	}
 	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err

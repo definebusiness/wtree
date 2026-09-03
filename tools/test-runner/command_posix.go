@@ -11,6 +11,10 @@ func configureOwnedCommand(command *exec.Cmd) {
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
+func adoptOwnedCommand(*exec.Cmd) error { return nil }
+
+func releaseOwnedCommand(*exec.Cmd) {}
+
 func terminateOwnedCommand(command *exec.Cmd) {
 	if command.Process == nil {
 		return

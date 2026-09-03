@@ -1,3 +1,5 @@
+//go:build !windows
+
 package main
 
 import (
@@ -25,6 +27,12 @@ func runOwnedCommand(ctx context.Context, name string, args ...string) commandRe
 	if err := command.Start(); err != nil {
 		return commandResult{ErrorOutput: []byte(err.Error()), Elapsed: time.Since(started), ExitCode: 1}
 	}
+	if err := adoptOwnedCommand(command); err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		return commandResult{ErrorOutput: []byte(err.Error()), Elapsed: time.Since(started), ExitCode: 1}
+	}
+	defer releaseOwnedCommand(command)
 	wait := make(chan error, 1)
 	go func() { wait <- command.Wait() }()
 	var err error

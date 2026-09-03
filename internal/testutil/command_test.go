@@ -55,12 +55,22 @@ func TestNewGitRepositoryRunsOutsideShortMode(t *testing.T) {
 	repository.Run(t, "status", "--porcelain")
 }
 
-func TestNewGitRepositoryUsesEnvironmentIdentityWithoutLocalConfig(t *testing.T) {
+func TestNewGitRepositoryUsesLocalIdentityWhileIgnoringHostGlobalConfig(t *testing.T) {
 	repository := NewGitRepository(t)
+	hostile := filepath.Join(t.TempDir(), "hostile.gitconfig")
+	if err := os.WriteFile(hostile, []byte("[user]\n\tname = host\n\temail = host@example.invalid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", hostile)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "0")
+	command := exec.Command("git", "-C", repository.Path, "commit", "--allow-empty", "-m", "raw fixture commit")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("raw fixture commit: %v\n%s", err, output)
+	}
 	repository.CommitFile("fixture.txt", "fixture\n", "fixture commit")
-	command := exec.Command("git", "-C", repository.Path, "config", "--local", "--get-regexp", "^user\\.")
+	command = exec.Command("git", "-C", repository.Path, "config", "--local", "--get-regexp", "^user\\.")
 	command.Env = gitFixtureEnvironment()
-	if output, err := command.CombinedOutput(); err == nil || len(output) != 0 {
+	if output, err := command.CombinedOutput(); err != nil || string(output) != "user.name wtree test\nuser.email wtree@example.invalid\n" {
 		t.Fatalf("local identity config = %q, %v", output, err)
 	}
 	command = exec.Command("git", "-C", repository.Path, "log", "-1", "--format=%an <%ae>|%cn <%ce>")

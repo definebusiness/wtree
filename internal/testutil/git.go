@@ -45,6 +45,11 @@ func NewGitRepository(t testing.TB) GitRepository {
 	RequireIntegration(t, "real Git")
 	path := t.TempDir()
 	runGit(t, path, "init", "--initial-branch=main")
+	// Direct raw git commands in established fixtures intentionally do not all
+	// inherit gitFixtureEnvironment. Keep their identity repository-local so
+	// they remain hermetic without consulting host or global configuration.
+	runGit(t, path, "config", "user.name", "wtree test")
+	runGit(t, path, "config", "user.email", "wtree@example.invalid")
 	return GitRepository{Path: path}
 }
 
