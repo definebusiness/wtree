@@ -22,6 +22,9 @@ type privatePath struct {
 	leaf       string
 }
 
+var privateUnixBeforeAnchorIdentityCheck func()
+var validatePrivateDirectoryAfterRead = func(path *privatePath) error { return path.validateDirectory() }
+
 type unixPrivateLock struct {
 	authority *privatePath
 	file      *os.File
@@ -38,7 +41,11 @@ func openPrivatePath(anchor string, components []string, leaf string, create, pr
 	}
 	fd, err := unix.Open(anchor, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, fmt.Errorf("open private path anchor: %w", err)
+		result := fmt.Errorf("open private path anchor: %w", err)
+		if privatePathNotExist(err) {
+			return nil, markPrivatePathNotExist(result)
+		}
+		return nil, result
 	}
 	current := os.NewFile(uintptr(fd), anchor)
 	if current == nil {
@@ -46,15 +53,26 @@ func openPrivatePath(anchor string, components []string, leaf string, create, pr
 		return nil, errors.New("adopt private path anchor")
 	}
 	anchorHandleInfo, handleErr := current.Stat()
+	if privateUnixBeforeAnchorIdentityCheck != nil {
+		privateUnixBeforeAnchorIdentityCheck()
+	}
 	anchorPathInfo, pathErr := os.Lstat(anchor)
 	if handleErr != nil || pathErr != nil || !anchorPathInfo.IsDir() || anchorPathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(anchorHandleInfo, anchorPathInfo) {
 		current.Close()
 		return nil, errors.Join(errors.New("private path anchor identity or type differs"), handleErr, pathErr)
 	}
 	chain := []*os.File{current}
-	for _, component := range components {
+	for index, component := range components {
 		next, openErr := openPrivateDirectoryAt(current, component, create, protectExisting)
 		if openErr != nil {
+			if !create && privatePathNotExist(openErr) {
+				partial := &privatePath{anchor: anchor, chain: chain, components: append([]string(nil), components[:index]...), directory: current}
+				if validationErr := partial.validateDirectory(); validationErr == nil {
+					openErr = markPrivatePathNotExist(openErr)
+				} else {
+					openErr = errors.Join(errPrivateDirectoryAuthority, openErr, validationErr)
+				}
+			}
 			closePrivateUnixChain(chain)
 			return nil, openErr
 		}
@@ -163,6 +181,12 @@ func (path *privatePath) openLeaf(flags int, create bool) (*os.File, error) {
 	}
 	fd, err := unix.Openat(int(path.directory.Fd()), path.leaf, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 	if err != nil {
+		if !create && privatePathNotExist(err) {
+			if validationErr := path.validateDirectory(); validationErr != nil {
+				return nil, errors.Join(errPrivateDirectoryAuthority, err, validationErr)
+			}
+			return nil, markPrivatePathNotExist(err)
+		}
 		return nil, err
 	}
 	file := os.NewFile(uintptr(fd), path.leaf)
@@ -221,7 +245,7 @@ func (path *privatePath) validateLeaf(required bool) error {
 	if err == nil {
 		return file.Close()
 	}
-	if !required && errors.Is(err, unix.ENOENT) && !errors.Is(err, errPrivateDirectoryAuthority) {
+	if !required && PrivatePathNotExist(err) {
 		return nil
 	}
 	return err
@@ -240,7 +264,7 @@ func (path *privatePath) readFileNamed(name string) ([]byte, error) {
 	}
 	data, readErr := io.ReadAll(file)
 	closeErr := file.Close()
-	validationErr := path.validateDirectory()
+	validationErr := validatePrivateDirectoryAfterRead(path)
 	if readErr != nil || closeErr != nil || validationErr != nil {
 		return nil, errors.Join(readErr, closeErr, validationErr)
 	}

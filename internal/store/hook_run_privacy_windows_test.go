@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/definebusiness/wtree/internal/fsutil"
 	"github.com/definebusiness/wtree/internal/lock"
+	"golang.org/x/sys/windows"
 )
 
 func assertPrivateHookRecord(t *testing.T, path string) {
@@ -82,8 +84,8 @@ func TestWindowsHookRunRecordTransitionsUnderRetainedEventLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lease.Unlock()
-	if _, err := ReadHookRunRecord(path); !os.IsNotExist(err) {
-		t.Fatalf("initial record read = %v, want not exist", err)
+	if _, err := ReadHookRunRecord(path); !os.IsNotExist(err) || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("initial record read = %v, want os.ErrNotExist", err)
 	}
 	_, record := hookRecordTestPathAndValue(t)
 	record.ProjectID, record.WorkspaceID, record.Event = "project", "workspace", "post-create"
@@ -104,8 +106,15 @@ func TestWindowsHookRunRecordTransitionsUnderRetainedEventLock(t *testing.T) {
 	if err := RemoveHookRunRecord(path); err != nil {
 		t.Fatalf("remove finalizing record: %v", err)
 	}
-	if _, err := ReadHookRunRecord(path); !os.IsNotExist(err) {
-		t.Fatalf("final record read = %v, want not exist", err)
+	if _, err := ReadHookRunRecord(path); !os.IsNotExist(err) || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("final record read = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestWindowsHookRunRecordAuthorityStatusNotFoundStaysOpaque(t *testing.T) {
+	err := hookRunRecordReadError(`C:\record.json`, windows.STATUS_OBJECT_NAME_NOT_FOUND)
+	if err == nil || os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("authority status = %v, want non-absence result", err)
 	}
 }
 

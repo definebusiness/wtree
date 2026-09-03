@@ -24,9 +24,12 @@ const privateWindowsPublicationAccess = windows.DELETE | windows.FILE_READ_ATTRI
 
 var privateTemporarySequence atomic.Uint64
 var privateWindowsBeforeIdentityReopen func(string)
+var privateWindowsBeforeDirectoryOpen func(string)
 var reopenPrivateWindowsHandle = func(handle windows.Handle) (windows.Handle, error) {
 	return reopenWindowsHandle(handle, privateWindowsPublicationAccess)
 }
+var reopenPrivateWindowsIdentity = openPrivateWindowsRelative
+var errPrivateDirectoryInitialOpenNotExist = errors.New("private directory initial open does not exist")
 
 func privatePathNotExist(err error) bool {
 	return errors.Is(err, windows.STATUS_OBJECT_NAME_NOT_FOUND) || errors.Is(err, windows.STATUS_OBJECT_PATH_NOT_FOUND) || errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND)
@@ -40,6 +43,9 @@ type privatePath struct {
 	leaf       string
 	user       string
 }
+
+var validatePrivateDirectoryAfterRead = func(path *privatePath) error { return path.validateDirectory() }
+var validatePrivatePartialDirectory = func(path *privatePath) error { return path.validateDirectory() }
 
 type windowsPrivateLock struct {
 	authority *privatePath
@@ -76,7 +82,11 @@ func openPrivatePath(anchor string, components []string, leaf string, create, pr
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING,
 		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
-		return nil, fmt.Errorf("open private path anchor: %w", err)
+		result := fmt.Errorf("open private path anchor: %w", err)
+		if privatePathNotExist(err) {
+			return nil, markPrivatePathNotExist(result)
+		}
+		return nil, result
 	}
 	if err := validatePrivateWindowsType(current, true); err != nil {
 		windows.CloseHandle(current)
@@ -97,9 +107,17 @@ func openPrivatePath(anchor string, components []string, leaf string, create, pr
 		return nil, errors.Join(errors.New("private path anchor identity differs"), anchorIdentityErr, anchorAgainIdentityErr)
 	}
 	chain := []windows.Handle{current}
-	for _, component := range components {
+	for index, component := range components {
 		next, openErr := openPrivateWindowsDirectory(current, component, user, create, protectExisting)
 		if openErr != nil {
+			if errors.Is(openErr, errPrivateDirectoryInitialOpenNotExist) {
+				partial := &privatePath{anchor: anchor, chain: chain, components: append([]string(nil), components[:index]...), directory: current, user: user}
+				if validationErr := validatePrivatePartialDirectory(partial); validationErr == nil {
+					openErr = markPrivatePathNotExist(openErr)
+				} else {
+					openErr = errors.Join(errPrivateDirectoryAuthority, openErr, validationErr)
+				}
+			}
 			closePrivateWindowsChain(chain)
 			return nil, openErr
 		}
@@ -147,10 +165,16 @@ func openPrivateWindowsDirectory(parent windows.Handle, name, user string, creat
 	if protectExisting {
 		access |= windows.WRITE_DAC
 	}
+	if privateWindowsBeforeDirectoryOpen != nil {
+		privateWindowsBeforeDirectoryOpen(name)
+	}
 	handle, err := openPrivateWindowsRelative(parent, name,
 		access,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_OPEN,
 		windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT, nil)
+	if err != nil && !create && privatePathNotExist(err) {
+		return windows.InvalidHandle, errors.Join(errPrivateDirectoryInitialOpenNotExist, fmt.Errorf("open private directory %q: %w", name, err))
+	}
 	if err != nil && create {
 		descriptor, descriptorErr := privateWindowsDescriptor(user, true)
 		if descriptorErr != nil {
@@ -339,7 +363,7 @@ func validatePrivateWindowsRelativeIdentity(parent windows.Handle, name string, 
 	if privateWindowsBeforeIdentityReopen != nil {
 		privateWindowsBeforeIdentityReopen(name)
 	}
-	actual, err := openPrivateWindowsRelative(parent, name, windows.FILE_READ_ATTRIBUTES|windows.READ_CONTROL|windows.SYNCHRONIZE,
+	actual, err := reopenPrivateWindowsIdentity(parent, name, windows.FILE_READ_ATTRIBUTES|windows.READ_CONTROL|windows.SYNCHRONIZE,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_OPEN, options, nil)
 	if err != nil {
 		return errors.Join(errors.New("reopen private path identity"), err)
@@ -403,6 +427,12 @@ func (path *privatePath) openLeaf(access windows.ACCESS_MASK, share, disposition
 	handle, err := openPrivateWindowsRelative(path.directory, path.leaf, access, share, disposition,
 		windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT, descriptor)
 	if err != nil {
+		if disposition == windows.FILE_OPEN && privatePathNotExist(err) {
+			if validationErr := path.validateDirectory(); validationErr != nil {
+				return windows.InvalidHandle, errors.Join(errPrivateDirectoryAuthority, err, validationErr)
+			}
+			return windows.InvalidHandle, markPrivatePathNotExist(err)
+		}
 		return windows.InvalidHandle, err
 	}
 	if err := validatePrivateWindowsHandle(handle, path.user, false); err != nil {
@@ -439,7 +469,7 @@ func (path *privatePath) validateLeaf(required bool) error {
 	if err == nil {
 		return windows.CloseHandle(handle)
 	}
-	if !required && !errors.Is(err, errPrivateDirectoryAuthority) && (errors.Is(err, windows.STATUS_OBJECT_NAME_NOT_FOUND) || errors.Is(err, windows.ERROR_FILE_NOT_FOUND)) {
+	if !required && PrivatePathNotExist(err) {
 		return nil
 	}
 	return err
@@ -463,7 +493,7 @@ func (path *privatePath) readFileNamed(name string) ([]byte, error) {
 	}
 	data, readErr := io.ReadAll(file)
 	closeErr := file.Close()
-	validationErr := path.validateDirectory()
+	validationErr := validatePrivateDirectoryAfterRead(path)
 	if readErr != nil || closeErr != nil || validationErr != nil {
 		return nil, errors.Join(readErr, closeErr, validationErr)
 	}

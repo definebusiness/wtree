@@ -18,13 +18,24 @@ type PrivateLock interface{ Unlock() error }
 var ErrPrivateLockHeld = errors.New("private lock is held")
 var ErrPrivateRemovalAmbiguous = errors.New("private removal generation is ambiguous")
 var errPrivateDirectoryAuthority = errors.New("private directory authority is invalid")
+var errPrivatePathNotExist = errors.New("private path does not exist")
 
 // ErrPrivateRemovalQuarantined marks an exact private generation that was
 // removed from its authoritative name but deliberately retained as bounded
 // evidence because the platform cannot delete it by handle.
 var ErrPrivateRemovalQuarantined = errors.New("private removal generation is retained in quarantine")
 
-func PrivatePathNotExist(err error) bool { return privatePathNotExist(err) }
+func PrivatePathNotExist(err error) bool {
+	// Platform not-found values are intentionally insufficient: once an object
+	// handle exists, the same value can mean a detached authority or a failed
+	// identity recheck. Platform code adds this marker only at authoritative
+	// initial component/leaf-open boundaries.
+	return errors.Is(err, errPrivatePathNotExist)
+}
+
+func markPrivatePathNotExist(err error) error {
+	return errors.Join(errPrivatePathNotExist, err)
+}
 
 // OpenPrivatePath opens the exact absolute anchor and then traverses the owned
 // components beneath it. The anchor itself is never created or altered.

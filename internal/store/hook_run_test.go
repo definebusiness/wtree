@@ -38,6 +38,26 @@ func TestHookRunRecordPathAndPrivateWrite(t *testing.T) {
 	assertPrivateHookRecord(t, path)
 }
 
+func TestReadHookRunRecordReturnsCompatibleAbsence(t *testing.T) {
+	path, err := HookRunRecordPath(t.TempDir(), "project", "workspace", "post-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadHookRunRecord(path); !os.IsNotExist(err) || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ReadHookRunRecord(absent) = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestHookRunRecordAuthorityNotFoundErrorsStayOpaque(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "record.json")
+	for _, cause := range []error{os.ErrNotExist, &os.PathError{Op: "validate", Path: path, Err: os.ErrNotExist}} {
+		err := hookRunRecordReadError(path, cause)
+		if err == nil || os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("authority error %T = %v, want non-absence result", cause, err)
+		}
+	}
+}
+
 func TestHookRunRecordReadAndWriteRejectIntermediateAncestorChange(t *testing.T) {
 	for _, scenario := range []string{"missing", "replacement"} {
 		for _, operation := range []string{"read", "write"} {
@@ -68,8 +88,8 @@ func TestHookRunRecordReadAndWriteRejectIntermediateAncestorChange(t *testing.T)
 				}
 				defer func() { hookRunAuthorityStepHook = nil }()
 				if operation == "read" {
-					if _, err := ReadHookRunRecord(path); err == nil {
-						t.Fatal("ReadHookRunRecord accepted a detached intermediate ancestor")
+					if _, err := ReadHookRunRecord(path); err == nil || os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("ReadHookRunRecord detached ancestor error = %v, want non-absence authority error", err)
 					}
 				} else {
 					updated := original

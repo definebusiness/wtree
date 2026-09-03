@@ -12,6 +12,51 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestPrivatePathReadFinalValidationNotFoundIsNotAbsence(t *testing.T) {
+	anchor := t.TempDir()
+	authority, err := OpenPrivatePath(anchor, []string{"projects"}, "event.json", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close()
+	if err := authority.WriteFileAtomicModeWithHook([]byte("record"), 0o600, nil); err != nil {
+		t.Fatal(err)
+	}
+	original := validatePrivateDirectoryAfterRead
+	validatePrivateDirectoryAfterRead = func(path *privatePath) error {
+		if err := os.Rename(filepath.Join(anchor, "projects"), filepath.Join(anchor, "detached-projects")); err != nil {
+			t.Fatal(err)
+		}
+		return path.validateDirectory()
+	}
+	defer func() { validatePrivateDirectoryAfterRead = original }()
+	if _, err := authority.ReadFile(); err == nil || PrivatePathNotExist(err) {
+		t.Fatalf("post-read directory disappearance = %v, want non-absence authority error", err)
+	}
+}
+
+func TestPrivatePathAcquisitionIdentityNotFoundIsNotAbsence(t *testing.T) {
+	parent := t.TempDir()
+	anchor := filepath.Join(parent, "anchor")
+	if err := os.Mkdir(anchor, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := privateUnixBeforeAnchorIdentityCheck
+	privateUnixBeforeAnchorIdentityCheck = func() {
+		privateUnixBeforeAnchorIdentityCheck = nil
+		if err := os.Rename(anchor, filepath.Join(parent, "detached-anchor")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() { privateUnixBeforeAnchorIdentityCheck = original }()
+	if authority, err := OpenPrivatePath(anchor, nil, "event.json", false); err == nil || PrivatePathNotExist(err) {
+		if authority != nil {
+			_ = authority.Close()
+		}
+		t.Fatalf("acquisition identity disappearance = %v, want non-absence authority error", err)
+	}
+}
+
 func TestPrivatePathCreatesExactOwnedModesBeneathPermissiveAnchor(t *testing.T) {
 	anchor := t.TempDir()
 	if err := os.Chmod(anchor, 0o777); err != nil {

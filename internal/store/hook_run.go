@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -76,7 +77,7 @@ func DecodeHookRunRecord(data []byte) (HookRunRecord, error) {
 func ReadHookRunRecord(path string) (HookRunRecord, error) {
 	authority, err := openHookRecordPath(path, false)
 	if err != nil {
-		return HookRunRecord{}, err
+		return HookRunRecord{}, hookRunRecordReadError(path, err)
 	}
 	defer authority.Close()
 	if hookRunAuthorityStepHook != nil {
@@ -86,9 +87,30 @@ func ReadHookRunRecord(path string) (HookRunRecord, error) {
 	}
 	data, err := authority.ReadFile()
 	if err != nil {
-		return HookRunRecord{}, err
+		return HookRunRecord{}, hookRunRecordReadError(path, err)
 	}
 	return DecodeHookRunRecord(data)
+}
+
+func hookRunRecordReadError(path string, err error) error {
+	if fsutil.PrivatePathNotExist(err) {
+		return hookRunRecordNotExist(path)
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		// A retained-authority failure can include the platform's not-found
+		// status after an intermediate directory changes. Keep that error opaque
+		// to absence checks so callers cannot create a record below a detached
+		// authority.
+		return fmt.Errorf("read hook run record authority: %v", err)
+	}
+	return err
+}
+
+// hookRunRecordNotExist normalizes only private-path object absence. Windows
+// can report an NTSTATUS directly after retained authority has been opened;
+// HookRunner's record-creation branch requires the portable os contract.
+func hookRunRecordNotExist(path string) error {
+	return &os.PathError{Op: "open hook run record", Path: path, Err: os.ErrNotExist}
 }
 func WriteHookRunRecord(path string, value HookRunRecord) error {
 	authority, err := openHookRecordPath(path, true)

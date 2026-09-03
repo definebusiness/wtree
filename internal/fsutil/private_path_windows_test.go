@@ -12,6 +12,94 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func TestWindowsPrivatePathReadFinalValidationNotFoundIsNotAbsence(t *testing.T) {
+	authority, err := OpenPrivatePath(t.TempDir(), []string{"projects"}, "event.json", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close()
+	if err := authority.WriteFileAtomicModeWithHook([]byte("record"), 0o600, nil); err != nil {
+		t.Fatal(err)
+	}
+	original := validatePrivateDirectoryAfterRead
+	// Some Windows filesystems refuse to rename an open directory tree even
+	// when every retained handle shares deletion. Inject the exact native
+	// status produced by that namespace disappearance at the post-read check.
+	validatePrivateDirectoryAfterRead = func(*privatePath) error { return windows.STATUS_OBJECT_NAME_NOT_FOUND }
+	defer func() { validatePrivateDirectoryAfterRead = original }()
+	if _, err := authority.ReadFile(); err == nil || PrivatePathNotExist(err) {
+		t.Fatalf("post-read directory disappearance = %v, want non-absence authority error", err)
+	}
+}
+
+func TestWindowsPrivatePathAcquisitionIdentityNotFoundIsNotAbsence(t *testing.T) {
+	anchor := t.TempDir()
+	projects, err := OpenPrivatePath(anchor, []string{"projects"}, "event.json", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := projects.Close(); err != nil {
+		t.Fatal(err)
+	}
+	original := reopenPrivateWindowsIdentity
+	identityCheck := false
+	privateWindowsBeforeIdentityReopen = func(name string) {
+		if name == "projects" {
+			identityCheck = true
+		}
+	}
+	// The first component open has succeeded; only its identity reopen reports
+	// the native status produced when the authoritative name disappears.
+	reopenPrivateWindowsIdentity = func(parent windows.Handle, name string, access windows.ACCESS_MASK, share, disposition, options uint32, descriptor *windows.SECURITY_DESCRIPTOR) (windows.Handle, error) {
+		if identityCheck && name == "projects" {
+			return windows.InvalidHandle, windows.STATUS_OBJECT_NAME_NOT_FOUND
+		}
+		return original(parent, name, access, share, disposition, options, descriptor)
+	}
+	defer func() {
+		privateWindowsBeforeIdentityReopen = nil
+		reopenPrivateWindowsIdentity = original
+	}()
+	if authority, err := OpenPrivatePath(anchor, []string{"projects"}, "event.json", false); err == nil || PrivatePathNotExist(err) || os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+		if authority != nil {
+			_ = authority.Close()
+		}
+		t.Fatalf("acquisition identity disappearance = %v, want non-absence authority error", err)
+	}
+}
+
+func TestWindowsPrivatePathInitialComponentMissAfterDetachedParentIsNotAbsence(t *testing.T) {
+	anchor := t.TempDir()
+	moved := anchor + "-detached"
+	var detachErr error
+	privateWindowsBeforeDirectoryOpen = func(name string) {
+		if name == "projects" {
+			detachErr = os.Rename(anchor, moved)
+		}
+	}
+	defer func() { privateWindowsBeforeDirectoryOpen = nil }()
+	if authority, err := OpenPrivatePath(anchor, []string{"projects"}, "event.json", false); detachErr != nil {
+		t.Skipf("directory replacement fixture unavailable: %v", detachErr)
+	} else if err == nil || PrivatePathNotExist(err) || os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+		if authority != nil {
+			_ = authority.Close()
+		}
+		t.Fatalf("detached parent initial component miss = %v, want non-absence authority error", err)
+	}
+}
+
+func TestWindowsPrivatePathInitialComponentMissWithInvalidPartialChainIsNotAbsence(t *testing.T) {
+	original := validatePrivatePartialDirectory
+	validatePrivatePartialDirectory = func(*privatePath) error { return windows.STATUS_OBJECT_NAME_NOT_FOUND }
+	defer func() { validatePrivatePartialDirectory = original }()
+	if authority, err := OpenPrivatePath(t.TempDir(), []string{"projects"}, "event.json", false); err == nil || PrivatePathNotExist(err) || os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+		if authority != nil {
+			_ = authority.Close()
+		}
+		t.Fatalf("invalid partial-chain initial component miss = %v, want non-absence authority error", err)
+	}
+}
+
 func TestWindowsPrivatePathProtectsOwnedDescendantsAndReplacement(t *testing.T) {
 	anchor := t.TempDir()
 	setPrivateWindowsTestDACL(t, anchor, "D:P(A;OICI;FA;;;WD)", true)
