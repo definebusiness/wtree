@@ -2,8 +2,9 @@
 
 Status: planned
 Source idea: none (created directly)
-Implementation plans: [Windows portability and CI hardening implementation plan](../plans/windows-portability-and-ci-hardening.md); [Windows portability simplification and CI remediation implementation plan](../plans/windows-portability-simplification-and-ci-remediation.md)
+Implementation plans: [Windows portability and CI hardening implementation plan](../plans/windows-portability-and-ci-hardening.md); [Windows portability simplification and CI remediation implementation plan](../plans/windows-portability-simplification-and-ci-remediation.md); [Test-suite runtime optimization implementation plan](../plans/test-suite-runtime-optimization.md)
 Remediation context: [Hosted failure and simplification context](../plans/windows-portability-simplification-and-ci-remediation-context.md)
+Test optimization context: [Test-suite runtime optimization context](../plans/test-suite-runtime-optimization-context.md)
 Related specification: [Automatic nested mount ignore protection specification](automatic-nested-mount-ignore-protection.md)
 Source branch: `codex/automatic-nested-mount-ignore-protection-ci`, follow-up commits after `097a235` through `89ce325`
 
