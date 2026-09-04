@@ -120,6 +120,22 @@ func (a *Adapter) Upstream(ctx context.Context, repository string) (Upstream, er
 	return Upstream{LocalBranch: branch, Remote: remote, Merge: merge, FetchURL: fetchURL}, nil
 }
 
+// ConfiguredRemoteURL reads one named remote's fetch URL without consulting
+// the current branch. Release observation uses it for detached checkouts.
+func (a *Adapter) ConfiguredRemoteURL(ctx context.Context, repository, remote string) (string, error) {
+	if remote == "" || strings.HasPrefix(remote, "-") {
+		return "", fmt.Errorf("configured remote URL: invalid remote")
+	}
+	value, err := a.valueFact(ctx, repository, "remote", "get-url", "--", remote)
+	if err != nil {
+		return "", err
+	}
+	if value == "" {
+		return "", fmt.Errorf("configured remote URL: empty URL")
+	}
+	return value, nil
+}
+
 // PublishedUpstream verifies that the current local HEAD is exactly the
 // advertised commit of its configured upstream. It rejects a locally ahead,
 // behind, diverged, deleted, or otherwise unpublished branch before an init
@@ -315,6 +331,45 @@ func (a *Adapter) CheckoutTrackingBranch(ctx context.Context, repository, localB
 	return head, nil
 }
 
+// FetchAdvertisedRefs obtains only advertised branch and tag namespaces.  It
+// intentionally has no object-ID refspec: a release lock may name a commit
+// only after that commit is present through a normal advertised ref.
+func (a *Adapter) FetchAdvertisedRefs(ctx context.Context, repository, remote string) error {
+	if remote == "" || strings.HasPrefix(remote, "-") {
+		return fmt.Errorf("fetch advertised refs: invalid remote")
+	}
+	_, err := a.runAuthenticatedRemote(ctx, repository, quiescentGitArgs(
+		"fetch", "--no-recurse-submodules", "--no-write-fetch-head", "--",
+		remote,
+		"+refs/heads/*:refs/remotes/"+remote+"/*",
+		"+refs/tags/*:refs/tags/*",
+	)...)
+	return err
+}
+
+// CheckoutDetached checks out one already fetched full object ID without
+// invoking checkout hooks, guessing a branch, or recursing into submodules.
+func (a *Adapter) CheckoutDetached(ctx context.Context, repository, revision string) (string, error) {
+	if !fullObjectID(revision) {
+		return "", fmt.Errorf("checkout detached: invalid revision")
+	}
+	if _, err := a.run(ctx, repository, quiescentGitArgs("-c", "core.hooksPath="+os.DevNull, "checkout", "--detach", "--no-recurse-submodules", "--no-guess", revision)...); err != nil {
+		return "", err
+	}
+	head, err := a.ResolveRef(ctx, repository, "HEAD")
+	if err != nil {
+		return "", err
+	}
+	_, detached, err := a.CurrentBranch(ctx, repository)
+	if err != nil || !detached {
+		if err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("checkout detached: HEAD remained attached")
+	}
+	return head, nil
+}
+
 // quiescentGitArgs prevents Git's background maintenance from mutating a
 // managed staging checkout between a command and its strict tree inventory.
 // These are command-scoped overrides: no repository or user configuration is
@@ -345,6 +400,24 @@ func (a *Adapter) runRemoteWithEnvironment(ctx context.Context, environment []st
 		return nil, err
 	}
 	return output, nil
+}
+
+// runAuthenticatedRemote is deliberately reserved for release
+// materialization. It lets Git consult the caller's normal noninteractive
+// authentication mechanisms while retaining explicit argv and bounded,
+// credential-safe diagnostics.
+func (a *Adapter) runAuthenticatedRemote(ctx context.Context, repository string, args ...string) ([]byte, error) {
+	output, err := a.runWithEnvironment(ctx, repository, authenticatedEnvironment(a.authEnv), args...)
+	if err == nil || ctx.Err() != nil {
+		return output, err
+	}
+	// Helper diagnostics routinely contain bearer material. Do not surface
+	// them; callers still receive a deterministic, actionable category.
+	var gitErr *Error
+	if errors.As(err, &gitErr) {
+		return nil, &Error{Command: gitErr.Command, Repository: gitErr.Repository, ExitCode: gitErr.ExitCode, Stderr: "noninteractive Git authentication or transport failed"}
+	}
+	return nil, err
 }
 
 func fullObjectID(value string) bool {

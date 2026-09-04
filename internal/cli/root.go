@@ -137,6 +137,7 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 		newUpdateCommand(stdout, stderr, &projectPath),
 		newConfigCommand(stdout, &projectPath),
 		newHooksCommand(stdout, &projectPath),
+		newReleaseCommand(stdout, &projectPath),
 		newWorkspacePlanCommand(stdout, stderr, &projectPath, plan.Create),
 		newCheckoutCommand(stdout, stderr, &projectPath),
 		newRemoveCommand(stdout, stderr, &projectPath),
@@ -195,6 +196,7 @@ COMMANDS
   doctor     diagnose drift and apply narrowly safe repairs
   config     inspect or update global/project configuration
   hooks      inspect and explicitly share or install workspace hook definitions
+  release    freeze a workspace into a reproducible source lock
 
 CONCEPTS
   project: one logical root containing one or more independent repository trees.
@@ -228,6 +230,8 @@ EXAMPLES
   wtree status feature/login --json
   wtree exec --help
   wtree doctor feature/login
+  wtree release lock v1.4.0 --dry-run
+  wtree release materialize project.wtree.lock.yml
 
 EXIT CODES
   0 success; 1 internal/operational; 2 invalid arguments; 3 project not found;
@@ -243,35 +247,38 @@ for detailed command reference and practical workflows.
 
 func applyCommandDocumentation(command *cobra.Command) {
 	examples := map[string]string{
-		"wtree project":            "  wtree project list\n  wtree project prune stale-project-id --dry-run\n  wtree project unregister project-id --dry-run\n",
-		"wtree project list":       "  wtree project list\n  wtree project list --json\n",
-		"wtree project prune":      "  wtree project prune stale-project-id --dry-run\n  wtree project prune stale-project-id --json\n",
-		"wtree project unregister": "  wtree project unregister project-id --dry-run\n  wtree project unregister project-id --json\n",
-		"wtree init":               "  wtree init\n  wtree init --dry-run\n",
-		"wtree clone":              "  wtree clone ./project.wtree.yml ./product\n  wtree clone https://example.invalid/project.wtree.yml --dry-run --json\n",
-		"wtree update":             "  wtree update\n  wtree update --from ./next.wtree.yml --dry-run --json\n",
-		"wtree import":             "  wtree import /work/login --name feature/login\n  wtree import /work/login --dry-run --json\n",
-		"wtree create":             "  wtree create feature/login\n  wtree create feature/login --from main\n  wtree create feature/login --mount backend=api --dry-run\n",
-		"wtree checkout":           "  wtree checkout feature/login\n  wtree checkout feature/login --dry-run\n",
-		"wtree list":               "  wtree list\n  wtree list --json\n",
-		"wtree status":             "  wtree status feature/login\n  wtree status feature/login --json\n",
-		"wtree exec":               "  wtree exec -- go test ./...\n  wtree exec -- sh -c 'make test | tee test.log'\n",
-		"wtree path":               "  wtree path feature/login\n",
-		"wtree repo":               "  wtree repo path backend\n  wtree repo get backend --json\n",
-		"wtree repo path":          "  wtree repo path backend\n",
-		"wtree repo get":           "  wtree repo get backend --json\n",
-		"wtree remove":             "  wtree remove feature/login\n  wtree remove feature/login --dry-run\n",
-		"wtree delete":             "  wtree delete feature/login\n  wtree delete feature/login --force\n",
-		"wtree doctor":             "  wtree doctor feature/login\n  wtree doctor feature/login --fix --dry-run\n",
-		"wtree config":             "  wtree config get worktrees.root\n  wtree config set worktrees.root /worktrees\n",
-		"wtree config get":         "  wtree config get worktrees.root\n",
-		"wtree config set":         "  wtree config set worktrees.root /worktrees\n",
-		"wtree config unset":       "  wtree config unset worktrees.root\n",
-		"wtree config list":        "  wtree config list\n",
-		"wtree hooks":              "  wtree hooks list\n  wtree hooks share post-create --force\n  wtree hooks install --missing\n",
-		"wtree hooks list":         "  wtree hooks list --json\n",
-		"wtree hooks share":        "  wtree hooks share post-create\n  wtree hooks share post-create --force\n",
-		"wtree hooks install":      "  wtree hooks install\n  wtree hooks install --missing\n",
+		"wtree project":             "  wtree project list\n  wtree project prune stale-project-id --dry-run\n  wtree project unregister project-id --dry-run\n",
+		"wtree project list":        "  wtree project list\n  wtree project list --json\n",
+		"wtree project prune":       "  wtree project prune stale-project-id --dry-run\n  wtree project prune stale-project-id --json\n",
+		"wtree project unregister":  "  wtree project unregister project-id --dry-run\n  wtree project unregister project-id --json\n",
+		"wtree init":                "  wtree init\n  wtree init --dry-run\n",
+		"wtree clone":               "  wtree clone ./project.wtree.yml ./product\n  wtree clone https://example.invalid/project.wtree.yml --dry-run --json\n",
+		"wtree update":              "  wtree update\n  wtree update --from ./next.wtree.yml --dry-run --json\n",
+		"wtree import":              "  wtree import /work/login --name feature/login\n  wtree import /work/login --dry-run --json\n",
+		"wtree create":              "  wtree create feature/login\n  wtree create feature/login --from main\n  wtree create feature/login --mount backend=api --dry-run\n",
+		"wtree checkout":            "  wtree checkout feature/login\n  wtree checkout feature/login --dry-run\n",
+		"wtree list":                "  wtree list\n  wtree list --json\n",
+		"wtree status":              "  wtree status feature/login\n  wtree status feature/login --json\n",
+		"wtree exec":                "  wtree exec -- go test ./...\n  wtree exec -- sh -c 'make test | tee test.log'\n",
+		"wtree path":                "  wtree path feature/login\n",
+		"wtree repo":                "  wtree repo path backend\n  wtree repo get backend --json\n",
+		"wtree repo path":           "  wtree repo path backend\n",
+		"wtree repo get":            "  wtree repo get backend --json\n",
+		"wtree remove":              "  wtree remove feature/login\n  wtree remove feature/login --dry-run\n",
+		"wtree delete":              "  wtree delete feature/login\n  wtree delete feature/login --force\n",
+		"wtree doctor":              "  wtree doctor feature/login\n  wtree doctor feature/login --fix --dry-run\n",
+		"wtree config":              "  wtree config get worktrees.root\n  wtree config set worktrees.root /worktrees\n",
+		"wtree config get":          "  wtree config get worktrees.root\n",
+		"wtree config set":          "  wtree config set worktrees.root /worktrees\n",
+		"wtree config unset":        "  wtree config unset worktrees.root\n",
+		"wtree config list":         "  wtree config list\n",
+		"wtree hooks":               "  wtree hooks list\n  wtree hooks share post-create --force\n  wtree hooks install --missing\n",
+		"wtree hooks list":          "  wtree hooks list --json\n",
+		"wtree hooks share":         "  wtree hooks share post-create\n  wtree hooks share post-create --force\n",
+		"wtree hooks install":       "  wtree hooks install\n  wtree hooks install --missing\n",
+		"wtree release":             "  wtree release lock v1.4.0 --dry-run\n  wtree release materialize project.wtree.lock.yml\n",
+		"wtree release lock":        "  wtree release lock v1.4.0 --dry-run\n  wtree release lock v1.4.0 default --no-hooks\n",
+		"wtree release materialize": "  wtree release materialize project.wtree.lock.yml --dry-run\n  wtree release materialize project.wtree.lock.yml --json\n",
 	}
 	commandPath := fullCommandPath(command)
 	if example, found := examples[commandPath]; found {

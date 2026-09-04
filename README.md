@@ -381,6 +381,55 @@ versions.
 Run `wtree --how-to` for the installed workflow guide, or
 `wtree <command> --help` for the full command reference.
 
+## Release locks: reproducible source composition
+
+`wtree release lock <release-name> [workspace]` records the exact commits of a
+complete clean workspace's non-base repositories in the tracked
+`project.wtree.lock.yml` overlay. It is intentionally source composition, not
+a release-management platform: `wtree` does not commit, sign, tag, push,
+package, publish, deploy, promote, or notify, and it does not claim an atomic
+cross-repository snapshot.
+
+Preview the local observation before writing it. A trusted local-v3
+`post-release` hook can perform caller-owned, idempotent child tagging after
+the lock succeeds, but it is never portable automation and its effects are not
+rolled back.
+
+```sh
+wtree release lock v1.4.0 --dry-run
+wtree release lock v1.4.0
+git add project.wtree.lock.yml
+git commit -m 'chore: lock release v1.4.0'
+```
+
+Review the lock before committing it. Publish every reviewed child commit and
+matching child tag before creating or publishing the base commit/tag; this is
+what makes each locked revision reachable to a later CI checkout. A matching
+child tag is an idempotent rerun, while a tag at a different commit is a
+collision that must not be moved.
+
+CI starts with a clean caller-provided base checkout that already contains the
+matching tracked `project.wtree.yml` and `project.wtree.lock.yml` files:
+
+```sh
+wtree release materialize project.wtree.lock.yml
+wtree exec -- go test ./...
+```
+
+Materialization uses Git-owned noninteractive authentication such as an SSH
+agent, askpass helper, or configured credential helper. `wtree` stores no
+credentials, has no credential flags, and never copies authentication values
+to the lock, result, state, recovery data, or diagnostics. It fetches only
+advertised branch/tag refs, creates exact detached non-base checkouts, and
+runs no lifecycle or post-materialize hook. Successful materialization is the
+verification boundary: there is no `release verify` command. Build, test,
+package, signing, publication, deployment, and notification are explicit
+later CI commands.
+
+See the [release tutorial](tutorial/RELEASES.md) for the complete offline
+walkthrough and [Troubleshooting](docs/TROUBLESHOOTING.md#release-lock-and-materialization)
+for the expected failure paths.
+
 ## Learn and contribute
 
 - The [hands-on tutorial](tutorial/README.md) walks through the portable clone
@@ -391,6 +440,8 @@ Run `wtree --how-to` for the installed workflow guide, or
 - The [lifecycle-hook tutorial](tutorial/LIFECYCLE-HOOKS.md) shows how to author,
   inspect, share, install, bypass, and retry explicit hook declarations and
   identifies the executable acceptance coverage.
+- The [release tutorial](tutorial/RELEASES.md) follows local lock creation,
+  caller-owned child/base tagging, and a clean exact CI materialization.
 - See [Troubleshooting](docs/TROUBLESHOOTING.md) for duplicate project
   registrations, workspace drift, dirty worktrees, and incomplete rollbacks.
 - See the [AI-assisted delivery process](docs/ai/README.md) for this

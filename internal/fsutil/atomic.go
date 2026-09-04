@@ -40,6 +40,19 @@ func WriteFileAtomicMode(path string, data []byte, mode os.FileMode) error {
 	return writeFileAtomicModeWithInfo(path, data, mode, nil, atomicReplaceWithInfo, true)
 }
 
+// WriteFileAtomicModeExpected replaces an existing regular destination only
+// when it is still the expected filesystem object at publication. Platforms
+// without an atomic exchange primitive reject the operation rather than
+// falling back to an overwrite race.
+func WriteFileAtomicModeExpected(path string, data []byte, mode os.FileMode, expected os.FileInfo) error {
+	if expected == nil {
+		return errors.New("expected destination identity is required")
+	}
+	return writeFileAtomicModeWithInfo(path, data, mode, nil, func(source, destination string, temporary os.FileInfo) error {
+		return replaceExpectedAtomic(source, destination, temporary, expected)
+	}, false)
+}
+
 // WriteFileAtomicCreateMode durably creates a file using creation permissions
 // that remain subject to the process umask.
 func WriteFileAtomicCreateMode(path string, data []byte, mode os.FileMode) error {
@@ -57,6 +70,83 @@ func WriteFileAtomicCreateModeWithReplace(path string, data []byte, mode os.File
 // final replacement boundary while retaining umask-correct creation modes.
 func WriteFileAtomicCreateModeWithHook(path string, data []byte, mode os.FileMode, hook AtomicStepHook) error {
 	return writeFileAtomicModeCreateWithInfo(path, data, mode, hook, atomicReplaceWithInfo, true)
+}
+
+// WriteFileAtomicCreateModeNoReplaceWithHook creates path only if it remains
+// absent at the final publication boundary. Unlike the historical create
+// writer, it never falls back to an unconditional replacement: unsupported
+// platforms and filesystems fail closed.
+func WriteFileAtomicCreateModeNoReplaceWithHook(path string, data []byte, mode os.FileMode, hook AtomicStepHook) error {
+	return WriteFileAtomicCreateModeNoReplaceWithOwnedTempHook(path, data, mode, hook, nil)
+}
+
+// WriteFileAtomicCreateModeNoReplaceWithOwnedTempHook additionally exposes the
+// exact co-located temporary generation at the final boundary. Callers may
+// distinguish that one known untracked path from foreign working-tree dirt.
+func WriteFileAtomicCreateModeNoReplaceWithOwnedTempHook(path string, data []byte, mode os.FileMode, hook AtomicStepHook, final func(string, os.FileInfo) error) error {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return err
+	}
+	if err := atomicStep(hook, "create-temp"); err != nil {
+		return err
+	}
+	temporary, err := createTempWithUmask(directory, filepath.Base(path), mode)
+	if err != nil {
+		return err
+	}
+	name := temporary.Name()
+	info, err := temporary.Stat()
+	if err != nil {
+		temporary.Close()
+		return err
+	}
+	defer func() { _ = removeAtomicTemporary(name, info) }()
+	if err := atomicStep(hook, "write"); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := atomicStep(hook, "sync"); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := Sync(temporary); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := atomicStep(hook, "close"); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := atomicStep(hook, "before-rename"); err != nil {
+		return err
+	}
+	current, err := os.Lstat(name)
+	if err != nil || !os.SameFile(info, current) {
+		return errors.Join(errors.New("atomic temporary identity changed before no-replace publication"), err)
+	}
+	if final != nil {
+		if err := final(name, info); err != nil {
+			return err
+		}
+	}
+	if err := RenameNoReplace(name, path); err != nil {
+		return err
+	}
+	if err := atomicStep(hook, "dir-sync"); err != nil {
+		return &postReplacementError{Err: err}
+	}
+	if err := syncDirectory(directory); err != nil {
+		return &postReplacementError{Err: err}
+	}
+	return nil
 }
 
 // WriteFileAtomicModeWithHook is WriteFileAtomicMode with test-only step
@@ -78,7 +168,7 @@ func writeFileAtomicMode(path string, data []byte, mode os.FileMode, hook Atomic
 	return writeFileAtomicModeWithInfo(path, data, mode, hook, adaptAtomicReplace(replace), false)
 }
 
-func writeFileAtomicModeWithInfo(path string, data []byte, mode os.FileMode, hook AtomicStepHook, replace atomicReplaceFunc, platformAuthority bool) error {
+func writeFileAtomicModeWithInfo(path string, data []byte, mode os.FileMode, hook AtomicStepHook, replace atomicReplaceFunc, platformAuthority bool) (err error) {
 	if platformAuthority {
 		if handled, err := writeFileAtomicPlatform(path, data, mode, hook); handled {
 			return err
@@ -102,7 +192,12 @@ func writeFileAtomicModeWithInfo(path string, data []byte, mode os.FileMode, hoo
 		return err
 	}
 	defer func() {
-		_ = removeAtomicTemporary(name, temporaryInfo)
+		// A failed conditional exchange can leave the intervening destination
+		// generation at name. It is a recovery artifact, not writer-owned
+		// temporary data, and must never be removed by this generic cleanup.
+		if !preserveAtomicTemporary(err) {
+			_ = removeAtomicTemporary(name, temporaryInfo)
+		}
 	}()
 	if err := temporary.Chmod(mode); err != nil {
 		temporary.Close()
