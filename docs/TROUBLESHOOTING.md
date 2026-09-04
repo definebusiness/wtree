@@ -11,6 +11,65 @@ wtree doctor <workspace>
 Add `--json` when structured output is easier to inspect. For commands that
 change state, use `--dry-run` first when it is supported.
 
+## Release lock and materialization
+
+Release locks describe reproducible source only. They do not commit, tag,
+push, publish, deploy, manage credentials, or provide a `release verify`
+command. Use the [release tutorial](../tutorial/RELEASES.md) for the complete
+local-to-CI sequence.
+
+### Authentication fails in CI
+
+Materialization delegates authentication to noninteractive Git. Configure an
+SSH agent, askpass helper, or the CI image's credential helper, then rerun the
+same command. Do not place tokens, passwords, private keys, or credential URLs
+in a manifest, lock, command argument, or `wtree` configuration: `wtree`
+stores no credentials and has no credential flags.
+
+### A locked commit is unavailable
+
+The locked child revision must be reachable from an advertised branch or tag.
+Publish the reviewed child commit and tag before the base release tag, then use
+a fresh clean base checkout. `wtree` never fetches a raw object ID or silently
+substitutes a branch tip.
+
+### The manifest or base checkout is rejected
+
+Check out the exact base commit/tag that tracks both `project.wtree.yml` and
+`project.wtree.lock.yml`; their working bytes must be clean and match the
+tracked versions. A manifest digest mismatch, dirty caller base, wrong base
+identity/mount, or submodule configuration is intentionally refused rather
+than repaired.
+
+### A destination is occupied or the project is already registered
+
+Materialization creates a new complete workspace. Start from a fresh CI
+checkout with absent non-base destinations and an isolated data directory. It
+does not convert, update, repair, or merge an existing workspace.
+
+### A child tag collides or a post-release hook fails
+
+The tutorial's tag helper accepts an existing tag only at the exact requested
+commit. Never force-move a collision: inspect it and select a correct release
+name or fix the mismatch. A `post-release` failure occurs after a valid lock
+may already exist; inspect the lock, correct the external cause, and rerun the
+same lock command only when the hook is idempotent. `wtree` never tags the
+base or pushes for you.
+
+### Materialization reports incomplete cleanup
+
+Do not treat the workspace as complete. Preserve the reported recovery
+evidence, inspect it with the normal read-only commands, and resolve the
+authority conflict before retrying. Cleanup deliberately avoids deleting a
+path when it cannot prove ownership. There is no post-materialize hook and no
+implicit build or release action to retry.
+
+### A release checkout is detached
+
+Detached non-base child checkouts are the expected exact-release state. Run
+explicit later CI commands (including `wtree exec -- <command>` when useful)
+instead of branch-oriented development operations in that workspace.
+
 ## A lifecycle hook left setup incomplete
 
 `wtree create` and an explicitly authorized `wtree clone --run-hooks` publish

@@ -66,8 +66,9 @@ type Git interface {
 
 // Adapter invokes Git only through locale-neutral, non-interactive subprocesses.
 type Adapter struct {
-	binary string
-	env    []string
+	binary  string
+	env     []string
+	authEnv []string
 }
 
 // WorkingFileTracked reports whether a literal repository-relative working
@@ -97,7 +98,7 @@ func NewAdapterWithEnv(binary string, environment []string) *Adapter {
 	if binary == "" {
 		binary = "git"
 	}
-	return &Adapter{binary: binary, env: sanitizedEnvironment(environment)}
+	return &Adapter{binary: binary, env: sanitizedEnvironment(environment), authEnv: append([]string(nil), environment...)}
 }
 
 // Error preserves actionable command context without unbounded stderr output.
@@ -573,6 +574,28 @@ func sanitizedEnvironment(environment []string) []string {
 	values["GIT_TERMINAL_PROMPT"] = "0"
 	values["GIT_ASKPASS"] = ""
 	values["GIT_ATTR_NOSYSTEM"] = "1"
+	values["LC_ALL"] = "C"
+	values["LANG"] = "C"
+	result := make([]string, 0, len(values))
+	for key, value := range values {
+		result = append(result, key+"="+value)
+	}
+	return result
+}
+
+// authenticatedEnvironment retains the caller's process environment only for
+// a purpose-specific Git network operation. Git configuration, SSH agents,
+// askpass helpers, and their helper-specific environment remain Git-owned.
+// It is never persisted or returned by the adapter. Prompting stays disabled.
+func authenticatedEnvironment(environment []string) []string {
+	values := make(map[string]string)
+	for _, item := range environment {
+		key, value, found := strings.Cut(item, "=")
+		if found {
+			values[key] = value
+		}
+	}
+	values["GIT_TERMINAL_PROMPT"] = "0"
 	values["LC_ALL"] = "C"
 	values["LANG"] = "C"
 	result := make([]string, 0, len(values))

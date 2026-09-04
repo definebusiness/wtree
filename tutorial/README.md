@@ -13,6 +13,11 @@ additional safety paths, continue with the
 local consent and are covered separately in the
 [lifecycle-hook tutorial](LIFECYCLE-HOOKS.md).
 
+The [release tutorial](RELEASES.md) is a separate offline journey from clean
+local commits through caller-owned child/base tags to an exact clean CI
+composition. It deliberately leaves build, test, packaging, and publication as
+explicit CI work.
+
 Run the commands in order in one terminal. Paths are stored in environment
 variables so the examples work regardless of where the `wtree-go` repository
 is checked out.

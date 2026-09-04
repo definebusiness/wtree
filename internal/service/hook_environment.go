@@ -49,6 +49,9 @@ func buildHookEnvironment(policy HookEnvironmentPolicy, windows bool, inherited 
 	for _, v := range reserved {
 		out = append(out, v[0]+"="+v[1])
 	}
+	if plan.authority.releaseName != "" {
+		out = append(out, "WTREE_RELEASE_NAME="+plan.authority.releaseName)
+	}
 	return out, nil
 }
 func validHookEnvironmentName(name string) bool {

@@ -38,6 +38,7 @@ isolated temporary directory and compares the normalized end result with
 | `wtree delete` | dry-run, complete deletion, partial-workspace refusal |
 | `wtree doctor` | healthy checkout, retained checkout, partial checkout, fix dry-run |
 | `wtree hooks list/share/install/retry` | local and portable declarations, explicit consent, durable retry; covered by the [lifecycle-hook tutorial](LIFECYCLE-HOOKS.md) |
+| `wtree release lock/materialize` | reproducible source locking and exact CI composition; covered by the [release tutorial](RELEASES.md) |
 | root/help commands | `--version`, `--help`, `--how-to`, and command-specific help |
 
 `--data-dir` is shown where a command must be independent of ambient user
@@ -99,6 +100,10 @@ wtree push --help
 
 Use `wtree <command> --help` for each remaining command as needed. Help and
 how-to flags are terminal: do not combine them with an operation.
+
+For the release commands, follow the [release tutorial](RELEASES.md). It
+keeps child/base tagging and publication caller-owned, and demonstrates the
+separate clean CI materialization path.
 
 ## 2. Publisher situation: initialize existing repositories
 

@@ -170,6 +170,27 @@ func TestHookV2StrictAndV3Rejections(t *testing.T) {
 	}
 }
 
+func TestPostReleaseIsLocalV3Only(t *testing.T) {
+	local := strings.Replace(localV3Hooks, "post-create:", "post-release:", 1)
+	value, err := config.LoadProject([]byte(local))
+	if err != nil || len(value.Hooks[config.HookEventPostRelease]) != 2 {
+		t.Fatalf("local v3 post-release = %#v, %v", value.Hooks, err)
+	}
+	for name, input := range map[string]string{
+		"local v2": strings.Replace(local, "version: 3", "version: 2", 1),
+		"portable": strings.Replace(portableV3Hooks, "post-clone:", "post-release:", 1),
+		"shared":   strings.Replace(portableV3Hooks, "shared_hooks:\n  post-create:", "shared_hooks:\n  post-release:", 1),
+	} {
+		if _, err := config.LoadProject([]byte(input)); name == "local v2" && err == nil {
+			t.Errorf("%s accepted", name)
+		} else if name != "local v2" {
+			if _, portableErr := config.LoadPortableManifest([]byte(input)); portableErr == nil {
+				t.Errorf("%s accepted", name)
+			}
+		}
+	}
+}
+
 func TestLifecycleHookPublicContractMatrix(t *testing.T) {
 	localV2 := strings.Split(localV3Hooks, "hooks:\n")[0]
 	localV2 = strings.Replace(localV2, "version: 3", "version: 2", 1)

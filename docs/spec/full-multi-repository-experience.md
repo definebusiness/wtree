@@ -265,7 +265,12 @@ Release locks must remain separate from the moving `project.wtree.yml`.
 The stable default filename is `project.wtree.lock.yml`; alternative archival
 locations may be added later without changing the default.
 
-A focused release-lock specification must, at minimum:
+The focused [release-lock specification](release-lock-manifests.md) defines the
+initial lock-generation, authenticated CI-materialization, local
+post-release-hook, and executable documentation delivery. Successful
+materialization is its verification boundary; a separate verification command
+is deferred with lock-aware update and general status/doctor integration. The
+complete broader P2 capability must, at minimum:
 
 - use a strict, deterministic, object-format-neutral schema;
 - bind project and repository IDs, topology, effective mounts, clone sources,
@@ -280,9 +285,11 @@ A focused release-lock specification must, at minimum:
   branch tips or creating ordinary development branches.
 
 `wtree status`, `doctor`, and JSON must identify a locked workspace and report
-lock-vs-checkout mismatches. Lock generation, tag creation, tag signing,
-tagging child repositories, pushing, and materialization are separate actions;
-none may occur as an implicit side effect of another.
+lock-vs-checkout mismatches. The `wtree` core keeps lock generation, tag
+creation and signing, child tagging, pushing, and materialization separate. An
+explicitly configured trusted local `post-release` hook may perform caller-
+owned tag or publication effects after lock generation; those effects are not
+core transaction steps and are not rolled back by `wtree`.
 
 ### 7.2 Mixed and partial workspace integration
 

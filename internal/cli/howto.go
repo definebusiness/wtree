@@ -111,6 +111,29 @@ const globalHowTo = `WTREE HOW-TO
     structurally inconsistent, unresolved-operation, and unsafe repository-set
     changes. It never relocates an existing checkout or deletes a repository
     removed from the manifest; removed repositories remain retained unmanaged.
+35. Compose reproducible release source
+    Run: wtree release lock v1.4.0 --dry-run, then wtree release lock v1.4.0.
+    The lock records the exact non-base commits in one clean local workspace;
+    it does not fetch, commit, tag, push, publish, deploy, or claim an atomic
+    cross-repository snapshot. Review and commit the lock yourself.
+36. Publish child reachability before the base release
+    A local post-release hook may tag a child, but it is trusted caller
+    automation. Push reviewed child commits and tags before committing and
+    tagging the base release. Matching child tags are safe to rerun; a tag at
+    a different commit is a collision and must be resolved without moving it.
+37. Materialize exact source in CI
+    Start from a clean CI-provided base checkout containing the tracked
+    project.wtree.yml and project.wtree.lock.yml, then run:
+    wtree release materialize project.wtree.lock.yml
+    Git-owned noninteractive authentication (for example an SSH agent,
+    askpass helper, or configured credential helper) obtains advertised refs.
+    wtree stores no credentials and has no credential flags. Materialization
+    creates exact detached children and runs no lifecycle or post-materialize
+    hook. It is the verification boundary: there is no release verify command.
+38. Run ordinary CI work explicitly
+    After successful materialization, run build/test/package/publish steps as
+    explicit CI commands, for example: wtree exec -- go test ./... . wtree is
+    reproducible source composition, not a release-management platform.
 `
 
 var commandHowTo = map[string]string{
@@ -256,6 +279,80 @@ inspection intentionally show configured or resolved executables and literal
 arguments. A retry resumes only a matching incomplete record and never
 starts a fresh run or reruns a durably completed hook.
 `,
+	"release": `HOW TO: release
+
+Release locks compose reproducible source; they are not a release-management
+platform. First use a complete clean development workspace to preview and then
+write its deterministic non-base revision overlay:
+
+  wtree release lock v1.4.0 --dry-run
+  wtree release lock v1.4.0
+
+wtree does not commit, tag, push, publish, deploy, package, sign, or claim
+an atomic cross-repository snapshot. A trusted local post-release hook may
+tag a child repository after lock success. Keep that hook idempotent: matching
+tags may be accepted, while a tag at another commit is a collision and is
+never moved. Review and commit project.wtree.lock.yml yourself. Publish child
+commits and tags before the base commit/tag, then create the base tag yourself.
+
+In CI, check out that clean base commit/tag with its tracked manifest and lock:
+
+  wtree release materialize project.wtree.lock.yml
+  wtree exec -- go test ./...
+
+Materialization fetches only advertised branch/tag refs and creates exact
+detached non-base checkouts. Authentication is Git-owned and noninteractive:
+an SSH agent, askpass helper, or configured credential helper can provide it.
+wtree stores no credentials and provides no credential flags. A successful
+materialization is the verification boundary; there is no release verify and
+no post-materialize hook. Build, test, packaging, signing, publication, and
+deployment remain explicit later CI actions.
+
+TROUBLESHOOTING
+  Authentication failure: configure Git's noninteractive SSH-agent, askpass,
+  or credential-helper path; never put credentials in manifests or arguments.
+  Unavailable commit: publish the child commit and tag before the base tag, so
+  the commit is reachable from an advertised branch or tag.
+  Manifest mismatch or dirty base: use the exact clean base commit that tracks
+  both project.wtree.yml and project.wtree.lock.yml.
+  Occupied destination or registered project: start from a fresh CI checkout;
+  materialize does not repair or convert an existing workspace.
+  Tag collision: do not move it; inspect the child commit and choose a new
+  release name or resolve the mismatch.
+  Hook failure: the lock can already be valid; fix the external condition and
+  rerun the same lock command only when the hook is idempotent.
+  Partial cleanup: retain the reported recovery evidence and resolve it before
+  retrying; never treat an incomplete rollback as a complete workspace.
+	Detached workspace: detached child checkouts are expected release inputs;
+	use explicit later CI commands rather than branch-oriented development work.
+`,
+	"release lock": `HOW TO: release lock
+
+Use wtree release lock <release-name> [workspace] only from one complete,
+clean local workspace. --dry-run validates and renders the deterministic
+revision overlay without writing it or running a hook. A real invocation writes
+the lock, then runs trusted local-v3 post-release hooks unless --no-hooks is
+given. wtree never fetches, commits, tags, pushes, publishes, or deploys.
+
+Review and commit project.wtree.lock.yml yourself. Publish reviewed child
+commits and tags before the base release commit/tag. Matching idempotent child
+tags may be accepted; a tag at another commit is a collision and is never
+moved. A clean tracked prior lock is normally replaced for the next release;
+untracked or locally modified lock bytes require explicit --force.
+`,
+	"release materialize": `HOW TO: release materialize
+
+Use wtree release materialize <lock-file> in a fresh, clean CI-provided base
+checkout that tracks matching project.wtree.yml and project.wtree.lock.yml.
+Git-owned noninteractive SSH-agent, askpass, or configured credential-helper
+authentication can obtain advertised refs; wtree stores no credentials and has
+no credential flags. The command creates exact detached children and never
+runs lifecycle hooks or a post-materialize hook.
+
+Success is the exact-source verification boundary. There is no release verify
+command: run later build/test/package/publish work explicitly, for example
+wtree exec -- go test ./....
+`,
 }
 
 func renderHowToIfRequested(writer io.Writer, arguments []string) (bool, error) {
@@ -281,5 +378,11 @@ func renderHowToIfRequested(writer io.Writer, arguments []string) (bool, error) 
 			return true, err
 		}
 	}
-	return true, invalidArgumentsError{cause: fmt.Errorf("--how-to is valid only as `wtree --how-to` or `wtree {project,init,clone,update,create,import,remove,delete,doctor,hooks} --how-to`")}
+	if len(arguments) == 3 && arguments[2] == "--how-to" {
+		if guide, found := commandHowTo[arguments[0]+" "+arguments[1]]; found {
+			_, err := fmt.Fprint(writer, guide)
+			return true, err
+		}
+	}
+	return true, invalidArgumentsError{cause: fmt.Errorf("--how-to is valid only as `wtree --how-to`, `wtree {project,init,clone,update,create,import,remove,delete,doctor,hooks,release} --how-to`, or a documented release subcommand guide")}
 }
