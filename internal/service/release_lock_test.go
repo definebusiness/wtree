@@ -83,6 +83,34 @@ func TestReleaseLockCreatesReplacesAndProtectsCandidate(t *testing.T) {
 		t.Fatal(readErr)
 	}
 	fake.tracked[ReleaseLockFilename] = tracked
+	// Classification uses the initial stable snapshot. A replacement after
+	// capture, even with identical bytes, must not be adopted as authority.
+	s.afterTargetSnapshot = func() {
+		temporary := filepath.Join(base, "classification-replacement")
+		_ = os.WriteFile(temporary, tracked, 0o600)
+		_ = os.Rename(temporary, filepath.Join(base, ReleaseLockFilename))
+		s.afterTargetSnapshot = nil
+	}
+	if _, err := s.Lock(context.Background(), ReleaseLockRequest{Project: project, Workspace: workspace, Name: "v3", NoHooks: true}); err == nil {
+		t.Fatal("classification replacement race accepted")
+	}
+	if bytesAfter, readErr := os.ReadFile(filepath.Join(base, ReleaseLockFilename)); readErr != nil || !bytes.Equal(bytesAfter, tracked) {
+		t.Fatalf("classification replacement changed intervening bytes=%q err=%v", bytesAfter, readErr)
+	}
+	classificationWrite := []byte("classification in-place generation\n")
+	s.afterTargetSnapshot = func() {
+		_ = os.WriteFile(filepath.Join(base, ReleaseLockFilename), classificationWrite, 0o600)
+		s.afterTargetSnapshot = nil
+	}
+	if _, err := s.Lock(context.Background(), ReleaseLockRequest{Project: project, Workspace: workspace, Name: "v3", NoHooks: true}); err == nil {
+		t.Fatal("classification content race accepted")
+	}
+	if bytesAfter, readErr := os.ReadFile(filepath.Join(base, ReleaseLockFilename)); readErr != nil || !bytes.Equal(bytesAfter, classificationWrite) {
+		t.Fatalf("classification content race changed intervening bytes=%q err=%v", bytesAfter, readErr)
+	}
+	if err := os.WriteFile(filepath.Join(base, ReleaseLockFilename), tracked, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	raced := []byte("new local generation\n")
 	s.beforeWrite = func() {
 		temporary := filepath.Join(base, "race")
@@ -96,12 +124,27 @@ func TestReleaseLockCreatesReplacesAndProtectsCandidate(t *testing.T) {
 	if bytesAfter, readErr := os.ReadFile(filepath.Join(base, ReleaseLockFilename)); readErr != nil || !bytes.Equal(bytesAfter, raced) {
 		t.Fatalf("race changed intervening bytes=%q err=%v", bytesAfter, readErr)
 	}
+	// A same-file write retains the filesystem identity. The final authority
+	// check must bind the captured content generation as well, rather than
+	// treating a pathname-stable foreign edit as ours to overwrite.
+	inPlace := []byte("in-place intervening generation\n")
+	fake.tracked[ReleaseLockFilename] = raced
+	s.beforeWrite = func() {
+		_ = os.WriteFile(filepath.Join(base, ReleaseLockFilename), inPlace, 0o600)
+		s.beforeWrite = nil
+	}
+	if _, err := s.Lock(context.Background(), ReleaseLockRequest{Project: project, Workspace: workspace, Name: "v3", NoHooks: true}); err == nil {
+		t.Fatal("target content race accepted")
+	}
+	if bytesAfter, readErr := os.ReadFile(filepath.Join(base, ReleaseLockFilename)); readErr != nil || !bytes.Equal(bytesAfter, inPlace) {
+		t.Fatalf("content race changed intervening bytes=%q err=%v", bytesAfter, readErr)
+	}
 	// Mutate after the service identity recheck, immediately before fsutil's
 	// conditional exchange. The writer must restore this generation rather
 	// than publishing over it.
-	fake.tracked[ReleaseLockFilename] = raced
+	fake.tracked[ReleaseLockFilename] = inPlace
 	originalReplace := s.replaceExpected
-	s.replaceExpected = func(path string, data []byte, mode os.FileMode, expected os.FileInfo) error {
+	s.replaceExpected = func(path string, data []byte, mode os.FileMode, expected os.FileInfo, expectedData []byte) error {
 		temporary := filepath.Join(base, "final-race")
 		if err := os.WriteFile(temporary, []byte("final intervening generation\n"), 0o600); err != nil {
 			return err
@@ -109,7 +152,7 @@ func TestReleaseLockCreatesReplacesAndProtectsCandidate(t *testing.T) {
 		if err := os.Rename(temporary, path); err != nil {
 			return err
 		}
-		return fsutil.WriteFileAtomicModeExpected(path, data, mode, expected)
+		return fsutil.WriteFileAtomicModeExpected(path, data, mode, expected, expectedData)
 	}
 	if _, err := s.Lock(context.Background(), ReleaseLockRequest{Project: project, Workspace: workspace, Name: "v3", NoHooks: true}); err == nil {
 		t.Fatal("final publication race accepted")
@@ -117,6 +160,29 @@ func TestReleaseLockCreatesReplacesAndProtectsCandidate(t *testing.T) {
 	s.replaceExpected = originalReplace
 	if bytesAfter, readErr := os.ReadFile(filepath.Join(base, ReleaseLockFilename)); readErr != nil || string(bytesAfter) != "final intervening generation\n" {
 		t.Fatalf("final race changed intervening bytes=%q err=%v", bytesAfter, readErr)
+	}
+	// An in-place write at the platform writer boundary preserves identity.
+	// The expected writer must bind the captured bytes at the exchange itself,
+	// restore the displaced foreign generation, and report failure.
+	finalInPlace := []byte("final in-place generation\n")
+	fake.tracked[ReleaseLockFilename] = []byte("final intervening generation\n")
+	s.replaceExpected = func(path string, data []byte, mode os.FileMode, expected os.FileInfo, expectedData []byte) error {
+		if err := os.WriteFile(path, finalInPlace, 0o600); err != nil {
+			return err
+		}
+		return fsutil.WriteFileAtomicModeExpected(path, data, mode, expected, expectedData)
+	}
+	if _, err := s.Lock(context.Background(), ReleaseLockRequest{Project: project, Workspace: workspace, Name: "v3", NoHooks: true}); err == nil {
+		t.Fatal("final in-place publication race accepted")
+	} else {
+		var application *Error
+		if !errors.As(err, &application) || application.Kind != ErrorConflict {
+			t.Fatalf("final in-place publication error = %T %v; want conflict", err, err)
+		}
+	}
+	s.replaceExpected = originalReplace
+	if bytesAfter, readErr := os.ReadFile(filepath.Join(base, ReleaseLockFilename)); readErr != nil || !bytes.Equal(bytesAfter, finalInPlace) {
+		t.Fatalf("final in-place race changed intervening bytes=%q err=%v", bytesAfter, readErr)
 	}
 	if err := os.WriteFile(filepath.Join(base, ReleaseLockFilename), []byte("local candidate\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -213,7 +279,7 @@ func TestReleaseLockRejectsUnsafeExistingTargets(t *testing.T) {
 					t.Skipf("symlinks unavailable: %v", err)
 				}
 			}
-			if _, err := service.disposition(context.Background(), root, "", false, target, []byte("candidate\n"), true); err == nil {
+			if _, err := service.captureTargetSnapshot(target); err == nil {
 				t.Fatalf("unsafe %s accepted", name)
 			}
 		})

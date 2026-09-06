@@ -72,7 +72,10 @@ type ReleaseLockService struct {
 	lstat           func(string) (os.FileInfo, error)
 	write           func(string, []byte, os.FileMode) error
 	create          func(string, []byte, os.FileMode) error
-	replaceExpected func(string, []byte, os.FileMode, os.FileInfo) error
+	replaceExpected func(string, []byte, os.FileMode, os.FileInfo, []byte) error
+	// afterTargetSnapshot is a hermetic seam for classification-window races.
+	// Production never installs it.
+	afterTargetSnapshot func()
 	// beforeWrite is a hermetic test seam for the final target identity check.
 	beforeWrite func()
 }
@@ -220,7 +223,11 @@ func (s *ReleaseLockService) Lock(ctx context.Context, q ReleaseLockRequest) (Re
 	result.LockPath = lockPath
 	result.ManifestSHA256 = manifestLock.Project.ManifestSHA256
 	if q.DryRun {
-		disposition, dispositionErr := s.disposition(ctx, base, baseHead, baseLockDirty, lockPath, candidate, q.Force)
+		target, targetErr := s.captureTargetSnapshot(lockPath)
+		if targetErr != nil {
+			return result, targetErr
+		}
+		disposition, dispositionErr := s.disposition(ctx, base, baseHead, baseLockDirty, target, candidate, q.Force)
 		if dispositionErr != nil {
 			return result, dispositionErr
 		}
@@ -247,20 +254,26 @@ func (s *ReleaseLockService) Lock(ctx context.Context, q ReleaseLockRequest) (Re
 			_ = projectLock.Unlock()
 		}
 	}()
-	disposition, err := s.disposition(ctx, base, baseHead, baseLockDirty, lockPath, candidate, q.Force)
+	// Capture the release-lock generation once, under mutation authority. This
+	// exact snapshot authorizes both classification and the later conditional
+	// write; an intervening generation must never become newly accepted input.
+	target, targetErr := s.captureTargetSnapshot(lockPath)
+	if targetErr != nil {
+		return result, targetErr
+	}
+	if s.afterTargetSnapshot != nil {
+		s.afterTargetSnapshot()
+	}
+	disposition, err := s.disposition(ctx, base, baseHead, baseLockDirty, target, candidate, q.Force)
 	if err != nil {
 		return result, err
 	}
 	result.Status = disposition
 	if disposition != "unchanged" {
-		expected, expectedExists, identityErr := s.targetIdentity(lockPath)
-		if identityErr != nil {
-			return result, identityErr
-		}
 		if s.beforeWrite != nil {
 			s.beforeWrite()
 		}
-		if identityErr := s.requireSameTarget(lockPath, expected, expectedExists); identityErr != nil {
+		if identityErr := s.requireSameTargetSnapshot(lockPath, target); identityErr != nil {
 			return result, identityErr
 		}
 		writer := s.write
@@ -268,7 +281,7 @@ func (s *ReleaseLockService) Lock(ctx context.Context, q ReleaseLockRequest) (Re
 			writer = s.create
 		}
 		if disposition == "replaced" {
-			if err := s.replaceExpected(lockPath, candidate, 0o600, expected); err != nil {
+			if err := s.replaceExpected(lockPath, candidate, 0o600, target.info, target.data); err != nil {
 				return result, NewError(ErrorConflict, fmt.Errorf("write release lock: %w", err))
 			}
 		} else if err := writer(lockPath, candidate, 0o600); err != nil {
@@ -300,6 +313,43 @@ func (s *ReleaseLockService) Lock(ctx context.Context, q ReleaseLockRequest) (Re
 	return result, nil
 }
 
+type releaseLockTargetSnapshot struct {
+	exists bool
+	info   os.FileInfo
+	mode   os.FileMode
+	data   []byte
+}
+
+// captureTargetSnapshot obtains an exact target generation. The repeated
+// identity and byte observations fail closed if a replacement or in-place
+// content write races the capture itself.
+func (s *ReleaseLockService) captureTargetSnapshot(target string) (releaseLockTargetSnapshot, error) {
+	info, exists, err := s.targetIdentity(target)
+	if err != nil || !exists {
+		return releaseLockTargetSnapshot{exists: exists}, err
+	}
+	first, err := s.readFile(target)
+	if err != nil {
+		return releaseLockTargetSnapshot{}, NewError(ErrorConflict, fmt.Errorf("read release lock target: %w", err))
+	}
+	afterFirst, afterFirstExists, err := s.targetIdentity(target)
+	if err != nil {
+		return releaseLockTargetSnapshot{}, err
+	}
+	second, err := s.readFile(target)
+	if err != nil {
+		return releaseLockTargetSnapshot{}, NewError(ErrorConflict, fmt.Errorf("read release lock target: %w", err))
+	}
+	afterSecond, afterSecondExists, err := s.targetIdentity(target)
+	if err != nil {
+		return releaseLockTargetSnapshot{}, err
+	}
+	if !afterFirstExists || !afterSecondExists || !os.SameFile(info, afterFirst) || !os.SameFile(info, afterSecond) || info.Mode() != afterFirst.Mode() || info.Mode() != afterSecond.Mode() || !bytes.Equal(first, second) {
+		return releaseLockTargetSnapshot{}, NewError(ErrorConflict, errors.New("release lock target changed while capturing snapshot"))
+	}
+	return releaseLockTargetSnapshot{exists: true, info: info, mode: info.Mode(), data: append([]byte(nil), second...)}, nil
+}
+
 func (s *ReleaseLockService) targetIdentity(target string) (os.FileInfo, bool, error) {
 	info, err := s.lstat(target)
 	if os.IsNotExist(err) {
@@ -310,6 +360,11 @@ func (s *ReleaseLockService) targetIdentity(target string) (os.FileInfo, bool, e
 	}
 	if !info.Mode().IsRegular() {
 		return nil, false, NewError(ErrorConflict, errors.New("release lock target must be a regular file"))
+	}
+	// Prime Windows' lazily resolved FileInfo identity before a caller-owned
+	// boundary can replace this pathname.
+	if !primeFileIdentity(info) {
+		return nil, false, NewError(ErrorConflict, errors.New("capture release lock target identity"))
 	}
 	return info, true, nil
 }
@@ -324,9 +379,22 @@ func (s *ReleaseLockService) requireSameTarget(target string, expected os.FileIn
 	return nil
 }
 
-func (s *ReleaseLockService) disposition(ctx context.Context, base, baseHead string, baseLockDirty bool, target string, candidate []byte, force bool) (string, error) {
-	info, err := s.lstat(target)
-	if os.IsNotExist(err) {
+func (s *ReleaseLockService) requireSameTargetSnapshot(target string, expected releaseLockTargetSnapshot) error {
+	actual, err := s.captureTargetSnapshot(target)
+	if err != nil {
+		return err
+	}
+	if actual.exists != expected.exists || actual.exists && (!os.SameFile(expected.info, actual.info) || expected.mode != actual.mode) {
+		return NewError(ErrorConflict, errors.New("release lock target changed before atomic write"))
+	}
+	if actual.exists && !bytes.Equal(expected.data, actual.data) {
+		return NewError(ErrorConflict, errors.New("release lock target content changed before atomic write"))
+	}
+	return nil
+}
+
+func (s *ReleaseLockService) disposition(ctx context.Context, base, baseHead string, baseLockDirty bool, target releaseLockTargetSnapshot, candidate []byte, force bool) (string, error) {
+	if !target.exists {
 		if g, ok := s.git.(releaseTrackedFile); ok && baseHead != "" {
 			if _, trackedErr := g.TrackedFile(ctx, base, baseHead, ReleaseLockFilename); trackedErr == nil && baseLockDirty && !force {
 				return "", NewError(ErrorConflict, errors.New("release lock is locally deleted; use --force to replace it"))
@@ -334,20 +402,10 @@ func (s *ReleaseLockService) disposition(ctx context.Context, base, baseHead str
 		}
 		return "created", nil
 	}
-	if err != nil {
-		return "", NewError(ErrorConflict, fmt.Errorf("inspect release lock target: %w", err))
-	}
-	if !info.Mode().IsRegular() {
-		return "", NewError(ErrorConflict, errors.New("release lock target must be a regular file"))
-	}
-	current, err := s.readFile(target)
-	if err != nil {
-		return "", NewError(ErrorConflict, errors.New("read release lock target"))
-	}
 	if baseLockDirty && !force {
 		return "", NewError(ErrorConflict, errors.New("release lock is locally modified or staged for deletion; use --force to replace it"))
 	}
-	if bytes.Equal(current, candidate) && !baseLockDirty {
+	if bytes.Equal(target.data, candidate) && !baseLockDirty {
 		return "unchanged", nil
 	}
 	tracked := false
@@ -355,7 +413,7 @@ func (s *ReleaseLockService) disposition(ctx context.Context, base, baseHead str
 		trackedBytes, trackedErr := g.TrackedFile(ctx, base, baseHead, ReleaseLockFilename)
 		if trackedErr == nil {
 			tracked = true
-			if !bytes.Equal(current, trackedBytes) {
+			if !bytes.Equal(target.data, trackedBytes) {
 				tracked = false
 			}
 		}

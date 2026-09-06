@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-func replaceExpectedAtomic(string, string, os.FileInfo, os.FileInfo) error {
+func replaceExpectedAtomic(string, string, os.FileInfo, os.FileInfo, []byte, []byte) error {
 	return errors.New("conditional atomic replacement is unsupported on this platform")
 }
 

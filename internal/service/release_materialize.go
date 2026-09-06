@@ -285,6 +285,12 @@ func releaseMaterializeCleanupStaging(staging string, owned, parent os.FileInfo,
 	if err := lease.releaseChild(staging, owned, parent, os.Lstat); err != nil {
 		return evidence, fmt.Errorf("preserve substituted release staging root: %w", err)
 	}
+	// Base-only materialization owns only the private staging container. There
+	// is no logical staging child to inventory or quarantine; closing the lease
+	// disposes the empty container by its retained Windows handle.
+	if owned == nil {
+		return evidence, nil
+	}
 	tree, err := captureCloneTree(staging)
 	if err != nil {
 		return evidence, fmt.Errorf("preserve uninventoryable release staging root: %w", err)
@@ -308,6 +314,12 @@ func releaseMaterializeCleanupStaging(staging string, owned, parent os.FileInfo,
 	}
 	evidence.retainedPath = ownedPath
 	moved, err := os.Lstat(ownedPath)
+	if err == nil {
+		// Windows may translate only the root timestamp at the production
+		// rename boundary. Reconcile that one observed transition before the
+		// exact tree revalidation below; descendants remain exact.
+		err = translateCloneRootAfterRename(ownedPath, &tree, moved)
+	}
 	if err != nil || !moved.IsDir() || moved.Mode()&os.ModeSymlink != 0 || !os.SameFile(owned, moved) || revalidateCloneTree(ownedPath, tree) != nil {
 		restoreErr := restoreMaterializeChild(staging, ownedPath, errors.New("release staging root changed at quarantine boundary"))
 		if _, statErr := os.Lstat(staging); statErr == nil {
@@ -986,7 +998,7 @@ func defaultMaterializeCAS(original cloneFileSnapshot, data []byte, compare func
 	}
 	var writeErr error
 	if original.exists {
-		writeErr = fsutil.WriteFileAtomicModeExpected(original.path, data, 0o600, original.info)
+		writeErr = fsutil.WriteFileAtomicModeExpected(original.path, data, 0o600, original.info, original.data)
 	} else {
 		writeErr = fsutil.WriteFileAtomicCreateModeNoReplaceWithOwnedTempHook(original.path, data, 0o600, nil, final)
 	}
@@ -1009,7 +1021,7 @@ func rollbackMaterializePublication(original cloneFileSnapshot, receipt ClonePub
 		return errors.New("publication generation changed; preserving it")
 	}
 	if original.exists {
-		err := fsutil.WriteFileAtomicModeExpected(owned.path, original.data, original.mode.Perm(), owned.info)
+		err := fsutil.WriteFileAtomicModeExpected(owned.path, original.data, original.mode.Perm(), owned.info, owned.data)
 		if err != nil {
 			return fmt.Errorf("restore exact publication generation: %w", err)
 		}

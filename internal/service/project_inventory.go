@@ -303,9 +303,23 @@ func groupWithout(group []string, id string) []string {
 	return result
 }
 func hasProjectRecovery(dataDir, id string) (bool, error) {
-	entries, err := os.ReadDir(filepath.Join(dataDir, "projects", id, "recovery"))
+	recoveryPath := filepath.Join(dataDir, "projects", id, "recovery")
+	entries, err := os.ReadDir(recoveryPath)
 	if os.IsNotExist(err) {
-		return false, nil
+		// Windows may report a non-directory path as not found to ReadDir.
+		// Re-observe the exact path before accepting recovery absence so a
+		// substituted file cannot disable this mutation guard.
+		info, statErr := os.Lstat(recoveryPath)
+		if os.IsNotExist(statErr) {
+			return false, nil
+		}
+		if statErr != nil {
+			return false, statErr
+		}
+		if !info.IsDir() {
+			return false, fmt.Errorf("recovery path is not a directory: %q", recoveryPath)
+		}
+		return false, err
 	}
 	if err != nil {
 		return false, err

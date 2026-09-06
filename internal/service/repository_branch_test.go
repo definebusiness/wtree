@@ -379,7 +379,7 @@ func TestRepositoryBranchRejectsStalePlanAndRollsBackPartialPublication(t *testi
 	}
 
 	writes := 0
-	writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, compare func() error) error {
+	writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, _ []byte, compare func() error) error {
 		writes++
 		if writes == 2 {
 			return errors.New("injected local publication failure")
@@ -411,7 +411,7 @@ func TestRepositoryBranchRecordsOwnedRecoveryWhenRollbackCannotRestore(t *testin
 	request := service.RepositoryBranchRequest{Project: project, DataDir: data, RepositoryID: "backend", Branch: "next"}
 	writes := 0
 	var recoveryPath string
-	writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, compare func() error) error {
+	writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, _ []byte, compare func() error) error {
 		writes++
 		if writes == 2 || writes == 3 {
 			return errors.New("injected publication/rollback failure")
@@ -668,7 +668,7 @@ func TestRepositoryBranchRecoveryListsOnlyTheResidualGeneration(t *testing.T) {
 	}
 	portablePath := filepath.Join(filepath.Dir(project.ConfigPath), local.Manifest.Path)
 	writes := 0
-	writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, compare func() error) error {
+	writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, _ []byte, compare func() error) error {
 		if compare != nil {
 			if err := compare(); err != nil {
 				return err
@@ -710,7 +710,7 @@ func TestRepositoryBranchPostFirstForeignReplacementRecordsOnlyPortableResidual(
 	portablePath := filepath.Join(filepath.Dir(project.ConfigPath), local.Manifest.Path)
 	beforeLocal := mustRepositoryBranchRead(t, project.ConfigPath)
 	writes := 0
-	writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, compare func() error) error {
+	writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, _ []byte, compare func() error) error {
 		if err := compare(); err != nil {
 			return err
 		}
@@ -780,7 +780,7 @@ func TestRepositoryBranchRollbackReverseStagesAndRecoveryPublicationFailures(t *
 			}
 			writes := 0
 			var order []string
-			writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, compare func() error) error {
+			writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, _ []byte, compare func() error) error {
 				order = append(order, filepath.Base(path))
 				writes++
 				if writes == 3 { // reverse-stage local restore fails; portable still restores.
@@ -835,7 +835,7 @@ func TestRepositoryBranchFirstWriteFailureLeavesBothGenerationsUntouched(t *test
 	}
 	portablePath := filepath.Join(filepath.Dir(project.ConfigPath), local.Manifest.Path)
 	beforeLocal, beforePortable := mustRepositoryBranchRead(t, project.ConfigPath), mustRepositoryBranchRead(t, portablePath)
-	writer := func(string, []byte, os.FileMode, os.FileInfo, func() error) error {
+	writer := func(string, []byte, os.FileMode, os.FileInfo, []byte, func() error) error {
 		return errors.New("injected first portable write failure")
 	}
 	value := service.NewRepositoryBranchServiceWith(gitadapter.NewAdapter("git"), lock.Manager{}, os.ReadFile, os.Stat, writer, store.WriteRecoveryCAS)
@@ -865,7 +865,7 @@ func TestRepositoryBranchPostReplacementPublicationFailuresRollBackInstalledGene
 			portablePath := filepath.Join(filepath.Dir(project.ConfigPath), local.Manifest.Path)
 			beforeLocal, beforePortable := mustRepositoryBranchRead(t, project.ConfigPath), mustRepositoryBranchRead(t, portablePath)
 			writes := 0
-			writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, compare func() error) error {
+			writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, _ []byte, compare func() error) error {
 				writes++
 				if err := compare(); err != nil {
 					return err
@@ -907,11 +907,11 @@ func TestRepositoryBranchNilWriterSuccessWithoutPostWriteReceiptRecordsCurrentOw
 		}
 		return os.Lstat(path)
 	}
-	writer := func(path string, value []byte, mode os.FileMode, expected os.FileInfo, compare func() error) error {
+	writer := func(path string, value []byte, mode os.FileMode, expected os.FileInfo, expectedData []byte, compare func() error) error {
 		if err := compare(); err != nil {
 			return err
 		}
-		if err := fsutil.WriteFileAtomicModeExpected(path, value, mode, expected); err != nil {
+		if err := fsutil.WriteFileAtomicModeExpected(path, value, mode, expected, expectedData); err != nil {
 			return err
 		}
 		failReceipt = true
@@ -960,11 +960,11 @@ func TestRepositoryBranchSecondNilWriterSuccessWithoutReceiptRestoresPriorGenera
 		return os.Lstat(path)
 	}
 	writes := 0
-	writer := func(path string, value []byte, mode os.FileMode, expected os.FileInfo, compare func() error) error {
+	writer := func(path string, value []byte, mode os.FileMode, expected os.FileInfo, expectedData []byte, compare func() error) error {
 		if err := compare(); err != nil {
 			return err
 		}
-		if err := fsutil.WriteFileAtomicModeExpected(path, value, mode, expected); err != nil {
+		if err := fsutil.WriteFileAtomicModeExpected(path, value, mode, expected, expectedData); err != nil {
 			return err
 		}
 		writes++
@@ -1012,11 +1012,11 @@ func TestRepositoryBranchAuxiliaryAtomicOutcomeRecordsEveryPublicationBoundary(t
 				beforeLocal, beforePortable := mustRepositoryBranchRead(t, project.ConfigPath), mustRepositoryBranchRead(t, portablePath)
 				writes := 0
 				var auxiliary string
-				writer := func(path string, value []byte, mode os.FileMode, expected os.FileInfo, compare func() error) error {
+				writer := func(path string, value []byte, mode os.FileMode, expected os.FileInfo, expectedData []byte, compare func() error) error {
 					if err := compare(); err != nil {
 						return err
 					}
-					if err := fsutil.WriteFileAtomicModeExpected(path, value, mode, expected); err != nil {
+					if err := fsutil.WriteFileAtomicModeExpected(path, value, mode, expected, expectedData); err != nil {
 						return err
 					}
 					writes++
@@ -1086,11 +1086,11 @@ func TestRepositoryBranchAuxiliaryAtomicOutcomeRecordsRollbackBoundary(t *testin
 				}
 				writes := 0
 				var auxiliary string
-				writer := func(path string, value []byte, mode os.FileMode, expected os.FileInfo, compare func() error) error {
+				writer := func(path string, value []byte, mode os.FileMode, expected os.FileInfo, expectedData []byte, compare func() error) error {
 					if err := compare(); err != nil {
 						return err
 					}
-					if err := fsutil.WriteFileAtomicModeExpected(path, value, mode, expected); err != nil {
+					if err := fsutil.WriteFileAtomicModeExpected(path, value, mode, expected, expectedData); err != nil {
 						return err
 					}
 					writes++
@@ -1152,11 +1152,11 @@ func TestRepositoryBranchAuxiliaryRecoveryRecordFailuresPreserveForeignEvidence(
 			publishCompanionBaseline(t, project, root, "backend", "main", false)
 			project = reloadCompanionFixtureProject(t, project, data)
 			var auxiliary string
-			writer := func(path string, value []byte, mode os.FileMode, expected os.FileInfo, compare func() error) error {
+			writer := func(path string, value []byte, mode os.FileMode, expected os.FileInfo, expectedData []byte, compare func() error) error {
 				if err := compare(); err != nil {
 					return err
 				}
-				if err := fsutil.WriteFileAtomicModeExpected(path, value, mode, expected); err != nil {
+				if err := fsutil.WriteFileAtomicModeExpected(path, value, mode, expected, expectedData); err != nil {
 					return err
 				}
 				auxiliary = path + ".recovery-failure-aux"
@@ -1226,11 +1226,11 @@ func TestRepositoryBranchAuxiliaryRollbackRecoveryRecordFailuresPreserveForeignE
 				}
 				writes := 0
 				var auxiliary string
-				writer := func(path string, value []byte, mode os.FileMode, expected os.FileInfo, compare func() error) error {
+				writer := func(path string, value []byte, mode os.FileMode, expected os.FileInfo, expectedData []byte, compare func() error) error {
 					if err := compare(); err != nil {
 						return err
 					}
-					if err := fsutil.WriteFileAtomicModeExpected(path, value, mode, expected); err != nil {
+					if err := fsutil.WriteFileAtomicModeExpected(path, value, mode, expected, expectedData); err != nil {
 						return err
 					}
 					writes++
@@ -1287,7 +1287,7 @@ func TestRepositoryBranchExpectedFinalExchangePreservesForeignReplacement(t *tes
 			portablePath := filepath.Join(filepath.Dir(project.ConfigPath), local.Manifest.Path)
 			beforePortable := mustRepositoryBranchRead(t, portablePath)
 			writes := 0
-			writer := func(path string, value []byte, mode os.FileMode, expected os.FileInfo, compare func() error) error {
+			writer := func(path string, value []byte, mode os.FileMode, expected os.FileInfo, expectedData []byte, compare func() error) error {
 				writes++
 				if err := compare(); err != nil {
 					return err
@@ -1301,7 +1301,7 @@ func TestRepositoryBranchExpectedFinalExchangePreservesForeignReplacement(t *tes
 						return err
 					}
 				}
-				return fsutil.WriteFileAtomicModeExpected(path, value, mode, expected)
+				return fsutil.WriteFileAtomicModeExpected(path, value, mode, expected, expectedData)
 			}
 			value := service.NewRepositoryBranchServiceWith(gitadapter.NewAdapter("git"), lock.Manager{}, os.ReadFile, os.Lstat, writer, store.WriteRecoveryCAS)
 			_, err = value.Execute(context.Background(), service.RepositoryBranchRequest{Project: project, DataDir: data, RepositoryID: "backend", Branch: "next"})
@@ -1346,7 +1346,7 @@ func TestRepositoryBranchPostReplacementRollbackFailuresObserveRestoration(t *te
 				return os.Lstat(path)
 			}
 			writes := 0
-			writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, compare func() error) error {
+			writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, _ []byte, compare func() error) error {
 				writes++
 				if err := compare(); err != nil {
 					return err
@@ -1390,7 +1390,7 @@ func TestRepositoryBranchCompareFailuresAtBothPublicationBoundariesRollBack(t *t
 			portablePath := filepath.Join(filepath.Dir(project.ConfigPath), local.Manifest.Path)
 			beforeLocal, beforePortable := mustRepositoryBranchRead(t, project.ConfigPath), mustRepositoryBranchRead(t, portablePath)
 			calls := 0
-			writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, compare func() error) error {
+			writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, _ []byte, compare func() error) error {
 				calls++
 				if calls == failure {
 					return errors.New("injected CAS comparison failure")
@@ -1443,7 +1443,7 @@ func TestRepositoryBranchCancellationAfterLockAndPublicationBoundaries(t *testin
 
 	ctx, cancel = context.WithCancel(context.Background())
 	writes := 0
-	writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, compare func() error) error {
+	writer := func(path string, value []byte, mode os.FileMode, _ os.FileInfo, _ []byte, compare func() error) error {
 		writes++
 		if err := compare(); err != nil {
 			return err

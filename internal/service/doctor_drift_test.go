@@ -176,6 +176,7 @@ func (g *companionBaselineAuthorityGit) BranchExists(_ context.Context, reposito
 func TestCompanionBaselinePublicationAuthorityRequiresResolvedIdentityAndExistingBranch(t *testing.T) {
 	_, _, _, project := companionBaselinePublicationFixture(t)
 	publication := companionBaselinePublication{repositoryID: "root", baseline: "next"}
+	rootPath := project.Repositories[0].SourcePath
 	for _, test := range []struct {
 		name         string
 		common       string
@@ -197,11 +198,11 @@ func TestCompanionBaselinePublicationAuthorityRequiresResolvedIdentityAndExistin
 			if err != nil || got != test.want {
 				t.Fatalf("authority = %t, %v, want %t, nil", got, err, test.want)
 			}
-			if git.commonPath != "/tree" {
-				t.Fatalf("CommonGitDir path = %q, want resolved source /tree", git.commonPath)
+			if git.commonPath != rootPath {
+				t.Fatalf("CommonGitDir path = %q, want resolved source %q", git.commonPath, rootPath)
 			}
 			if test.wantBranch {
-				if git.branchPath != "/tree" || git.observedBranch != "next" {
+				if git.branchPath != rootPath || git.observedBranch != "next" {
 					t.Fatalf("BranchExists = (%q, %q), want resolved source and proposed baseline", git.branchPath, git.observedBranch)
 				}
 			} else if git.branchPath != "" {
@@ -243,7 +244,8 @@ func companionBaselinePublicationFixture(t *testing.T) (config.PortableManifest,
 	changed := working.Repositories["root"]
 	changed.DefaultBranch, changed.Upstream.Branch = "next", "next"
 	working.Repositories["root"] = changed
-	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "next", Companion: true, CommonGitDir: "/git/root", SourcePath: "/tree"}, {ID: "child", ParentID: "root", DefaultMount: "child", DefaultBranch: "main", CommonGitDir: "/git/child", SourcePath: "/tree/child"}})
+	source := t.TempDir()
+	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "next", Companion: true, CommonGitDir: "/git/root", SourcePath: source}, {ID: "child", ParentID: "root", DefaultMount: "child", DefaultBranch: "main", CommonGitDir: "/git/child", SourcePath: filepath.Join(source, "child")}})
 	local := driftLocalConfig(project)
 	local.Version = config.ProjectConfigVersion4
 	local.Repositories["root"] = config.Repository{Source: ".", DefaultMount: ".", DefaultBranch: "next", Companion: true}

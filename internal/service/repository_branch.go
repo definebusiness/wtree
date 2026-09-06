@@ -109,25 +109,25 @@ type RepositoryBranchService struct {
 	locker  ProjectLocker
 	read    func(string) ([]byte, error)
 	lstat   func(string) (os.FileInfo, error)
-	write   func(string, []byte, os.FileMode, os.FileInfo, func() error) error
+	write   func(string, []byte, os.FileMode, os.FileInfo, []byte, func() error) error
 	recover func(string, store.RecoveryRecord, func() error) error
 }
 
 func NewRepositoryBranchService() *RepositoryBranchService {
 	return NewRepositoryBranchServiceWith(gitadapter.NewAdapter("git"), lock.Manager{}, os.ReadFile, os.Lstat,
-		func(path string, data []byte, mode os.FileMode, expected os.FileInfo, compare func() error) error {
+		func(path string, data []byte, mode os.FileMode, expected os.FileInfo, expectedData []byte, compare func() error) error {
 			if compare != nil {
 				if err := compare(); err != nil {
 					return err
 				}
 			}
-			return fsutil.WriteFileAtomicModeExpected(path, data, mode, expected)
+			return fsutil.WriteFileAtomicModeExpected(path, data, mode, expected, expectedData)
 		}, store.WriteRecoveryCAS)
 }
 
 // NewRepositoryBranchServiceWith is intentionally exposed for hermetic tests
 // of every publication and recovery boundary.
-func NewRepositoryBranchServiceWith(git gitadapter.Git, locker ProjectLocker, read func(string) ([]byte, error), lstat func(string) (os.FileInfo, error), write func(string, []byte, os.FileMode, os.FileInfo, func() error) error, recover func(string, store.RecoveryRecord, func() error) error) *RepositoryBranchService {
+func NewRepositoryBranchServiceWith(git gitadapter.Git, locker ProjectLocker, read func(string) ([]byte, error), lstat func(string) (os.FileInfo, error), write func(string, []byte, os.FileMode, os.FileInfo, []byte, func() error) error, recover func(string, store.RecoveryRecord, func() error) error) *RepositoryBranchService {
 	if git == nil {
 		git = gitadapter.NewAdapter("git")
 	}
@@ -141,13 +141,13 @@ func NewRepositoryBranchServiceWith(git gitadapter.Git, locker ProjectLocker, re
 		lstat = os.Lstat
 	}
 	if write == nil {
-		write = func(path string, data []byte, mode os.FileMode, expected os.FileInfo, compare func() error) error {
+		write = func(path string, data []byte, mode os.FileMode, expected os.FileInfo, expectedData []byte, compare func() error) error {
 			if compare != nil {
 				if err := compare(); err != nil {
 					return err
 				}
 			}
-			return fsutil.WriteFileAtomicModeExpected(path, data, mode, expected)
+			return fsutil.WriteFileAtomicModeExpected(path, data, mode, expected, expectedData)
 		}
 	}
 	if recover == nil {
@@ -278,6 +278,9 @@ func (s *RepositoryBranchService) capture(ctx context.Context, request Repositor
 	if err != nil || !localInfo.Mode().IsRegular() {
 		return RepositoryBranchPlan{}, NewError(ErrorConflict, errors.New("local configuration must be a regular file"))
 	}
+	if !primeFileIdentity(localInfo) {
+		return RepositoryBranchPlan{}, NewError(ErrorConflict, errors.New("capture local configuration identity"))
+	}
 	localData, err := s.read(request.Project.ConfigPath)
 	if err != nil {
 		return RepositoryBranchPlan{}, NewError(ErrorConflict, fmt.Errorf("read local configuration: %w", err))
@@ -293,6 +296,9 @@ func (s *RepositoryBranchService) capture(ctx context.Context, request Repositor
 	portableInfo, err := s.lstat(manifestPath)
 	if err != nil || !portableInfo.Mode().IsRegular() {
 		return RepositoryBranchPlan{}, NewError(ErrorConflict, errors.New("portable manifest must be a regular file"))
+	}
+	if !primeFileIdentity(portableInfo) {
+		return RepositoryBranchPlan{}, NewError(ErrorConflict, errors.New("capture portable manifest identity"))
 	}
 	portableData, err := s.read(manifestPath)
 	if err != nil {
@@ -417,7 +423,7 @@ func (s *RepositoryBranchService) publish(ctx context.Context, plan RepositoryBr
 		if err := ctx.Err(); err != nil {
 			return s.cancelPublication(dataDir, plan, "before-publish-"+target.name, written, err)
 		}
-		err := s.write(target.path, target.after, target.mode, target.beforeInfo, func() error {
+		err := s.write(target.path, target.after, target.mode, target.beforeInfo, target.before, func() error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -498,7 +504,7 @@ type repositoryBranchFile struct {
 func (s *RepositoryBranchService) repositoryBranchGeneration(path string, data []byte, mode os.FileMode) (os.FileInfo, bool) {
 	current, err := s.read(path)
 	info, statErr := s.lstat(path)
-	return info, err == nil && statErr == nil && info.Mode().IsRegular() && info.Mode().Perm() == mode && bytes.Equal(current, data)
+	return info, err == nil && statErr == nil && primeFileIdentity(info) && info.Mode().IsRegular() && info.Mode().Perm() == mode && bytes.Equal(current, data)
 }
 
 func (s *RepositoryBranchService) uncertainPublication(dataDir string, plan RepositoryBranchPlan, step string, written []repositoryBranchFile, current repositoryBranchFile, auxiliaryPaths []string, cause error) error {
@@ -553,7 +559,7 @@ func (s *RepositoryBranchService) rollback(files []repositoryBranchFile) reposit
 	result := repositoryBranchRollback{Residual: []repositoryBranchFile{}, Failures: []store.RollbackFailure{}}
 	for index := len(files) - 1; index >= 0; index-- {
 		file := files[index]
-		err := s.write(file.path, file.before, file.mode, file.afterInfo, func() error {
+		err := s.write(file.path, file.before, file.mode, file.afterInfo, file.after, func() error {
 			current, readErr := s.read(file.path)
 			if readErr != nil || !bytes.Equal(current, file.after) {
 				return errors.New("published generation is no longer owned")
