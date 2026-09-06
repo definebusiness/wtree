@@ -349,6 +349,43 @@ func TestFastForwardSupportsSHA256ObjectFormat(t *testing.T) {
 	if err := adapter.RestoreFastForward(context.Background(), repository, receipt); err != nil || aggregateInternalHead(t, repository) != old {
 		t.Fatalf("SHA-256 RestoreFastForward() = %v", err)
 	}
+	if _, err := aggregateRunGit(repository, "branch", "side", old); err != nil {
+		t.Fatal(err)
+	}
+	refReceipt, err := adapter.FastForwardRef(context.Background(), repository, "side", old, newCommit)
+	if err != nil {
+		t.Fatalf("SHA-256 FastForwardRef() = %v", err)
+	}
+	if got, err := adapter.ResolveRef(context.Background(), repository, "refs/heads/side"); err != nil || got != newCommit {
+		t.Fatalf("SHA-256 side=%q err=%v want=%q", got, err, newCommit)
+	}
+	if err := adapter.RestoreFastForwardRef(context.Background(), repository, refReceipt); err != nil {
+		t.Fatalf("SHA-256 RestoreFastForwardRef() = %v", err)
+	}
+}
+
+func TestFastForwardAndRestoreSuppressCheckoutHooks(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("executable hook fixture is POSIX-only")
+	}
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile("one", "one\n", "one")
+	old := aggregateInternalHead(t, repository.Path)
+	repository.CommitFile("two", "two\n", "two")
+	next := aggregateInternalHead(t, repository.Path)
+	repository.Run(t, "reset", "--hard", old)
+	hook := filepath.Join(repository.Path, ".git", "hooks", "post-checkout")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 97\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter("git")
+	receipt, err := adapter.FastForward(context.Background(), repository.Path, "main", old, next)
+	if err != nil || aggregateInternalHead(t, repository.Path) != next {
+		t.Fatalf("FastForward() receipt=%#v err=%v", receipt, err)
+	}
+	if err := adapter.RestoreFastForward(context.Background(), repository.Path, receipt); err != nil || aggregateInternalHead(t, repository.Path) != old {
+		t.Fatalf("RestoreFastForward() = %v", err)
+	}
 }
 
 var errInjectedMaterialization = errors.New("injected materialization failure")

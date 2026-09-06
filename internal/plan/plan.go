@@ -38,12 +38,14 @@ type WorkspacePlan struct {
 }
 
 type RepositoryPlan struct {
-	ID       string `json:"id"`
-	ParentID string `json:"parentId,omitempty"`
-	Base     string `json:"base"`
-	Branch   string `json:"branch"`
-	Mount    string `json:"mount"`
-	Path     string `json:"path"`
+	ID        string `json:"id"`
+	ParentID  string `json:"parentId,omitempty"`
+	Base      string `json:"base"`
+	Branch    string `json:"branch"`
+	Mount     string `json:"mount"`
+	Path      string `json:"path"`
+	Companion bool   `json:"companion,omitempty"`
+	Baseline  string `json:"baseline,omitempty"`
 }
 
 type Step struct {
@@ -72,6 +74,12 @@ func (p WorkspacePlan) Validate() error {
 	for _, repository := range p.Repositories {
 		if repository.ID == "" || repository.Base == "" || repository.Branch == "" || repository.Mount == "" || repository.Path == "" {
 			return fmt.Errorf("plan repository fields are required")
+		}
+		if repository.Companion && repository.Baseline == "" {
+			return fmt.Errorf("companion plan repository %q baseline is required", repository.ID)
+		}
+		if !repository.Companion && repository.Baseline != "" {
+			return fmt.Errorf("ordinary plan repository %q must not carry a companion baseline", repository.ID)
 		}
 		if _, exists := seen[repository.ID]; exists {
 			return fmt.Errorf("plan has duplicate repository %q", repository.ID)

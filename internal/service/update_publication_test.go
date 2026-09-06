@@ -82,6 +82,91 @@ func TestUpdatePublicationPreservesLocalV3HookConsentWithoutExecutingSharedConte
 	}
 }
 
+func TestUpdatePublicationPropagatesV4CompanionRole(t *testing.T) {
+	fixture := newUpdatePublicationMetadataFixtureWithHooks(t, nil, updatePublicationManifestHooks{candidateVersion: config.PortableManifestVersion4, candidateCompanion: true})
+	if _, err := NewUpdateExecutorWith(UpdateExecutorDependencies{Git: fixture.git}).CompleteUpdate(context.Background(), fixture.request); err != nil {
+		t.Fatal(err)
+	}
+	local, err := config.ReadProjectFile(fixture.request.Plan.executionBaseline().project.ConfigPath)
+	if err != nil || local.Version != config.ProjectConfigVersion4 || !local.Repositories["root"].Companion {
+		t.Fatalf("published v4 companion local config=%#v err=%v", local, err)
+	}
+}
+
+func TestUpdatePublicationV4WithoutCompanionDoesNotGratuitouslyUpgradeLocalVersion(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		localHooks  config.HookEvents
+		wantVersion int
+	}{
+		{name: "hook-free-local-v2", wantVersion: config.ProjectConfigVersion},
+		{name: "local-hooks-retain-v3", localHooks: config.HookEvents{config.HookEventPostCreate: {{ID: "local", Command: []string{"local/setup"}}}}, wantVersion: config.ProjectConfigVersion3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// RED: portable document version alone previously forced local v4.
+			fixture := newUpdatePublicationMetadataFixtureWithHooks(t, test.localHooks[config.HookEventPostCreate], updatePublicationManifestHooks{
+				candidateVersion: config.PortableManifestVersion4,
+				candidateHooks:   config.HookEvents{config.HookEventPostClone: {{ID: "portable", Command: []string{"hooks/portable"}}}},
+			})
+			if _, err := NewUpdateExecutorWith(UpdateExecutorDependencies{Git: fixture.git}).CompleteUpdate(context.Background(), fixture.request); err != nil {
+				t.Fatal(err)
+			}
+			local, err := config.ReadProjectFile(fixture.request.Plan.executionBaseline().project.ConfigPath)
+			if err != nil || local.Version != test.wantVersion || local.Repositories["root"].Companion {
+				t.Fatalf("published local=%#v err=%v want version=%d", local, err, test.wantVersion)
+			}
+		})
+	}
+}
+
+func TestUpdatePublicationV4CompanionHooksRollbackRestoresPriorGenerations(t *testing.T) {
+	localHooks := []config.Hook{{ID: "local", Command: []string{"local/setup"}}}
+	portable := config.HookEvents{config.HookEventPostClone: {{ID: "clone", Command: []string{"hooks/setup"}}}}
+	shared := config.HookEvents{config.HookEventPostCreate: {{ID: "shared", Command: []string{"hooks/shared"}}}}
+	settings := updatePublicationManifestHooks{candidateVersion: config.PortableManifestVersion4, candidateCompanion: true, candidateHooks: portable, candidateShared: shared}
+	success := newUpdatePublicationMetadataFixtureWithHooks(t, localHooks, settings)
+	if _, err := NewUpdateExecutorWith(UpdateExecutorDependencies{Git: success.git}).CompleteUpdate(context.Background(), success.request); err != nil {
+		t.Fatal(err)
+	}
+	local, err := config.ReadProjectFile(success.request.Plan.executionBaseline().project.ConfigPath)
+	if err != nil || local.Version != config.ProjectConfigVersion4 || !local.Repositories["root"].Companion || len(local.Hooks) != 1 {
+		t.Fatalf("published v4 role/hooks=%#v err=%v", local, err)
+	}
+	rollback := newUpdatePublicationMetadataFixtureWithHooks(t, localHooks, settings)
+	_, rollbackErr := NewUpdateExecutorWith(UpdateExecutorDependencies{Git: rollback.git, Before: func(step string) error {
+		if step == "journal-metadata-local-config-after" {
+			return errors.New("injected v4 publication failure")
+		}
+		return nil
+	}}).CompleteUpdate(context.Background(), rollback.request)
+	if !HasCleanRollback(rollbackErr) {
+		t.Fatalf("v4 rollback error=%v", rollbackErr)
+	}
+	rollback.assertRestored(t)
+}
+
+func TestUpdatePublicationV4CompanionIncompleteRollbackRetainsRecoveryJournal(t *testing.T) {
+	settings := updatePublicationManifestHooks{candidateVersion: config.PortableManifestVersion4, candidateCompanion: true}
+	fixture := newUpdatePublicationMetadataFixtureWithHooks(t, []config.Hook{{ID: "local", Command: []string{"local/setup"}}}, settings)
+	_, err := NewUpdateExecutorWith(UpdateExecutorDependencies{Git: fixture.git, Before: func(step string) error {
+		if step == "journal-terminal-cleanup-start-before" {
+			return errors.New("injected retained cleanup failure")
+		}
+		return nil
+	}}).CompleteUpdate(context.Background(), fixture.request)
+	var application *Error
+	if !errors.As(err, &application) || application.Kind != ErrorRollbackIncomplete {
+		t.Fatalf("incomplete rollback=%v", err)
+	}
+	journalPath, pathErr := UpdateJournalPath(fixture.request.DataDir, fixture.request.ProjectID, fixture.request.OperationID)
+	if pathErr != nil {
+		t.Fatal(pathErr)
+	}
+	if _, statErr := os.Lstat(journalPath); statErr != nil {
+		t.Fatalf("missing v4 recovery journal: %v", statErr)
+	}
+}
+
 // RED: portable v3 hook declarations are distribution metadata. Updating that
 // metadata must neither install nor invoke them, and it must never rewrite a
 // user's local post-create consent while crossing v2/v3 generations.
@@ -341,6 +426,7 @@ type updatePublicationManifestHooks struct {
 	currentVersion, candidateVersion int
 	currentHooks, candidateHooks     config.HookEvents
 	currentShared, candidateShared   config.HookEvents
+	candidateCompanion               bool
 }
 
 func newUpdatePublicationMetadataFixtureWithHooks(t *testing.T, hooks []config.Hook, manifestHooks updatePublicationManifestHooks) updatePublicationMetadataFixture {
@@ -357,14 +443,16 @@ func newUpdatePublicationMetadataFixtureWithHooks(t *testing.T, hooks []config.H
 	configPath := filepath.Join(repository.Path, ".wtree.yml")
 	oldHead, newHead := driftOID('0'), driftOID('1')
 
-	manifest := func(name string, version int, portable, shared config.HookEvents) []byte {
+	manifest := func(name string, version int, portable, shared config.HookEvents, companion bool) []byte {
 		if version == 0 {
 			version = config.PortableManifestVersion
 		}
+		repository := driftRepository("", ".")
+		repository.Companion = companion
 		data, marshalErr := config.MarshalPortableManifest(config.PortableManifest{
 			Version:      version,
 			Project:      config.PortableProject{ID: "project", Name: name, BaseRepository: "root"},
-			Repositories: map[string]config.PortableRepository{"root": driftRepository("", ".")},
+			Repositories: map[string]config.PortableRepository{"root": repository},
 			Hooks:        portable,
 			SharedHooks:  shared,
 		})
@@ -373,8 +461,8 @@ func newUpdatePublicationMetadataFixtureWithHooks(t *testing.T, hooks []config.H
 		}
 		return data
 	}
-	current := manifest("current publication fixture", manifestHooks.currentVersion, manifestHooks.currentHooks, manifestHooks.currentShared)
-	candidate := manifest("candidate publication fixture", manifestHooks.candidateVersion, manifestHooks.candidateHooks, manifestHooks.candidateShared)
+	current := manifest("current publication fixture", manifestHooks.currentVersion, manifestHooks.currentHooks, manifestHooks.currentShared, false)
+	candidate := manifest("candidate publication fixture", manifestHooks.candidateVersion, manifestHooks.candidateHooks, manifestHooks.candidateShared, manifestHooks.candidateCompanion)
 	project := domain.Project{Version: domain.CurrentVersion, ID: "project", Name: "current publication fixture", ConfigPath: configPath, BaseRepository: "root", LogicalRoot: repository.Path, Repositories: []domain.Repository{{ID: "root", CommonGitDir: common, SourcePath: repository.Path, DefaultMount: ".", DefaultBranch: "main"}}}
 	workspace := domain.Workspace{Version: domain.CurrentVersion, ID: "default", Name: "default", RootPath: repository.Path, Checkouts: []domain.Checkout{{RepositoryID: "root", Branch: "main", Head: oldHead, Mount: ".", ResolvedPath: repository.Path}}}
 	local := driftLocalConfig(project)

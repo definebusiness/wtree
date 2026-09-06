@@ -845,13 +845,15 @@ func buildDriftSnapshot(input DriftSnapshotInput, options driftSnapshotOptions) 
 	}
 	currentByID := current.Repositories
 	candidateByID := candidate.Repositories
+	defaultCheckouts := workspaceCheckoutMap(input.DefaultWorkspace)
 	for _, repository := range candidateManifestParentFirst(candidate) {
 		candidateRepository := candidateByID[repository]
 		currentRepository, existed := currentByID[repository]
 		observation := observations[repository]
 		fact := DriftRepository{ID: repository, ParentID: candidateRepository.Parent, Mount: candidateRepository.Mount, Classification: UpdateClassificationAdded}
 		if existed {
-			fact = classifyExistingDriftRepository(repository, currentRepository, candidateRepository, observation, input.Project, true, options.requireAdvertisement)
+			checkout, checkoutKnown := defaultCheckouts[repository]
+			fact = classifyExistingDriftRepository(repository, currentRepository, candidateRepository, observation, input.Project, checkout, checkoutKnown, true, options.requireAdvertisement)
 		} else {
 			snapshot.differences = append(snapshot.differences, DriftSetDifference{ID: repository, Origin: "candidate", Check: "candidate-only"})
 			fact.Path, fact.ObservedCommit = observation.Path, observation.AdvertisedCommit
@@ -991,7 +993,7 @@ func validateRemovedRetainedDriftRepository(snapshot *DriftSnapshot, fact *Drift
 			break
 		}
 	}
-	if expected.ID == "" || expected.ParentID != current.Parent || expected.DefaultMount != current.Mount || expected.DefaultBranch != current.DefaultBranch {
+	if expected.ID == "" || expected.ParentID != current.Parent || expected.DefaultMount != current.Mount || expected.DefaultBranch != current.DefaultBranch || expected.Companion != current.Companion {
 		addRepositoryFailure(fact, "removed-retained-contract", "removed repository does not match the current project contract")
 		return
 	}
@@ -1026,7 +1028,7 @@ func validateRemovedRetainedDriftRepository(snapshot *DriftSnapshot, fact *Drift
 	snapshot.retained = append(snapshot.retained, prospective)
 }
 
-func classifyExistingDriftRepository(id string, current, candidate config.PortableRepository, observation DriftRepositoryObservation, project domain.Project, requireUpstream bool, advertisement ...bool) DriftRepository {
+func classifyExistingDriftRepository(id string, current, candidate config.PortableRepository, observation DriftRepositoryObservation, project domain.Project, persisted domain.Checkout, persistedKnown bool, requireUpstream bool, advertisement ...bool) DriftRepository {
 	requireAdvertisement := true
 	if len(advertisement) != 0 {
 		requireAdvertisement = advertisement[0]
@@ -1049,7 +1051,7 @@ func classifyExistingDriftRepository(id string, current, candidate config.Portab
 			break
 		}
 	}
-	if expected.ID == "" || expected.ParentID != current.Parent || expected.DefaultMount != current.Mount || expected.DefaultBranch != current.DefaultBranch {
+	if expected.ID == "" || expected.ParentID != current.Parent || expected.DefaultMount != current.Mount || expected.DefaultBranch != current.DefaultBranch || expected.Companion != current.Companion {
 		fact.Classification = UpdateClassificationStructurallyInconsistent
 		addRepositoryFailure(&fact, "configuration-contract", "current manifest and local project configuration disagree")
 		return fact
@@ -1074,7 +1076,22 @@ func classifyExistingDriftRepository(id string, current, candidate config.Portab
 		addRepositoryFailure(&fact, "cleanliness", "repository checkout is dirty")
 		return fact
 	}
-	if observation.Detached || observation.Branch != current.DefaultBranch {
+	expectedBranch := current.DefaultBranch
+	if current.Companion {
+		// A later baseline is future-facing. An existing companion checkout can
+		// retain its branch-specific upstream only when this exact observed
+		// checkout is still bound to the persisted default-workspace authority.
+		// Keep this check local to classification so a future caller cannot
+		// accidentally relax branch or merge validation merely by skipping the
+		// earlier whole-workspace correlation pass.
+		if !persistedKnown || persisted.Detached || persisted.Branch == "" || persisted.Head == "" || observation.Detached != persisted.Detached || observation.Branch != persisted.Branch || observation.Head != persisted.Head || filepath.Clean(observation.Path) != persisted.ResolvedPath {
+			fact.Classification = UpdateClassificationStructurallyInconsistent
+			addRepositoryFailure(&fact, "checkout-authority", "companion checkout does not match persisted workspace authority")
+			return fact
+		}
+		expectedBranch = persisted.Branch
+	}
+	if observation.Detached || observation.Branch != expectedBranch {
 		fact.Classification = UpdateClassificationDivergent
 		addRepositoryFailure(&fact, "branch", "repository checkout is detached or on an unexpected branch")
 		return fact
@@ -1084,7 +1101,11 @@ func classifyExistingDriftRepository(id string, current, candidate config.Portab
 		addRepositoryFailure(&fact, "upstream", "repository upstream was not observed")
 		return fact
 	}
-	if requireUpstream && (observation.Upstream.LocalBranch != current.DefaultBranch || observation.Upstream.Remote != current.Upstream.Remote || observation.Upstream.Merge != current.Upstream.Merge || observation.Upstream.FetchURL != current.Clone.URL) {
+	mergeMatches := observation.Upstream.Merge == current.Upstream.Merge
+	if current.Companion {
+		mergeMatches = true
+	}
+	if requireUpstream && (observation.Upstream.LocalBranch != expectedBranch || observation.Upstream.Remote != current.Upstream.Remote || !mergeMatches || observation.Upstream.FetchURL != current.Clone.URL) {
 		fact.Classification = UpdateClassificationStructurallyInconsistent
 		addRepositoryFailure(&fact, "upstream", "repository upstream contract does not match the manifest")
 		return fact
@@ -1193,7 +1214,7 @@ func addManifestProjectFailures(snapshot *DriftSnapshot, manifest config.Portabl
 				break
 			}
 		}
-		if configured.ID == "" || configured.ParentID != repository.Parent || configured.DefaultMount != repository.Mount || configured.DefaultBranch != repository.DefaultBranch {
+		if configured.ID == "" || configured.ParentID != repository.Parent || configured.DefaultMount != repository.Mount || configured.DefaultBranch != repository.DefaultBranch || configured.Companion != repository.Companion {
 			addDriftFailure(snapshot, id, generation+"-manifest-configuration", generation+" manifest repository does not match local configuration")
 		}
 	}
@@ -1229,7 +1250,7 @@ func addLocalConfigFailures(snapshot *DriftSnapshot, local config.ProjectConfig,
 				break
 			}
 		}
-		if configured.ID == "" || configured.ParentID != repository.Parent || configured.DefaultMount != repository.DefaultMount || configured.DefaultBranch != repository.DefaultBranch {
+		if configured.ID == "" || configured.ParentID != repository.Parent || configured.DefaultMount != repository.DefaultMount || configured.DefaultBranch != repository.DefaultBranch || configured.Companion != repository.Companion {
 			addDriftFailure(snapshot, id, "local-config", "local configuration repository does not match resolved project")
 			continue
 		}

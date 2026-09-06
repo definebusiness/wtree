@@ -1,4 +1,4 @@
-.PHONY: test test-race test-full test-full-race test-changed test-changed-race check-local check-full local-test-targets-test local-integration-smoke vet build release release-test tutorial-test lifecycle-hook-tutorial-test check fmt-check
+.PHONY: test test-race test-full test-full-race test-changed test-changed-race check-local check-full local-test-targets-test local-integration-smoke vet build release release-test tutorial-test companion-hostile-tutorial-test lifecycle-hook-tutorial-test check fmt-check
 
 # TEST_TIMEOUT remains a compatibility override for callers that intentionally
 # want one bound for both test modes. The mode-specific defaults match CI's
@@ -72,12 +72,24 @@ release-test:
 
 tutorial-test:
 	./tutorial/run-all-commands.sh
+	./tutorial/run-companion-commands.sh
+	$(MAKE) companion-hostile-tutorial-test
 	$(MAKE) lifecycle-hook-tutorial-test
 	go test ./internal/git ./internal/service -run 'TestRelease(FetchAuthenticationChannelsReachGitAndSecretsDoNotEscape|MaterializeFetchesAdvertisedCommitAndPublishesDetachedChild|MaterializeDryRunNeverContactsUnavailableRevision|MaterializeStagesNestedAndSiblingBeforePublication|MaterializeAuthenticationFailureLeaksNoCanaryToArtifacts|LockCreatesReplacesAndProtectsCandidate|LockPostReleasePreflightAndCoreFailureSemantics)' -count=1
 	./tutorial/run-releases.sh
 
 lifecycle-hook-tutorial-test:
 	go test ./internal/config ./internal/service ./internal/store ./internal/cli -run 'Test(LifecycleHook(TutorialAcceptance|PublicContractMatrix)|PortableHookCommandSyntaxIsElementAwareAndCrossPlatform|HooksCommandsRenderVersionedResultsAndKeepJSONSeparateOnErrors|CloneV3PortableHooksDryRunAndUnauthorizedSkipPublicContracts|CreateHookRunnerPersistsFirstSuccessAndStopsAtLaterFailure|CreateNoHooksValidatesAndCommitsWithoutHookAuthority|HookRunnerResumesFailedAndFinalizingRecords|HookRunnerSerializesConcurrentSameEvent|HookRetryUsesSingleInventoryCandidateAndRendersBoundedResult|HookEnvironmentPortableAllowlistExcludesSecrets|HookRunRecordRoundTripAndPrivacy|HookProcess(ClassifiesOutputTimeoutCancellationAndNonZero|ForcedBoundaryNeverLeaksCredentialContinuation|ForcedBoundaryRedactsNewlineTerminatedContinuations)|UpdatePublicationPreservesLocalV3HookConsentWithoutExecutingSharedContent)' -count=1
+
+companion-hostile-tutorial-test:
+	@hostile_root="$$(mktemp -d "$${TMPDIR:-/tmp}/wtree-companion-hostile.XXXXXX")"; \
+	trap 'rm -rf "$$hostile_root"' EXIT HUP INT TERM; \
+	mkdir -p "$$hostile_root/hooks"; \
+	printf '%s\n' '#!/usr/bin/env sh' 'touch "$$WTREE_HOSTILE_CANARY"' > "$$hostile_root/hooks/post-commit"; \
+	chmod +x "$$hostile_root/hooks/post-commit"; \
+	printf '%s\n' '[commit]' 'gpgsign = true' '[core]' "hooksPath = $$hostile_root/hooks" > "$$hostile_root/config"; \
+	GIT_CONFIG_GLOBAL="$$hostile_root/config" GIT_CONFIG_NOSYSTEM=0 GIT_CONFIG_COUNT=0 WTREE_HOSTILE_CANARY="$$hostile_root/canary" ./tutorial/run-companion-commands.sh; \
+	test ! -e "$$hostile_root/canary"
 
 fmt-check:
 	@unformatted="$$(go list -f '{{.Dir}}' ./... | while IFS= read -r dir; do gofmt -l "$$dir"/*.go; done)"; \

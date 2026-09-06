@@ -20,6 +20,12 @@ type ExecRequest struct {
 	Reverse     bool
 	DryRun      bool
 	Environment []string
+	// NoCompanions selects every present ordinary repository. It is mutually
+	// exclusive with RepositoryID and is resolved before checkout preflight.
+	NoCompanions bool
+	// RepositoryID selects one configured, present repository regardless of
+	// role. An empty ID is the default all-present selection.
+	RepositoryID string
 	// OnComplete observes a settled process result. Returning an error stops
 	// later invocations; JSON callers leave it nil.
 	OnComplete func(ExecRepositoryResult) error
@@ -61,6 +67,7 @@ type ExecRepositoryResult struct {
 	ExitCode        *int              `json:"exitCode,omitempty"`
 	Failure         *AggregateFailure `json:"failure,omitempty"`
 	Environment     map[string]string `json:"environment,omitempty"`
+	Companion       bool              `json:"companion,omitempty"`
 	started         bool
 }
 
@@ -83,11 +90,12 @@ func (result ExecRepositoryResult) MarshalJSON() ([]byte, error) {
 		ExitCode        *int              `json:"exitCode,omitempty"`
 		Failure         *AggregateFailure `json:"failure,omitempty"`
 		Environment     map[string]string `json:"environment,omitempty"`
+		Companion       bool              `json:"companion,omitempty"`
 	}
 	wire := wireResult{
 		ID: result.ID, ParentID: result.ParentID, Mount: result.Mount, Path: result.Path,
 		Branch: result.Branch, Head: result.Head, Status: result.Status,
-		Failure: result.Failure, Environment: result.Environment,
+		Failure: result.Failure, Environment: result.Environment, Companion: result.Companion,
 	}
 	if result.started {
 		wire.Stdout, wire.Stderr = &result.Stdout, &result.Stderr
@@ -120,14 +128,33 @@ func (s *ExecService) Exec(ctx context.Context, project domain.Project, workspac
 	if err := project.Validate(); err != nil {
 		return ExecResult{}, NewError(ErrorValidation, fmt.Errorf("validate project: %w", err))
 	}
-	if err := workspace.Validate(project); err != nil {
-		return ExecResult{}, NewError(ErrorValidation, fmt.Errorf("validate workspace: %w", err))
+	// The unqualified command retains the pre-selection contract exactly: every
+	// persisted checkout fact is authoritative. Scoped commands intentionally
+	// establish their smaller authority below instead.
+	if request.RepositoryID == "" && !request.NoCompanions {
+		if err := workspace.Validate(project); err != nil {
+			return ExecResult{}, NewError(ErrorValidation, fmt.Errorf("validate workspace: %w", err))
+		}
 	}
-	result, indexes := newExecResult(project, workspace, request)
+	selected, err := selectExecRepositories(project, workspace, request)
+	if err != nil {
+		return ExecResult{}, err
+	}
+	result, indexes := newExecResult(project, workspace, request, selected)
+	scoped := request.RepositoryID != "" || request.NoCompanions
+	if err := validateExecWorkspaceSelection(project, workspace, selected, scoped); err != nil {
+		validation := NewError(ErrorValidation, fmt.Errorf("validate selected exec checkouts: %w", err))
+		var selection *execSelectionError
+		if errors.As(err, &selection) {
+			index := indexes[selection.id]
+			return failExecResult(result, &index, validation), validation
+		}
+		return failExecResult(result, nil, validation), validation
+	}
 	if err := ctx.Err(); err != nil {
 		return failExecResult(result, nil, err), err
 	}
-	facts, err := s.preflight(ctx, project, workspace)
+	facts, err := s.preflight(ctx, project, workspace, selected)
 	if err != nil {
 		var preflight *execPreflightError
 		if errors.As(err, &preflight) {
@@ -210,7 +237,7 @@ func (s *ExecService) Exec(ctx context.Context, project domain.Project, workspac
 	return result, nil
 }
 
-func newExecResult(project domain.Project, workspace domain.Workspace, request ExecRequest) (ExecResult, map[string]int) {
+func newExecResult(project domain.Project, workspace domain.Workspace, request ExecRequest, selected []domain.Repository) (ExecResult, map[string]int) {
 	checkouts := map[string]domain.Checkout{}
 	for _, checkout := range workspace.Checkouts {
 		checkouts[checkout.RepositoryID] = checkout
@@ -221,23 +248,172 @@ func newExecResult(project domain.Project, workspace domain.Workspace, request E
 		Partial:              workspace.Partial,
 		MissingRepositoryIDs: append([]string(nil), workspace.MissingRepositoryIDs...),
 		Command:              ExecCommand{Program: request.Program, Args: append([]string{}, request.Args...)},
-		ExecutionOrder:       make([]string, 0, len(workspace.Checkouts)),
-		Repositories:         make([]ExecRepositoryResult, 0, len(workspace.Checkouts)),
+		ExecutionOrder:       make([]string, 0, len(selected)),
+		Repositories:         make([]ExecRepositoryResult, 0, len(selected)),
 	}
 	indexes := map[string]int{}
-	for _, repository := range project.ParentFirst() {
+	for _, repository := range selected {
 		checkout, present := checkouts[repository.ID]
 		if !present {
 			continue
 		}
 		indexes[repository.ID] = len(result.Repositories)
-		result.Repositories = append(result.Repositories, ExecRepositoryResult{ID: repository.ID, ParentID: repository.ParentID, Mount: checkout.Mount, Path: checkout.ResolvedPath, Branch: checkout.Branch, Head: checkout.Head, Status: AggregateStatusPlanned})
+		result.Repositories = append(result.Repositories, ExecRepositoryResult{ID: repository.ID, ParentID: repository.ParentID, Mount: checkout.Mount, Path: checkout.ResolvedPath, Branch: checkout.Branch, Head: checkout.Head, Companion: repository.Companion, Status: AggregateStatusPlanned})
 		result.ExecutionOrder = append(result.ExecutionOrder, repository.ID)
 	}
 	if request.Reverse {
 		reverseExecStrings(result.ExecutionOrder)
 	}
 	return result, indexes
+}
+
+// selectExecRepositories establishes the complete subset authority before any
+// Git observation. Unselected working trees are deliberately not inspected.
+func selectExecRepositories(project domain.Project, workspace domain.Workspace, request ExecRequest) ([]domain.Repository, error) {
+	if request.NoCompanions && request.RepositoryID != "" {
+		return nil, NewError(ErrorInvalidArguments, errors.New("exec selectors are mutually exclusive"))
+	}
+	present := make(map[string]bool, len(workspace.Checkouts))
+	counts := make(map[string]int, len(workspace.Checkouts))
+	for _, checkout := range workspace.Checkouts {
+		present[checkout.RepositoryID] = true
+		counts[checkout.RepositoryID]++
+	}
+	ordered := project.ParentFirst()
+	if request.RepositoryID != "" {
+		for _, repository := range ordered {
+			if repository.ID != request.RepositoryID {
+				continue
+			}
+			if !present[repository.ID] {
+				return nil, NewError(ErrorInvalidArguments, fmt.Errorf("exec repository %q is absent from workspace", repository.ID))
+			}
+			if counts[repository.ID] != 1 {
+				return nil, NewError(ErrorValidation, fmt.Errorf("exec repository %q has duplicate checkout selection", repository.ID))
+			}
+			return []domain.Repository{repository}, nil
+		}
+		return nil, NewError(ErrorInvalidArguments, fmt.Errorf("exec repository %q is not configured", request.RepositoryID))
+	}
+	selected := make([]domain.Repository, 0, len(ordered))
+	for _, repository := range ordered {
+		if present[repository.ID] && (!request.NoCompanions || !repository.Companion) {
+			if counts[repository.ID] != 1 {
+				return nil, NewError(ErrorValidation, fmt.Errorf("exec repository %q has duplicate checkout selection", repository.ID))
+			}
+			selected = append(selected, repository)
+		}
+	}
+	if request.NoCompanions && len(selected) == 0 {
+		return nil, NewError(ErrorInvalidArguments, errors.New("exec --no-companions selected no present repositories"))
+	}
+	return selected, nil
+}
+
+// execSelectionError identifies the selected checkout whose persisted facts
+// prevented preflight, so the result envelope can attribute the failure.
+type execSelectionError struct {
+	id    string
+	cause error
+}
+
+func (e *execSelectionError) Error() string { return e.cause.Error() }
+func (e *execSelectionError) Unwrap() error { return e.cause }
+
+// validateExecWorkspaceSelection intentionally validates only the selected
+// persisted checkout records. Its mount resolver receives selected checkout
+// mounts and any present ancestors required to locate them; an absent ancestor
+// resolves through its configured default. Unselected sibling or descendant
+// corruption remains outside a scoped command's authority.
+func validateExecWorkspaceSelection(project domain.Project, workspace domain.Workspace, selected []domain.Repository, scoped bool) error {
+	if workspace.Version != domain.CurrentVersion || workspace.ID == "" || workspace.Name == "" || workspace.RootPath == "" {
+		return errors.New("workspace identity is incomplete")
+	}
+	// A valid partial workspace may intentionally have no present checkouts for
+	// the unchanged default command. Exact and ordinary-only selectors reject
+	// an empty selection before reaching this validation boundary.
+	if len(selected) == 0 {
+		return nil
+	}
+	byID := make(map[string]domain.Checkout, len(workspace.Checkouts))
+	counts := make(map[string]int, len(workspace.Checkouts))
+	missingCounts := make(map[string]int, len(workspace.MissingRepositoryIDs))
+	for _, checkout := range workspace.Checkouts {
+		byID[checkout.RepositoryID] = checkout
+		counts[checkout.RepositoryID]++
+	}
+	for _, id := range workspace.MissingRepositoryIDs {
+		missingCounts[id]++
+	}
+	repositories := make(map[string]domain.Repository, len(project.Repositories))
+	for _, repository := range project.Repositories {
+		repositories[repository.ID] = repository
+	}
+	scopeIDs := make(map[string]struct{}, len(selected))
+	owners := make(map[string]string, len(selected))
+	for _, repository := range selected {
+		for current := repository; ; {
+			scopeIDs[current.ID] = struct{}{}
+			if _, exists := owners[current.ID]; !exists {
+				owners[current.ID] = repository.ID
+			}
+			if current.ParentID == "" {
+				break
+			}
+			current = repositories[current.ParentID]
+		}
+	}
+
+	// EffectivePaths is authoritative only for selected checkouts and the
+	// ancestors necessary to resolve their mounted locations. In particular, a
+	// scoped command must not inherit sibling defaults or collision checks from
+	// a checkout it will never preflight.
+	scopedProject := project
+	scopedProject.Repositories = make([]domain.Repository, 0, len(scopeIDs))
+	for _, repository := range project.ParentFirst() {
+		if _, included := scopeIDs[repository.ID]; included {
+			scopedProject.Repositories = append(scopedProject.Repositories, repository)
+		}
+	}
+	if _, included := scopeIDs[scopedProject.BaseRepository]; !included {
+		for _, repository := range scopedProject.Repositories {
+			if repository.ParentID == "" {
+				scopedProject.BaseRepository = repository.ID
+				break
+			}
+		}
+	}
+	mounts := make(map[string]string)
+	for _, repository := range scopedProject.Repositories {
+		checkout, present := byID[repository.ID]
+		if !present {
+			continue
+		}
+		if counts[repository.ID] != 1 || checkout.Mount == "" || checkout.ResolvedPath == "" {
+			return &execSelectionError{id: owners[repository.ID], cause: fmt.Errorf("selected checkout ancestor %q is incomplete or duplicated", repository.ID)}
+		}
+		mounts[repository.ID] = checkout.Mount
+	}
+	for _, repository := range selected {
+		checkout := byID[repository.ID]
+		if counts[repository.ID] != 1 || missingCounts[repository.ID] != 0 || checkout.Head == "" || (scoped && (checkout.Detached || checkout.Branch == "")) {
+			return &execSelectionError{id: repository.ID, cause: fmt.Errorf("selected checkout %q is incomplete or detached", repository.ID)}
+		}
+	}
+	expectedPaths, err := scopedProject.EffectivePaths(workspace.RootPath, mounts)
+	if err != nil {
+		return fmt.Errorf("resolve selected checkout paths: %w", err)
+	}
+	for _, repository := range scopedProject.Repositories {
+		checkout := byID[repository.ID]
+		if counts[repository.ID] == 0 {
+			continue
+		}
+		if checkout.ResolvedPath != expectedPaths[repository.ID] {
+			return &execSelectionError{id: owners[repository.ID], cause: fmt.Errorf("selected checkout %q resolved path %q does not match expected path %q", repository.ID, checkout.ResolvedPath, expectedPaths[repository.ID])}
+		}
+	}
+	return nil
 }
 
 func failExecResult(result ExecResult, index *int, cause error) ExecResult {
@@ -348,19 +524,20 @@ func (e *execPreflightError) Unwrap() error { return e.cause }
 type execRepository struct {
 	id, parentID, mount, path, branch, head string
 	detached                                bool
+	companion                               bool
 }
 
 func (repository execRepository) result(status AggregateStatus) ExecRepositoryResult {
-	return ExecRepositoryResult{ID: repository.id, ParentID: repository.parentID, Mount: repository.mount, Path: repository.path, Branch: repository.branch, Head: repository.head, Status: status}
+	return ExecRepositoryResult{ID: repository.id, ParentID: repository.parentID, Mount: repository.mount, Path: repository.path, Branch: repository.branch, Head: repository.head, Companion: repository.companion, Status: status}
 }
 
-func (s *ExecService) preflight(ctx context.Context, project domain.Project, workspace domain.Workspace) ([]execRepository, error) {
+func (s *ExecService) preflight(ctx context.Context, project domain.Project, workspace domain.Workspace, selected []domain.Repository) ([]execRepository, error) {
 	checkouts := map[string]domain.Checkout{}
 	for _, checkout := range workspace.Checkouts {
 		checkouts[checkout.RepositoryID] = checkout
 	}
 	result := make([]execRepository, 0, len(checkouts))
-	for _, repository := range project.ParentFirst() {
+	for _, repository := range selected {
 		checkout, present := checkouts[repository.ID]
 		if !present {
 			continue
@@ -406,7 +583,10 @@ func (s *ExecService) preflightRepository(ctx context.Context, repository domain
 	if err != nil {
 		return execRepository{}, NewError(ErrorGit, fmt.Errorf("exec preflight %q: read branch: %w", repository.ID, err))
 	}
-	if detached != checkout.Detached || (!detached && branch != checkout.Branch) {
+	if detached != checkout.Detached {
+		return execRepository{}, NewError(ErrorValidation, fmt.Errorf("exec preflight %q: attachment state does not match persisted checkout", repository.ID))
+	}
+	if !detached && branch != checkout.Branch {
 		return execRepository{}, NewError(ErrorValidation, fmt.Errorf("exec preflight %q: branch state does not match persisted checkout", repository.ID))
 	}
 	head, err := s.git.Head(ctx, path)
@@ -417,9 +597,21 @@ func (s *ExecService) preflightRepository(ctx context.Context, repository domain
 		return execRepository{}, NewError(ErrorGit, fmt.Errorf("exec preflight %q: read HEAD: %w", repository.ID, err))
 	}
 	if head != checkout.Head {
-		return execRepository{}, NewError(ErrorValidation, fmt.Errorf("exec preflight %q: HEAD does not match persisted checkout", repository.ID))
+		if !repository.Companion {
+			return execRepository{}, NewError(ErrorValidation, fmt.Errorf("exec preflight %q: HEAD does not match persisted checkout", repository.ID))
+		}
+		advanced, ancestorErr := gitIsAncestor(ctx, s.git, path, checkout.Head, head)
+		if contextErr := execObservationContextError(ctx, ancestorErr); contextErr != nil {
+			return execRepository{}, contextErr
+		}
+		if ancestorErr != nil {
+			return execRepository{}, NewError(ErrorGit, fmt.Errorf("exec preflight %q: compare companion checkout history: %w", repository.ID, ancestorErr))
+		}
+		if !advanced {
+			return execRepository{}, NewError(ErrorValidation, fmt.Errorf("exec preflight %q: companion HEAD is not descended from persisted checkout", repository.ID))
+		}
 	}
-	return execRepository{id: repository.ID, parentID: repository.ParentID, mount: checkout.Mount, path: path, branch: checkout.Branch, head: head, detached: checkout.Detached}, nil
+	return execRepository{id: repository.ID, parentID: repository.ParentID, mount: checkout.Mount, path: path, branch: checkout.Branch, head: head, detached: checkout.Detached, companion: repository.Companion}, nil
 }
 
 // execObservationContextError gives cancellation precedence at each blocking

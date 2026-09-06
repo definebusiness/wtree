@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/definebusiness/wtree/internal/config"
 	"github.com/definebusiness/wtree/internal/domain"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
 	"github.com/definebusiness/wtree/internal/service"
@@ -150,6 +151,225 @@ func TestStatusReconcilesCleanlinessAndStructuralDrift(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCompanionAdvancedHeadIsInformationalAcrossStatusDoctorFetchRemoveAndCheckout(t *testing.T) {
+	project, _, _, data := createFixture(t)
+	for index := range project.Repositories {
+		if project.Repositories[index].ID == "backend" {
+			project.Repositories[index].Companion = true
+		}
+	}
+	target := filepath.Join(t.TempDir(), "companion-advanced")
+	if _, err := createFixtureWorkspace(t, project, "feature/companion-advanced", target, data); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := service.RequireWorkspace(project, data, "feature/companion-advanced")
+	if err != nil {
+		t.Fatal(err)
+	}
+	companion := filepath.Join(target, "api")
+	testutil.GitRepository{Path: companion}.CommitFile("advanced.txt", "advanced\n", "companion advance")
+	status, err := service.NewStatusService().Status(context.Background(), project, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := statusFor(t, status, "backend")
+	if entry.Status != "advanced" || !entry.Companion || entry.Baseline != "main" || !entry.HeadAdvanced || entry.HeadMismatch || entry.Head == entry.ExpectedHead {
+		t.Fatalf("companion status = %#v", entry)
+	}
+	if err := os.WriteFile(filepath.Join(companion, "dirty.txt"), []byte("dirty\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dirty, err := service.NewStatusService().Status(context.Background(), project, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry := statusFor(t, dirty, "backend"); entry.Status != "modified" || !entry.HeadAdvanced || entry.HeadMismatch {
+		t.Fatalf("dirt did not take precedence over companion advancement: %#v", entry)
+	}
+	if err := os.Remove(filepath.Join(companion, "dirty.txt")); err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.NewDoctorService().Doctor(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctorHasFinding(report, "head-mismatch", "backend", false) {
+		t.Fatalf("doctor treated companion advance as corruption: %#v", report)
+	}
+	for _, checkout := range workspace.Checkouts {
+		repository := testutil.GitRepository{Path: checkout.ResolvedPath}
+		repository.Run(t, "remote", "set-url", "origin", repositorySourcePath(project, checkout.RepositoryID))
+		repository.Run(t, "config", "branch."+checkout.Branch+".remote", "origin")
+		repository.Run(t, "config", "branch."+checkout.Branch+".merge", "refs/heads/main")
+	}
+	if fetched, fetchErr := service.NewFetchService().Fetch(context.Background(), project, workspace, service.FetchRequest{DryRun: true}); fetchErr != nil || fetched.Repositories[1].Companion != true {
+		t.Fatalf("fetch advanced companion = %#v, %v", fetched, fetchErr)
+	}
+	if _, err := service.NewWorkspaceRemover().Remove(context.Background(), project, workspace, data, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.NewWorkspaceCreator().CheckoutWorkspace(context.Background(), project, service.WorkspaceCheckoutRequest{WorkspaceName: workspace.Name, DataDir: data}, nil); err != nil {
+		t.Fatalf("checkout retained advanced companion: %v", err)
+	}
+}
+
+func TestCompanionBaselineChangeKeepsPersistedCheckoutAuthorityForStatusAndDoctor(t *testing.T) {
+	project, root, backend, data := createFixture(t)
+	defaultStatePath := service.WorkspaceStatePath(data, project.ID, "default")
+
+	// Establish an existing companion checkout before changing only its
+	// baseline. The persisted checkout deliberately remains on main and its
+	// branch-specific upstream remains refs/heads/main.
+	publishCompanionBaseline(t, project, root, "backend", "main", true)
+	project = reloadCompanionFixtureProject(t, project, data)
+	baseHead := runGitValue(t, root.Path, "rev-parse", "HEAD")
+	publishCompanionBaseline(t, project, root, "backend", "new-baseline", false)
+	if got := runGitValue(t, root.Path, "rev-parse", "HEAD"); got != baseHead || runGitValue(t, root.Path, "diff", "--cached", "--name-only") != "" {
+		t.Fatalf("baseline publication changed HEAD or index: head=%q base=%q index=%q", got, baseHead, runGitValue(t, root.Path, "diff", "--cached", "--name-only"))
+	}
+	if got := runGitValue(t, root.Path, "status", "--porcelain"); got != "M .wtree.yml\n M project.wtree.yml" {
+		t.Fatalf("baseline publication working tree = %q, want only unstaged local and portable configuration", got)
+	}
+	for index := range project.Repositories {
+		if project.Repositories[index].ID == "backend" {
+			project.Repositories[index].Companion = true
+			project.Repositories[index].DefaultBranch = "new-baseline"
+		}
+	}
+	backend.Run(t, "branch", "new-baseline")
+	backend.Run(t, "config", "branch.main.remote", "origin")
+	backend.Run(t, "config", "branch.main.merge", "refs/heads/main")
+
+	defaultState, err := store.ReadWorkspace(defaultStatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootState := defaultState.Repositories[project.BaseRepository]
+	rootState.Head = runGitValue(t, root.Path, "rev-parse", "HEAD")
+	defaultState.Repositories[project.BaseRepository] = rootState
+	if err := store.WriteWorkspace(defaultStatePath, defaultState); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := service.RequireWorkspace(project, data, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := service.NewStatusService().StatusWithDataDir(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := statusFor(t, status, "backend")
+	if !entry.Companion || entry.Baseline != "new-baseline" || entry.Branch != "main" || entry.ExpectedBranch != "main" || entry.BranchMismatch || entry.HeadMismatch || entry.Status != "clean" {
+		t.Fatalf("baseline-only companion status = %#v", entry)
+	}
+	if len(status.Drift) != 0 {
+		t.Fatalf("baseline-only change produced local drift = %#v", status.Drift)
+	}
+
+	report, err := service.NewDoctorService().Doctor(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctorHasFinding(report, "branch-mismatch", "backend", false) || doctorHasFinding(report, "repository-upstream-mismatch", "backend", false) || len(report.Repairs) != 0 {
+		t.Fatalf("baseline-only companion change needs diagnosis or repair = %#v", report)
+	}
+
+	// The same exact unstaged dual-file shape is not command-authoritative when
+	// the proposed baseline does not exist in the resolved companion source.
+	backend.Run(t, "branch", "-D", "new-baseline")
+	rootHeadBefore := runGitValue(t, root.Path, "rev-parse", "HEAD")
+	rootStatusBefore := runGitValue(t, root.Path, "status", "--porcelain")
+	localBefore, err := os.ReadFile(project.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(root.Path, ".wtree.yml")
+	manifestBefore, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	missingStatus, err := service.NewStatusService().StatusWithDataDir(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry := statusFor(t, missingStatus, project.BaseRepository); entry.Status != "modified" || entry.Clean {
+		t.Fatalf("missing proposed baseline concealed base manifest dirt: %#v", entry)
+	}
+	missingReport, err := service.NewDoctorService().Doctor(context.Background(), project, workspace, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !doctorHasFinding(missingReport, "manifest-configuration-mismatch", "backend", false) {
+		t.Fatalf("missing proposed baseline concealed manifest configuration drift: %#v", missingReport.Findings)
+	}
+	localAfter, localErr := os.ReadFile(project.ConfigPath)
+	manifestAfter, manifestErr := os.ReadFile(manifestPath)
+	if localErr != nil || manifestErr != nil || !bytes.Equal(localAfter, localBefore) || !bytes.Equal(manifestAfter, manifestBefore) || runGitValue(t, root.Path, "rev-parse", "HEAD") != rootHeadBefore || runGitValue(t, root.Path, "status", "--porcelain") != rootStatusBefore {
+		t.Fatalf("status/doctor mutated missing-baseline command state: localErr=%v manifestErr=%v", localErr, manifestErr)
+	}
+}
+
+func publishCompanionBaseline(t *testing.T, project domain.Project, root testutil.GitRepository, id, branch string, commit bool) {
+	t.Helper()
+	local, err := config.ReadProjectFile(project.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local.Version = config.ProjectConfigVersion4
+	localRepository := local.Repositories[id]
+	localRepository.Companion, localRepository.DefaultBranch = true, branch
+	local.Repositories[id] = localRepository
+	if err := config.WriteProjectFile(project.ConfigPath, local); err != nil {
+		t.Fatal(err)
+	}
+
+	manifestPath := filepath.Join(root.Path, local.Manifest.Path)
+	manifestBytes, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := config.LoadPortableManifest(manifestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Version = config.PortableManifestVersion4
+	portableRepository := manifest.Repositories[id]
+	portableRepository.Companion, portableRepository.DefaultBranch = true, branch
+	portableRepository.Upstream.Branch = branch
+	manifest.Repositories[id] = portableRepository
+	encoded, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if commit {
+		root.Run(t, "add", "--", ".wtree.yml", local.Manifest.Path, "backend")
+		root.Run(t, "commit", "-m", "establish companion baseline")
+	}
+}
+
+func reloadCompanionFixtureProject(t *testing.T, project domain.Project, data string) domain.Project {
+	t.Helper()
+	resolved, err := service.NewResolver().Resolve(context.Background(), service.ResolveRequest{Path: project.LogicalRoot, ProjectPath: project.ConfigPath, DataDir: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved.Project
+}
+
+func repositorySourcePath(project domain.Project, id string) string {
+	for _, repository := range project.Repositories {
+		if repository.ID == id {
+			return repository.SourcePath
+		}
+	}
+	return ""
 }
 
 func TestStatusPreservesDivergentImportedBranchesAndPartialState(t *testing.T) {
@@ -713,6 +933,46 @@ func statusWorkspaceRepositories(workspace domain.Workspace, ids ...string) doma
 	return result
 }
 
+func TestStatusIncludesCompanionFactsForMissingAndStaleCheckouts(t *testing.T) {
+	project, _, _, _ := createFixture(t)
+	for index := range project.Repositories {
+		if project.Repositories[index].ID == "backend" {
+			project.Repositories[index].Companion = true
+			project.Repositories[index].DefaultBranch = "tools-main"
+		}
+	}
+	for _, test := range []struct {
+		name      string
+		workspace domain.Workspace
+		status    string
+	}{
+		{name: "partial missing", status: "missing", workspace: domain.Workspace{Version: domain.CurrentVersion, ID: "partial", Name: "partial", RootPath: t.TempDir(), Partial: true, MissingRepositoryIDs: []string{"backend"}, Checkouts: []domain.Checkout{{RepositoryID: "root", Branch: "main", Head: "x", Mount: ".", ResolvedPath: project.Repositories[0].SourcePath}}}},
+		{name: "stale no-checkout", status: "stale-state", workspace: domain.Workspace{Version: domain.CurrentVersion, ID: "stale", Name: "stale", RootPath: t.TempDir(), Partial: true, Checkouts: []domain.Checkout{{RepositoryID: "root", Branch: "main", Head: "x", Mount: ".", ResolvedPath: project.Repositories[0].SourcePath}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value, err := service.NewStatusService().Status(context.Background(), project, test.workspace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry := statusFor(t, value, "backend")
+			if !entry.Companion || entry.Baseline != "tools-main" || entry.Status != test.status {
+				t.Fatalf("missing companion status = %#v", entry)
+			}
+			encoded, marshalErr := json.Marshal(entry)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			var row map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &row); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(row["companion"]); got != "true" || string(row["baseline"]) != `"tools-main"` || row["headAdvanced"] != nil {
+				t.Fatalf("degraded companion JSON row = %s", encoded)
+			}
+		})
+	}
+}
+
 func TestWorkspaceStatusLegacyJSONBytesRemainIdenticalWithoutAdditiveFacts(t *testing.T) {
 	type legacyRepository struct {
 		ID                string `json:"id"`
@@ -758,6 +1018,9 @@ func TestWorkspaceStatusLegacyJSONBytesRemainIdenticalWithoutAdditiveFacts(t *te
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("legacy JSON changed:\n got %s\nwant %s", got, want)
+	}
+	if bytes.Contains(got, []byte(`"companion"`)) || bytes.Contains(got, []byte(`"baseline"`)) || bytes.Contains(got, []byte(`"headAdvanced"`)) {
+		t.Fatalf("ordinary legacy JSON gained companion fields: %s", got)
 	}
 }
 

@@ -192,6 +192,33 @@ func TestReleaseMaterializeStagesNestedAndSiblingBeforePublication(t *testing.T)
 	}
 }
 
+func TestReleaseLocalConfigurationPreservesV4CompanionRole(t *testing.T) {
+	base := t.TempDir()
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion4, Project: config.PortableProject{ID: "release", Name: "Release", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{
+		"root":  {Clone: config.CloneSource{Remote: "origin", URL: "https://example.test/root.git"}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{"0123456789abcdef0123456789abcdef01234567"}}, Mount: ".", DefaultBranch: "main"},
+		"tools": {Clone: config.CloneSource{Remote: "origin", URL: "https://example.test/tools.git"}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{"1123456789abcdef0123456789abcdef01234567"}}, Parent: "root", Mount: "tools", DefaultBranch: "main", Companion: true},
+	}}
+	value := releaseLocalConfiguration(manifest, base, map[string]string{"root": base, "tools": filepath.Join(base, "tools")})
+	if value.Version != config.ProjectConfigVersion4 || !value.Repositories["tools"].Companion {
+		t.Fatalf("release local config=%#v", value)
+	}
+}
+
+func TestReleaseLocalConfigurationV4WithoutCompanionRetainsV2(t *testing.T) {
+	base := t.TempDir()
+	for _, hooks := range []config.HookEvents{nil, {config.HookEventPostClone: {{ID: "portable", Command: []string{"hooks/portable"}}}}} {
+		manifest := config.PortableManifest{Version: config.PortableManifestVersion4, Project: config.PortableProject{ID: "release-v4-ordinary", Name: "Release v4 ordinary", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{
+			"root": {Clone: config.CloneSource{Remote: "origin", URL: "https://example.test/root.git"}, Upstream: config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{"0123456789abcdef0123456789abcdef01234567"}}, Mount: ".", DefaultBranch: "main"},
+		}, Hooks: hooks}
+		// RED: a v4 wire version without a companion previously selected v4
+		// local configuration despite emitting no v4-only local field.
+		value := releaseLocalConfiguration(manifest, base, map[string]string{"root": base})
+		if value.Version != config.ProjectConfigVersion {
+			t.Fatalf("release local v4 ordinary version=%d, want v2", value.Version)
+		}
+	}
+}
+
 func TestReleaseMaterializeCanceledBeforeObservationCreatesNoState(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -346,6 +373,26 @@ func TestReleaseMaterializeOwnedPublicationRollsBackAndRecordsRecoveryOnFailure(
 	}
 	if _, err := store.ReadRecovery(filepath.Join(request.DataDir, "projects", "release-rollback-recovery", "recovery", "default.json")); err != nil {
 		t.Fatalf("recovery record = %v; materialize = %v", err, materializeErr)
+	}
+}
+
+func TestMaterializeChildCommonRelativeAcceptsCanonicalParentAlias(t *testing.T) {
+	real := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Skipf("symlink alias unavailable: %v", err)
+	}
+	child := filepath.Join(alias, "child")
+	common := filepath.Join(real, "child", ".git")
+	if err := os.MkdirAll(common, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	relative, ok := materializeChildCommonRelative(child, common)
+	if !ok || relative != ".git" {
+		t.Fatalf("canonical alias relative=%q ok=%v, want .git/true", relative, ok)
+	}
+	if !materializePathsEqual(filepath.Join(alias, "child", ".git"), common) {
+		t.Fatal("canonical alias Git identity was not equal")
 	}
 }
 

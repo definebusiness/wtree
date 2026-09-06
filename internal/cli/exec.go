@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/definebusiness/wtree/internal/render"
@@ -13,14 +14,25 @@ import (
 
 func newExecCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 	var dataDir, workspaceName string
-	var reverse, dryRun, jsonOutput bool
+	var reverse, dryRun, jsonOutput, noCompanions bool
+	var repositories []string
+	noCompanionsFlag := execSelectorBool{value: &noCompanions}
 	command := &cobra.Command{
-		Use:   "exec -- <executable> [argument...]",
+		Use:   "exec [--no-companions | --repository <repository>] -- <executable> [argument...]",
 		Short: "run one direct command in every verified workspace repository",
-		Long:  "Verify every present checkout against persisted identity, branch, and commit facts before directly running one executable in deterministic repository order. exec never invokes an implicit shell: metacharacters are literal arguments. It cannot roll back effects made by the invoked program.",
+		Long:  "Verify selected present checkouts against persisted identity, branch, and commit facts before directly running one executable in deterministic repository order. --no-companions selects ordinary repositories; --repository selects one configured repository. exec never invokes an implicit shell: metacharacters are literal arguments. It cannot roll back effects made by the invoked program.",
 		Args: func(command *cobra.Command, arguments []string) error {
 			if command.ArgsLenAtDash() < 0 || len(arguments) == 0 || arguments[0] == "" {
 				return invalidArgumentsError{cause: fmt.Errorf("exec requires an executable after --")}
+			}
+			if noCompanionsFlag.count > 1 || len(repositories) > 1 {
+				return invalidArgumentsError{cause: fmt.Errorf("exec selectors may be specified only once")}
+			}
+			if len(repositories) == 1 && strings.TrimSpace(repositories[0]) == "" {
+				return invalidArgumentsError{cause: fmt.Errorf("exec repository selector is required")}
+			}
+			if noCompanionsFlag.count != 0 && len(repositories) != 0 {
+				return invalidArgumentsError{cause: fmt.Errorf("exec selectors are mutually exclusive")}
 			}
 			return nil
 		},
@@ -46,7 +58,10 @@ func newExecCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 			var streamErr error
 			var streamed bool
 			request := service.ExecRequest{
-				Program: arguments[0], Args: arguments[1:], Reverse: reverse, DryRun: dryRun, Environment: os.Environ(),
+				Program: arguments[0], Args: arguments[1:], Reverse: reverse, DryRun: dryRun, Environment: os.Environ(), NoCompanions: noCompanions,
+			}
+			if len(repositories) == 1 {
+				request.RepositoryID = repositories[0]
 			}
 			if !jsonOutput && !dryRun {
 				request.OnComplete = func(entry service.ExecRepositoryResult) error {
@@ -88,10 +103,38 @@ func newExecCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 	command.Flags().StringVar(&dataDir, "data-dir", "", "data directory")
 	command.Flags().StringVar(&workspaceName, "workspace", "", "workspace name")
 	command.Flags().BoolVar(&reverse, "reverse", false, "run child repositories before parents")
+	command.Flags().Var(&noCompanionsFlag, "no-companions", "run only present ordinary repositories")
+	command.Flags().Lookup("no-companions").NoOptDefVal = "true"
+	command.Flags().StringArrayVar(&repositories, "repository", nil, "run only one configured present repository")
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "verify and render without starting the executable")
 	command.Flags().BoolVar(&jsonOutput, "json", false, "emit JSON")
 	return command
 }
+
+// execSelectorBool records repeated presence because pflag's ordinary bool
+// flag retains only its final value. It remains a normal no-value bool flag.
+type execSelectorBool struct {
+	value *bool
+	count int
+}
+
+func (value *execSelectorBool) String() string {
+	if value == nil || value.value == nil {
+		return "false"
+	}
+	return strconv.FormatBool(*value.value)
+}
+func (value *execSelectorBool) Set(raw string) error {
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return err
+	}
+	*value.value = parsed
+	value.count++
+	return nil
+}
+func (*execSelectorBool) Type() string     { return "bool" }
+func (*execSelectorBool) IsBoolFlag() bool { return true }
 
 func renderExecResult(stdout io.Writer, value service.ExecResult) error {
 	if value.DryRun {

@@ -41,6 +41,7 @@ type PortableRepository struct {
 	Parent        string             `yaml:"parent" json:"parent"`
 	Mount         string             `yaml:"mount" json:"mount"`
 	DefaultBranch string             `yaml:"default_branch" json:"defaultBranch"`
+	Companion     bool               `yaml:"companion,omitempty" json:"companion,omitempty"`
 }
 
 type CloneSource struct {
@@ -65,21 +66,25 @@ func LoadPortableManifest(data []byte) (PortableManifest, error) {
 	if err != nil {
 		return PortableManifest{}, err
 	}
-	if version != PortableManifestVersion && version != PortableManifestVersion3 {
+	if version != PortableManifestVersion && version != PortableManifestVersion3 && version != PortableManifestVersion4 {
 		return PortableManifest{}, fmt.Errorf("unsupported portable manifest version %d: logical-root manifest format version %d is required", version, PortableManifestVersion)
 	}
 	var manifest PortableManifest
 	if version == PortableManifestVersion {
 		var v2 portableManifestV2
 		err = strictYAML(data, &v2)
-		manifest = PortableManifest{Version: v2.Version, Project: v2.Project, Repositories: v2.Repositories}
+		manifest = PortableManifest{Version: v2.Version, Project: v2.Project, Repositories: v2.Repositories.asPortableRepositories()}
+	} else if version == PortableManifestVersion3 {
+		var v3 portableManifestV3
+		err = strictYAML(data, &v3)
+		manifest = PortableManifest{Version: v3.Version, Project: v3.Project, Repositories: v3.Repositories.asPortableRepositories(), Hooks: v3.Hooks, SharedHooks: v3.SharedHooks}
 	} else {
 		err = strictYAML(data, &manifest)
 	}
 	if err != nil {
 		return PortableManifest{}, err
 	}
-	if version == PortableManifestVersion3 {
+	if version == PortableManifestVersion3 || version == PortableManifestVersion4 {
 		if err := validateExplicitHookTimeouts(data); err != nil {
 			return PortableManifest{}, err
 		}
@@ -93,9 +98,34 @@ func LoadPortableManifest(data []byte) (PortableManifest, error) {
 // portableManifestV2 intentionally omits hook fields to preserve strict v2
 // decoding even though the in-memory v3 representation contains them.
 type portableManifestV2 struct {
-	Version      int                           `yaml:"version" json:"version"`
-	Project      PortableProject               `yaml:"project" json:"project"`
-	Repositories map[string]PortableRepository `yaml:"repositories" json:"repositories"`
+	Version      int                       `yaml:"version" json:"version"`
+	Project      PortableProject           `yaml:"project" json:"project"`
+	Repositories portableRepositoryWireMap `yaml:"repositories" json:"repositories"`
+}
+type portableRepositoryWire struct {
+	Clone         CloneSource        `yaml:"clone" json:"clone"`
+	Upstream      Upstream           `yaml:"upstream" json:"upstream"`
+	Identity      RepositoryIdentity `yaml:"identity" json:"identity"`
+	Parent        string             `yaml:"parent" json:"parent"`
+	Mount         string             `yaml:"mount" json:"mount"`
+	DefaultBranch string             `yaml:"default_branch" json:"defaultBranch"`
+}
+type portableRepositoryWireMap map[string]portableRepositoryWire
+
+func (values portableRepositoryWireMap) asPortableRepositories() map[string]PortableRepository {
+	result := make(map[string]PortableRepository, len(values))
+	for id, value := range values {
+		result[id] = PortableRepository{Clone: value.Clone, Upstream: value.Upstream, Identity: value.Identity, Parent: value.Parent, Mount: value.Mount, DefaultBranch: value.DefaultBranch}
+	}
+	return result
+}
+
+type portableManifestV3 struct {
+	Version      int                       `yaml:"version" json:"version"`
+	Project      PortableProject           `yaml:"project" json:"project"`
+	Repositories portableRepositoryWireMap `yaml:"repositories" json:"repositories"`
+	Hooks        HookEvents                `yaml:"hooks,omitempty" json:"hooks,omitempty"`
+	SharedHooks  HookEvents                `yaml:"shared_hooks,omitempty" json:"sharedHooks,omitempty"`
 }
 
 func portableManifestVersion(data []byte) (int, error) {
@@ -121,7 +151,7 @@ func MarshalPortableManifest(manifest PortableManifest) ([]byte, error) {
 // MarshalProject is the in-memory counterpart of WriteProjectFile. It exists
 // for callers that need an encoded local config without writing it.
 func MarshalProject(value ProjectConfig) ([]byte, error) {
-	if value.Version != ProjectConfigVersion && value.Version != ProjectConfigVersion3 {
+	if value.Version != ProjectConfigVersion && value.Version != ProjectConfigVersion3 && value.Version != ProjectConfigVersion4 {
 		return nil, fmt.Errorf("unsupported project config version %d", value.Version)
 	}
 	// Preserve the v2 in-memory marshal contract exactly: callers that build a
@@ -134,13 +164,18 @@ func MarshalProject(value ProjectConfig) ([]byte, error) {
 		if len(value.Hooks) != 0 {
 			return nil, fmt.Errorf("local project config version %d does not support hooks", ProjectConfigVersion)
 		}
+		for _, repository := range value.Repositories {
+			if repository.Companion {
+				return nil, fmt.Errorf("local project config version %d does not support companion repositories", ProjectConfigVersion)
+			}
+		}
 	}
-	if value.Version == ProjectConfigVersion3 {
+	if value.Version == ProjectConfigVersion3 || value.Version == ProjectConfigVersion4 {
 		if err := value.Validate(); err != nil {
 			return nil, err
 		}
 	}
-	if value.Version == ProjectConfigVersion3 {
+	if value.Version == ProjectConfigVersion3 || value.Version == ProjectConfigVersion4 {
 		return yaml.Marshal(projectConfigV3YAML(value))
 	}
 	return yaml.Marshal(value)
@@ -149,7 +184,7 @@ func MarshalProject(value ProjectConfig) ([]byte, error) {
 // Validate validates the portable schema and all pure cross-repository
 // invariants before a caller performs any mutation.
 func (manifest PortableManifest) Validate() error {
-	if manifest.Version != PortableManifestVersion && manifest.Version != PortableManifestVersion3 {
+	if manifest.Version != PortableManifestVersion && manifest.Version != PortableManifestVersion3 && manifest.Version != PortableManifestVersion4 {
 		return fmt.Errorf("unsupported portable manifest version %d: logical-root manifest format version %d is required", manifest.Version, PortableManifestVersion)
 	}
 	if err := ValidatePortableID(manifest.Project.ID); err != nil {
@@ -169,6 +204,9 @@ func (manifest PortableManifest) Validate() error {
 	for id, repository := range manifest.Repositories {
 		if err := ValidatePortableID(id); err != nil {
 			return fmt.Errorf("repository ID %q: %w", id, err)
+		}
+		if repository.Companion && manifest.Version != PortableManifestVersion4 {
+			return fmt.Errorf("portable manifest version %d does not support companion repositories", manifest.Version)
 		}
 		if repository.Parent == "" {
 			topLevelCount++
@@ -196,7 +234,7 @@ func (manifest PortableManifest) Validate() error {
 	if manifest.Version == PortableManifestVersion && (len(manifest.Hooks) != 0 || len(manifest.SharedHooks) != 0) {
 		return fmt.Errorf("portable manifest version %d does not support hooks", PortableManifestVersion)
 	}
-	if manifest.Version == PortableManifestVersion3 {
+	if manifest.Version == PortableManifestVersion3 || manifest.Version == PortableManifestVersion4 {
 		if err := validatePortableHookEvents(manifest.Hooks, manifest.Project.BaseRepository, manifest.Repositories, hookSourcePortable); err != nil {
 			return err
 		}
@@ -614,7 +652,7 @@ func portableManifestYAML(manifest PortableManifest) yaml.Node {
 	project.Content = append(project.Content, scalarNode("id"), scalarNode(manifest.Project.ID), scalarNode("name"), scalarNode(manifest.Project.Name), scalarNode("base_repository"), scalarNode(manifest.Project.BaseRepository))
 	repositories := repositoriesYAML(manifest.Repositories)
 	root.Content = append(root.Content, scalarNode("project"), &project, scalarNode("repositories"), &repositories)
-	if manifest.Version == PortableManifestVersion3 {
+	if manifest.Version == PortableManifestVersion3 || manifest.Version == PortableManifestVersion4 {
 		if len(manifest.Hooks) != 0 {
 			hooks := hookEventsYAML(manifest.Hooks, manifest.Project.BaseRepository)
 			root.Content = append(root.Content, scalarNode("hooks"), &hooks)
@@ -657,6 +695,9 @@ func localRepositoriesYAML(repositories map[string]Repository) yaml.Node {
 	for _, id := range ids {
 		repository := repositories[id]
 		value := yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{scalarNode("source"), scalarNode(repository.Source), scalarNode("parent"), scalarNode(repository.Parent), scalarNode("mount"), scalarNode(repository.DefaultMount), scalarNode("default_branch"), scalarNode(repository.DefaultBranch)}}
+		if repository.Companion {
+			value.Content = append(value.Content, scalarNode("companion"), boolNode(true))
+		}
 		node.Content = append(node.Content, scalarNode(id), &value)
 	}
 	return node
@@ -714,6 +755,9 @@ func repositoriesYAML(repositories map[string]PortableRepository) yaml.Node {
 		}
 		identity := yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{scalarNode("initial_commits"), &commits}}
 		value := yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{scalarNode("clone"), &clone, scalarNode("upstream"), &upstream, scalarNode("identity"), &identity, scalarNode("parent"), scalarNode(repository.Parent), scalarNode("mount"), scalarNode(repository.Mount), scalarNode("default_branch"), scalarNode(repository.DefaultBranch)}}
+		if repository.Companion {
+			value.Content = append(value.Content, scalarNode("companion"), boolNode(true))
+		}
 		node.Content = append(node.Content, scalarNode(id), &value)
 	}
 	return node
@@ -725,6 +769,9 @@ func scalarNode(value string) *yaml.Node {
 
 func intNode(value int) *yaml.Node {
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: fmt.Sprintf("%d", value)}
+}
+func boolNode(value bool) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: fmt.Sprintf("%t", value)}
 }
 
 func portableAncestor(repositories map[string]PortableRepository, ancestor, descendant string) bool {

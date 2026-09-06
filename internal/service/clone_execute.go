@@ -960,11 +960,18 @@ func cloneLocalConfiguration(plan ClonePlan) config.ProjectConfig {
 	for _, repository := range plan.Repositories {
 		relative, _ := filepath.Rel(plan.Destination.Path, repository.Path)
 		source := filepath.ToSlash(relative)
-		repositories[repository.ID] = config.Repository{Source: source, Parent: repository.Parent, DefaultMount: repository.Mount, DefaultBranch: repository.LocalBranch}
+		repositories[repository.ID] = config.Repository{Source: source, Parent: repository.Parent, DefaultMount: repository.Mount, DefaultBranch: repository.LocalBranch, Companion: repository.Companion}
 	}
 	base := finalRepositoryPath(plan, plan.BaseRepository)
 	logicalRoot, _ := filepath.Rel(base, plan.Destination.Path)
-	return config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{ID: plan.Project.ID, Name: plan.Project.Name, BaseRepository: plan.Project.BaseRepository}, LogicalRoot: filepath.ToSlash(logicalRoot), Repositories: repositories, Worktrees: config.Worktrees{Root: plan.WorktreeRoot}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: plan.Source.Value}}
+	version := config.ProjectConfigVersion
+	for _, repository := range plan.Repositories {
+		if repository.Companion {
+			version = config.ProjectConfigVersion4
+			break
+		}
+	}
+	return config.ProjectConfig{Version: version, Project: config.Project{ID: plan.Project.ID, Name: plan.Project.Name, BaseRepository: plan.Project.BaseRepository}, LogicalRoot: filepath.ToSlash(logicalRoot), Repositories: repositories, Worktrees: config.Worktrees{Root: plan.WorktreeRoot}, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: plan.Source.Value}}
 }
 
 func stagedCloneRepositoryPath(plan ClonePlan, staging string, repository ClonePlanRepository) (string, error) {

@@ -39,6 +39,7 @@ type PushRepositoryResult struct {
 	Path           string            `json:"-"`
 	Branch         string            `json:"branch,omitempty"`
 	Head           string            `json:"head,omitempty"`
+	Companion      bool              `json:"companion,omitempty"`
 	ObservedCommit string            `json:"observedCommit,omitempty"`
 	Status         PushStatus        `json:"status"`
 	Findings       []PushFinding     `json:"findings,omitempty"`
@@ -267,7 +268,7 @@ func pushMayObserveRemote(entry PushRepositoryResult) bool {
 }
 
 func (s *PushService) pushLocalEntry(ctx context.Context, repository domain.Repository, checkout domain.Checkout, manifest config.PortableManifest, project domain.Project, workspace domain.Workspace) (PushRepositoryResult, gitadapter.Upstream, bool, error) {
-	entry := PushRepositoryResult{ID: repository.ID, ParentID: repository.ParentID, Mount: checkout.Mount, Path: checkout.ResolvedPath, Branch: checkout.Branch, Head: checkout.Head, Status: PushStatusReady}
+	entry := PushRepositoryResult{ID: repository.ID, ParentID: repository.ParentID, Mount: checkout.Mount, Path: checkout.ResolvedPath, Branch: checkout.Branch, Head: checkout.Head, Companion: repository.Companion, Status: PushStatusReady}
 	path, err := canonicalExecDirectory(checkout.ResolvedPath)
 	if err != nil {
 		return pushBlocked(entry, "missing-repository"), gitadapter.Upstream{}, false, nil
@@ -365,7 +366,7 @@ func (s *PushService) pushLocalEntry(ctx context.Context, repository domain.Repo
 		}
 		return pushBlocked(entry, "missing-upstream"), gitadapter.Upstream{}, false, nil
 	}
-	if !found || upstream.LocalBranch != checkout.Branch || upstream.Remote != manifestRepository.Upstream.Remote || upstream.Merge != manifestRepository.Upstream.Merge || upstream.Remote != manifestRepository.Clone.Remote || upstream.FetchURL != manifestRepository.Clone.URL {
+	if !found || upstream.LocalBranch != checkout.Branch || upstream.Remote != manifestRepository.Upstream.Remote || (!repository.Companion && upstream.Merge != manifestRepository.Upstream.Merge) || upstream.Remote != manifestRepository.Clone.Remote || upstream.FetchURL != manifestRepository.Clone.URL {
 		entry = pushBlocked(entry, "identity-mismatch")
 	}
 	// This immutable capture is the only authority used by the later remote
@@ -389,7 +390,7 @@ func newPushResult(project domain.Project, workspace domain.Workspace) PushResul
 	}
 	for _, repository := range project.ParentFirst() {
 		checkout := checkouts[repository.ID]
-		result.Repositories = append(result.Repositories, PushRepositoryResult{ID: repository.ID, ParentID: repository.ParentID, Mount: checkout.Mount, Path: checkout.ResolvedPath, Branch: checkout.Branch, Head: checkout.Head, Status: PushStatusReady})
+		result.Repositories = append(result.Repositories, PushRepositoryResult{ID: repository.ID, ParentID: repository.ParentID, Mount: checkout.Mount, Path: checkout.ResolvedPath, Branch: checkout.Branch, Head: checkout.Head, Companion: repository.Companion, Status: PushStatusReady})
 	}
 	return result
 }

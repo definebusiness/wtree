@@ -140,7 +140,7 @@ func (s *ReleaseLockService) Lock(ctx context.Context, q ReleaseLockRequest) (Re
 	// not sufficient authority for a release lock.
 	for _, repo := range q.Project.Repositories {
 		portable := manifest.Repositories[repo.ID]
-		if repo.ParentID != portable.Parent || repo.DefaultMount != portable.Mount || repo.DefaultBranch != "" && repo.DefaultBranch != portable.DefaultBranch {
+		if repo.ParentID != portable.Parent || repo.DefaultMount != portable.Mount || repo.Companion != portable.Companion || repo.DefaultBranch != "" && repo.DefaultBranch != portable.DefaultBranch {
 			return result, NewError(ErrorConflict, fmt.Errorf("portable manifest authority differs for repository %q", repo.ID))
 		}
 	}

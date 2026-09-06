@@ -33,17 +33,17 @@ func replaceExpectedAtomic(source, destination string, temporary, expected os.Fi
 	displaced, err := os.Lstat(backup)
 	if err == nil && displaced.Mode().IsRegular() && os.SameFile(expected, displaced) {
 		if err := removeAtomicTemporary(backup, expected); err != nil {
-			return &postReplacementError{Err: errors.Join(errors.New("remove displaced expected generation"), err)}
+			return &postReplacementError{Err: &atomicAuxiliaryError{Paths: []string{backup}, Err: errors.Join(errors.New("remove displaced expected generation"), err)}}
 		}
 		return nil
 	}
 	// Source no longer names writer data after ReplaceFile. Roll back with the
 	// backup as replacement and source as the backup name for our generation.
 	if restoreErr := replaceWindowsFile(destination, backup, source); restoreErr != nil {
-		return &postReplacementError{Err: &preservedConditionalReplacementError{
+		return &postReplacementError{Err: &atomicAuxiliaryError{Paths: []string{backup}, Err: &preservedConditionalReplacementError{
 			RecoveryPath: backup,
 			Err:          errors.Join(errors.New("conditional replacement destination changed and could not be restored"), restoreErr),
-		}}
+		}}}
 	}
 	// The second ReplaceFile placed the writer generation at source. The
 	// generic cleanup will remove it only if it still has this exact identity.
@@ -52,10 +52,10 @@ func replaceExpectedAtomic(source, destination string, temporary, expected os.Fi
 		if identityErr == nil {
 			identityErr = errors.New("writer recovery pathname no longer names writer generation")
 		}
-		return &postReplacementError{Err: &preservedConditionalReplacementError{
+		return &postReplacementError{Err: &atomicAuxiliaryError{Paths: []string{source}, Err: &preservedConditionalReplacementError{
 			RecoveryPath: source,
 			Err:          fmt.Errorf("conditional replacement restored destination but writer recovery identity is unproven: %w", identityErr),
-		}}
+		}}}
 	}
 	return errors.New("conditional replacement destination changed")
 }
@@ -107,5 +107,6 @@ func (e *preservedConditionalReplacementError) Unwrap() error { return e.Err }
 
 func preserveAtomicTemporary(err error) bool {
 	var preserved *preservedConditionalReplacementError
-	return errors.As(err, &preserved)
+	var auxiliary *atomicAuxiliaryError
+	return errors.As(err, &preserved) || errors.As(err, &auxiliary)
 }

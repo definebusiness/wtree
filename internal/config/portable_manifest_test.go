@@ -1,9 +1,11 @@
 package config_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -95,6 +97,95 @@ func TestPortableManifestUsesItsOwnSchemaVersion(t *testing.T) {
 	}
 	if manifest.Version != config.PortableManifestVersion {
 		t.Fatalf("portable manifest version = %d, want PortableManifestVersion %d", manifest.Version, config.PortableManifestVersion)
+	}
+}
+
+func TestPortableManifestV4CompanionIsStrictAndCanonical(t *testing.T) {
+	input := strings.Replace(validPortableManifest, "version: 2", "version: 4", 1)
+	input = strings.Replace(input, "    default_branch: main\n", "    default_branch: main\n    companion: true\n", 1)
+	manifest, err := config.LoadPortableManifest([]byte(input))
+	if err != nil {
+		t.Fatalf("LoadPortableManifest(v4) error = %v", err)
+	}
+	if !manifest.Repositories["root"].Companion {
+		t.Fatal("v4 companion role was lost")
+	}
+	encoded, err := config.MarshalPortableManifest(manifest)
+	if err != nil || !strings.Contains(string(encoded), "    companion: true\n") {
+		t.Fatalf("MarshalPortableManifest(v4) = %q, %v", encoded, err)
+	}
+	manifest.Repositories["root"] = config.PortableRepository{Clone: manifest.Repositories["root"].Clone, Upstream: manifest.Repositories["root"].Upstream, Identity: manifest.Repositories["root"].Identity, Parent: manifest.Repositories["root"].Parent, Mount: manifest.Repositories["root"].Mount, DefaultBranch: manifest.Repositories["root"].DefaultBranch}
+	encoded, err = config.MarshalPortableManifest(manifest)
+	if err != nil || strings.Contains(string(encoded), "companion:") {
+		t.Fatalf("false companion canonical output = %q, %v", encoded, err)
+	}
+	legacy := strings.Replace(validPortableManifest, "    default_branch: main\n", "    default_branch: main\n    companion: true\n", 1)
+	if _, err := config.LoadPortableManifest([]byte(legacy)); err == nil {
+		t.Fatal("v2 accepted companion")
+	}
+	if _, err := config.LoadPortableManifest([]byte(strings.Replace(legacy, "version: 2", "version: 3", 1))); err == nil {
+		t.Fatal("v3 accepted companion")
+	}
+	manifest.Version = config.PortableManifestVersion3
+	companion := manifest.Repositories["root"]
+	companion.Companion = true
+	manifest.Repositories["root"] = companion
+	if _, err := config.MarshalPortableManifest(manifest); err == nil {
+		t.Fatal("in-memory v3 serialized companion")
+	}
+}
+
+func TestPortableManifestV4MixedForestHooksRoundTripDoesNotAliasInput(t *testing.T) {
+	// RED: v4 combines the previously independent v3 hook wire with the new
+	// repository role.  This proves canonicalization neither drops either
+	// field nor mutates a caller-owned mixed forest while preparing YAML.
+	root := config.PortableRepository{
+		Clone:         config.CloneSource{Remote: "origin", URL: "https://example.test/root.git"},
+		Upstream:      config.Upstream{Branch: "main", Remote: "origin", Merge: "refs/heads/main"},
+		Identity:      config.RepositoryIdentity{InitialCommits: []string{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+		Mount:         ".",
+		DefaultBranch: "main",
+		Companion:     true,
+	}
+	child := config.PortableRepository{
+		Clone:         config.CloneSource{Remote: "origin", URL: "https://example.test/child.git"},
+		Upstream:      config.Upstream{Branch: "develop", Remote: "origin", Merge: "refs/heads/develop"},
+		Identity:      config.RepositoryIdentity{InitialCommits: []string{"cccccccccccccccccccccccccccccccccccccccc"}},
+		Parent:        "root",
+		Mount:         "child",
+		DefaultBranch: "develop",
+	}
+	manifest := config.PortableManifest{
+		Version:      config.PortableManifestVersion4,
+		Project:      config.PortableProject{ID: "v4-mixed", Name: "V4 mixed", BaseRepository: "root"},
+		Repositories: map[string]config.PortableRepository{"root": root, "child": child},
+		Hooks:        config.HookEvents{config.HookEventPostClone: {{ID: "portable", Command: []string{"hooks/portable", "--literal"}}}},
+		SharedHooks:  config.HookEvents{config.HookEventPostCreate: {{ID: "shared", Repository: "child", Command: []string{"hooks/shared"}}}},
+	}
+
+	one, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(one, two) {
+		t.Fatalf("mixed v4 encoding is non-deterministic:\n%s\n---\n%s", one, two)
+	}
+	if got := manifest.Repositories["root"].Identity.InitialCommits; !reflect.DeepEqual(got, root.Identity.InitialCommits) {
+		t.Fatalf("canonical marshal aliased initial commits: got=%#v want=%#v", got, root.Identity.InitialCommits)
+	}
+	if got := manifest.Hooks[config.HookEventPostClone][0]; got.Repository != "" || got.Timeout != 0 || !reflect.DeepEqual(got.Command, []string{"hooks/portable", "--literal"}) {
+		t.Fatalf("canonical marshal aliased hook input: %#v", got)
+	}
+	roundTrip, err := config.LoadPortableManifest(one)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !roundTrip.Repositories["root"].Companion || roundTrip.Repositories["child"].Companion || len(roundTrip.Hooks) != 1 || len(roundTrip.SharedHooks) != 1 {
+		t.Fatalf("mixed v4 round trip lost role or hooks: %#v", roundTrip)
 	}
 }
 

@@ -39,7 +39,7 @@ func WriteGlobalFile(path string, value GlobalConfig) error {
 }
 
 func WriteProjectFile(path string, value ProjectConfig) error {
-	if value.Version != ProjectConfigVersion && value.Version != ProjectConfigVersion3 {
+	if value.Version != ProjectConfigVersion && value.Version != ProjectConfigVersion3 && value.Version != ProjectConfigVersion4 {
 		return fmt.Errorf("unsupported project config version %d", value.Version)
 	}
 	if err := value.Validate(); err != nil {

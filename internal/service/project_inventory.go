@@ -174,7 +174,7 @@ func populateInventoryTopology(entry *ProjectInventoryEntry, local config.Projec
 	}
 	project := domain.Project{Version: domain.CurrentVersion, ID: local.Project.ID, Name: local.Project.Name, BaseRepository: local.Project.BaseRepository, Repositories: make([]domain.Repository, 0, len(local.Repositories))}
 	for id, repository := range local.Repositories {
-		project.Repositories = append(project.Repositories, domain.Repository{ID: id, ParentID: repository.Parent, DefaultMount: repository.DefaultMount, DefaultBranch: repository.DefaultBranch})
+		project.Repositories = append(project.Repositories, domain.Repository{ID: id, ParentID: repository.Parent, DefaultMount: repository.DefaultMount, DefaultBranch: repository.DefaultBranch, Companion: repository.Companion})
 	}
 	workspace, err := workspaceFromState(state)
 	logicalRoot := filepath.Clean(filepath.Join(filepath.Dir(entry.ConfigPath), filepath.FromSlash(local.LogicalRoot)))

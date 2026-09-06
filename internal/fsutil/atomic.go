@@ -20,6 +20,59 @@ func ReplacementCompleted(err error) bool {
 	return errors.As(err, &post)
 }
 
+// AtomicWriteOutcome describes generations which remain actionable after an
+// atomic write returns.  A completed replacement alone is not sufficient to
+// establish a clean transaction: conditional exchange can retain a foreign or
+// displaced generation at an auxiliary pathname.
+type AtomicWriteOutcome struct {
+	ReplacementCompleted bool
+	AuxiliaryPaths       []string
+}
+
+type atomicAuxiliaryError struct {
+	Paths []string
+	Err   error
+}
+
+func (e *atomicAuxiliaryError) Error() string { return e.Err.Error() }
+func (e *atomicAuxiliaryError) Unwrap() error { return e.Err }
+func (e *atomicAuxiliaryError) AuxiliaryPaths() []string {
+	return append([]string(nil), e.Paths...)
+}
+
+// AuxiliaryOutcomeError lets an atomic replacement adapter retain every
+// actionable generation when it cannot finish cleanup.  It is also the
+// portable outcome contract for callers which provide an equivalent writer.
+type AuxiliaryOutcomeError struct {
+	Paths []string
+	Err   error
+}
+
+func (e *AuxiliaryOutcomeError) Error() string { return e.Err.Error() }
+func (e *AuxiliaryOutcomeError) Unwrap() error { return e.Err }
+func (e *AuxiliaryOutcomeError) AuxiliaryPaths() []string {
+	return append([]string(nil), e.Paths...)
+}
+
+// AtomicOutcome extracts every durable auxiliary pathname reported by the
+// platform conditional-replacement implementation.
+func AtomicOutcome(err error) AtomicWriteOutcome {
+	outcome := AtomicWriteOutcome{ReplacementCompleted: ReplacementCompleted(err)}
+	var auxiliary interface{ AuxiliaryPaths() []string }
+	if errors.As(err, &auxiliary) {
+		outcome.AuxiliaryPaths = append([]string(nil), auxiliary.AuxiliaryPaths()...)
+	} else {
+		var internal *atomicAuxiliaryError
+		if errors.As(err, &internal) {
+			outcome.AuxiliaryPaths = append([]string(nil), internal.Paths...)
+		}
+	}
+	if len(outcome.AuxiliaryPaths) != 0 {
+		outcome.ReplacementCompleted = true
+	}
+	return outcome
+}
+
 // AtomicStepHook is deliberately small so owning packages can retain their
 // existing failure-injection seams without each reimplementing the durability
 // protocol. A hook is called before the named irreversible step.

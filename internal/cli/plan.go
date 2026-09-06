@@ -316,9 +316,24 @@ func renderWorkspacePlanBody(stdout io.Writer, value plan.WorkspacePlan) error {
 	if err := render.Line(stdout, ""); err != nil {
 		return err
 	}
-	rows := [][]string{{"REPOSITORY", "BASE", "BRANCH", "MOUNT", "PATH"}}
+	hasCompanion := false
 	for _, repository := range value.Repositories {
-		rows = append(rows, []string{repository.ID, repository.Base, repository.Branch, repository.Mount, repository.Path})
+		hasCompanion = hasCompanion || repository.Companion
+	}
+	rows := [][]string{{"REPOSITORY", "BASE", "BRANCH", "MOUNT", "PATH"}}
+	if hasCompanion {
+		rows[0] = []string{"REPOSITORY", "ROLE", "BASELINE", "BASE", "BRANCH", "MOUNT", "PATH"}
+	}
+	for _, repository := range value.Repositories {
+		if hasCompanion {
+			role := "ordinary"
+			if repository.Companion {
+				role = "companion"
+			}
+			rows = append(rows, []string{repository.ID, role, repository.Baseline, repository.Base, repository.Branch, repository.Mount, repository.Path})
+		} else {
+			rows = append(rows, []string{repository.ID, repository.Base, repository.Branch, repository.Mount, repository.Path})
+		}
 	}
 	if err := render.Table(stdout, rows); err != nil {
 		return err

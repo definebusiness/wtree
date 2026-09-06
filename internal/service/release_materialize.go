@@ -815,7 +815,7 @@ func (s *ReleaseMaterializeService) revalidateMaterializeChild(ctx context.Conte
 		return NewError(ErrorConflict, fmt.Errorf("published repository %q changed: %w", receipt.id, err))
 	}
 	common, err := s.git.CommonGitDir(ctx, receipt.path)
-	if err != nil || filepath.Clean(common) != filepath.Clean(receipt.commonGit) {
+	if err != nil || !materializePathsEqual(common, receipt.commonGit) {
 		return NewError(ErrorConflict, fmt.Errorf("published repository %q Git identity changed", receipt.id))
 	}
 	return nil
@@ -825,6 +825,7 @@ func (s *ReleaseMaterializeService) removeMaterializeChild(ctx context.Context, 
 	if err := s.revalidateMaterializeChild(ctx, receipt); err != nil {
 		return err
 	}
+	commonRelative, commonInsideChild := materializeChildCommonRelative(receipt.path, receipt.commonGit)
 	// Keep rollback evidence beside the caller checkout, not inside it: an
 	// otherwise clean base must not observe our own quarantine as untracked.
 	quarantine, err := os.MkdirTemp(filepath.Dir(receipt.parent.path), ".wtree-release-rollback-")
@@ -846,8 +847,8 @@ func (s *ReleaseMaterializeService) removeMaterializeChild(ctx context.Context, 
 	}
 	moved := receipt
 	moved.path = ownedPath
-	if relative, relErr := filepath.Rel(receipt.path, receipt.commonGit); relErr == nil && (relative == "." || !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
-		moved.commonGit = filepath.Join(ownedPath, relative)
+	if commonInsideChild {
+		moved.commonGit = filepath.Join(ownedPath, commonRelative)
 	}
 	moved.parent, err = captureClonePathIdentity(quarantine)
 	if err != nil {
@@ -889,6 +890,37 @@ func (s *ReleaseMaterializeService) removeMaterializeChild(ctx context.Context, 
 		}
 	}
 	return nil
+}
+
+// materializeChildCommonRelative preserves an owned common Git directory when
+// a published child is quarantined for rollback. Git may canonicalize a
+// system path through a parent symlink (for example, /var on macOS), so first
+// compare lexical paths and then compare their resolved forms while the child
+// still exists. A path outside the child is intentionally left untouched.
+func materializeChildCommonRelative(child, commonGit string) (string, bool) {
+	relative, err := filepath.Rel(child, commonGit)
+	if err == nil && (relative == "." || (!strings.HasPrefix(relative, ".."+string(filepath.Separator)) && relative != "..")) {
+		return relative, true
+	}
+	canonicalChild, childErr := filepath.EvalSymlinks(child)
+	canonicalCommon, commonErr := filepath.EvalSymlinks(commonGit)
+	if childErr != nil || commonErr != nil {
+		return "", false
+	}
+	relative, err = filepath.Rel(canonicalChild, canonicalCommon)
+	if err != nil || (relative != "." && (strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == "..")) {
+		return "", false
+	}
+	return relative, true
+}
+
+func materializePathsEqual(left, right string) bool {
+	if filepath.Clean(left) == filepath.Clean(right) {
+		return true
+	}
+	canonicalLeft, leftErr := filepath.EvalSymlinks(left)
+	canonicalRight, rightErr := filepath.EvalSymlinks(right)
+	return leftErr == nil && rightErr == nil && filepath.Clean(canonicalLeft) == filepath.Clean(canonicalRight)
 }
 
 func removeMaterializeGrouping(base string, grouping clonePathIdentity, beforeQuarantine func(string) error) error {
@@ -1086,9 +1118,13 @@ func portableIDsParentFirst(manifest config.PortableManifest) []string {
 
 func releaseLocalConfiguration(manifest config.PortableManifest, base string, paths map[string]string) config.ProjectConfig {
 	repositories := map[string]config.Repository{}
+	version := config.ProjectConfigVersion
 	for id, repository := range manifest.Repositories {
 		relative, _ := filepath.Rel(base, paths[id])
-		repositories[id] = config.Repository{Source: filepath.ToSlash(relative), Parent: repository.Parent, DefaultMount: repository.Mount, DefaultBranch: repository.DefaultBranch}
+		repositories[id] = config.Repository{Source: filepath.ToSlash(relative), Parent: repository.Parent, DefaultMount: repository.Mount, DefaultBranch: repository.DefaultBranch, Companion: repository.Companion}
+		if repository.Companion {
+			version = config.ProjectConfigVersion4
+		}
 	}
-	return config.ProjectConfig{Version: config.ProjectConfigVersion, Project: config.Project{ID: manifest.Project.ID, Name: manifest.Project.Name, BaseRepository: manifest.Project.BaseRepository}, LogicalRoot: ".", Repositories: repositories, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: filepath.Join(base, "project.wtree.yml")}}
+	return config.ProjectConfig{Version: version, Project: config.Project{ID: manifest.Project.ID, Name: manifest.Project.Name, BaseRepository: manifest.Project.BaseRepository}, LogicalRoot: ".", Repositories: repositories, Manifest: config.ManifestMetadata{Path: "project.wtree.yml", Source: filepath.Join(base, "project.wtree.yml")}}
 }

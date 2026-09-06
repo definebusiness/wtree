@@ -51,6 +51,8 @@ type Git interface {
 	Clone(context.Context, string, string, string) error
 	FetchTrackingBranch(context.Context, string, string, string) error
 	CheckoutTrackingBranch(context.Context, string, string, string, string) (string, error)
+	IsAncestor(context.Context, string, string, string) (bool, error)
+	ConfiguredRemoteURL(context.Context, string, string) (string, error)
 	ObserveConfiguredRef(context.Context, string, string, string) (ConfiguredRefObservation, error)
 	// FetchConfiguredRef may return an ownership-valid receipt together with an
 	// error when Git updated the selected tracking ref before failing or the
@@ -62,6 +64,10 @@ type Git interface {
 	RestoreConfiguredRef(context.Context, string, ConfiguredRefFetch) error
 	FastForward(context.Context, string, string, string, string) (FastForwardReceipt, error)
 	RestoreFastForward(context.Context, string, FastForwardReceipt) error
+	// FastForwardRef advances an inactive local branch with an expected
+	// generation compare-and-swap. It never touches a checkout worktree.
+	FastForwardRef(context.Context, string, string, string, string) (FastForwardReceipt, error)
+	RestoreFastForwardRef(context.Context, string, FastForwardReceipt) error
 }
 
 // Adapter invokes Git only through locale-neutral, non-interactive subprocesses.

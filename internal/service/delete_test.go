@@ -79,6 +79,121 @@ func TestWorkspaceDeleterRefusesUnmergedBranchUnlessForcedAndReportsOverride(t *
 	}
 }
 
+func TestWorkspaceDeleterPreservesCompanionBaselineOnNameCollision(t *testing.T) {
+	project, _, _, data := createFixture(t)
+	for index := range project.Repositories {
+		if project.Repositories[index].ID == "backend" {
+			project.Repositories[index].Companion = true
+		}
+	}
+	target := filepath.Join(t.TempDir(), "workspace")
+	if _, err := createFixtureWorkspace(t, project, "feature/delete", target, data); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := service.RequireWorkspace(project, data, "feature/delete")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.GitRepository{Path: filepath.Join(target, "api")}.CommitFile("advanced.txt", "advanced\n", "advance protected baseline")
+	for index := range project.Repositories {
+		if project.Repositories[index].ID == "backend" {
+			project.Repositories[index].DefaultBranch = "feature/delete"
+		}
+	}
+	value, err := service.NewWorkspaceDeleter().PlanDelete(context.Background(), project, workspace, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var preserved service.DeletionBranch
+	for _, branch := range value.Branches {
+		if branch.RepositoryID == "backend" {
+			preserved = branch
+		}
+	}
+	if !preserved.Preserved || preserved.Reason != "companion-baseline" || preserved.ForceBranch {
+		t.Fatalf("protected companion deletion row = %#v", preserved)
+	}
+	if _, err := service.NewWorkspaceDeleter().Delete(context.Background(), project, workspace, data, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	exists, err := gitadapter.NewAdapter("git").BranchExists(context.Background(), repositorySourcePath(project, "backend"), "feature/delete")
+	if err != nil || !exists {
+		t.Fatalf("companion baseline exists=%t error=%v", exists, err)
+	}
+}
+
+func TestWorkspaceDeleterDeletesHistoricalCompanionWorkspaceBranchButNotRemoteRefs(t *testing.T) {
+	project, _, _, data := createFixture(t)
+	for index := range project.Repositories {
+		if project.Repositories[index].ID == "backend" {
+			project.Repositories[index].Companion = true
+		}
+	}
+	target := filepath.Join(t.TempDir(), "workspace")
+	if _, err := createFixtureWorkspace(t, project, "feature/historical", target, data); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := service.RequireWorkspace(project, data, "feature/historical")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backendSource := repositorySourcePath(project, "backend")
+	remoteBefore := runGitValue(t, backendSource, "for-each-ref", "--format=%(refname):%(objectname)", "refs/remotes")
+	value, err := service.NewWorkspaceDeleter().PlanDelete(context.Background(), project, workspace, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, branch := range value.Branches {
+		if branch.RepositoryID == "backend" && branch.Preserved {
+			t.Fatalf("historical companion workspace branch was preserved: %#v", branch)
+		}
+	}
+	if _, err := service.NewWorkspaceDeleter().Delete(context.Background(), project, workspace, data, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	exists, err := gitadapter.NewAdapter("git").BranchExists(context.Background(), backendSource, "feature/historical")
+	if err != nil || exists {
+		t.Fatalf("historical companion branch exists=%t error=%v", exists, err)
+	}
+	remoteAfter := runGitValue(t, backendSource, "for-each-ref", "--format=%(refname):%(objectname)", "refs/remotes")
+	if remoteBefore != remoteAfter {
+		t.Fatalf("delete changed remote refs:\nbefore=%s\nafter=%s", remoteBefore, remoteAfter)
+	}
+}
+
+func TestWorkspaceDeleterCompanionBaselineSurvivesStateFailureRollback(t *testing.T) {
+	project, _, _, data := createFixture(t)
+	for index := range project.Repositories {
+		if project.Repositories[index].ID == "backend" {
+			project.Repositories[index].Companion = true
+		}
+	}
+	target := filepath.Join(t.TempDir(), "workspace")
+	if _, err := createFixtureWorkspace(t, project, "feature/recovery", target, data); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := service.RequireWorkspace(project, data, "feature/recovery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range project.Repositories {
+		if project.Repositories[index].ID == "backend" {
+			project.Repositories[index].DefaultBranch = workspace.Name
+		}
+	}
+	deleter := service.NewWorkspaceDeleterWith(gitadapter.NewAdapter("git"), lock.Manager{}, store.WriteRecovery, func(string) error { return errors.New("injected state delete failure") }, store.WriteRawCAS, os.ReadFile)
+	if _, err := deleter.Delete(context.Background(), project, workspace, data, true, nil); err == nil || !service.HasCleanRollback(err) {
+		t.Fatalf("companion baseline state failure = %v, want clean rollback", err)
+	}
+	exists, err := gitadapter.NewAdapter("git").BranchExists(context.Background(), repositorySourcePath(project, "backend"), workspace.Name)
+	if err != nil || !exists {
+		t.Fatalf("protected baseline after rollback exists=%t error=%v", exists, err)
+	}
+	if _, err := service.RequireWorkspace(project, data, workspace.Name); err != nil {
+		t.Fatalf("companion rollback lost workspace state: %v", err)
+	}
+}
+
 func TestWorkspaceDeleterFailureAfterBranchDeletionRestoresOwnedEffectsAndState(t *testing.T) {
 	project, _, _, data := createFixture(t)
 	target := filepath.Join(t.TempDir(), "workspace")

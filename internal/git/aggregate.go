@@ -43,6 +43,13 @@ var fastForwardBeforeRefUpdate func()
 // seams for the transition window. Production uses a non-reset two-tree merge
 // so Git refuses tracked and untracked collisions instead of overwriting them.
 var fastForwardAfterRefUpdate func()
+
+// fastForwardRefBeforeRefUpdate and fastForwardRefAfterRefUpdate make the
+// inactive-branch authority windows deterministic in adapter tests. An error
+// after the CAS is returned with an ownership receipt: callers must treat it
+// as a possibly completed mutation, never as a no-effect failure.
+var fastForwardRefBeforeRefUpdate func()
+var fastForwardRefAfterRefUpdate func()
 var fastForwardMaterialize = func(adapter *Adapter, ctx context.Context, repository, fromCommit, toCommit string) error {
 	return adapter.materializeAttachedWorktree(ctx, repository, fromCommit, toCommit)
 }
@@ -102,7 +109,13 @@ func (a *Adapter) FetchConfiguredRef(ctx context.Context, repository, remote, re
 	if err != nil {
 		return ConfiguredRefFetch{}, err
 	}
-	fetchErr := a.FetchTrackingBranch(ctx, repository, remote, remoteRef)
+	// A companion update is the one configured-ref operation that may need the
+	// caller's normal noninteractive Git authentication (SSH agent, askpass, or
+	// credential helper).  Keep the exact fetch refspec here rather than routing
+	// through FetchTrackingBranch: that general local materialization helper is
+	// intentionally sanitized and unauthenticated.
+	remoteBranch := strings.TrimPrefix(remoteRef, "refs/heads/")
+	_, fetchErr := a.runAuthenticatedRemote(ctx, repository, quiescentGitArgs("fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", "--", remote, "+"+remoteRef+":refs/remotes/"+remote+"/"+remoteBranch)...)
 	if fetchErr == nil && configuredRefAfterFetch != nil {
 		fetchErr = configuredRefAfterFetch()
 	}
@@ -188,6 +201,95 @@ func (a *Adapter) RestoreFastForward(ctx context.Context, repository string, rec
 	}
 	if err := a.transitionAttachedBranch(ctx, repository, receipt.Branch, receipt.NewCommit, receipt.OldCommit); err != nil {
 		return fmt.Errorf("restore fast-forward transition: %w", err)
+	}
+	return nil
+}
+
+// FastForwardRef advances only an inactive local branch. It deliberately does
+// not materialize a worktree, which makes it safe for a registered source
+// checkout whose baseline branch is not currently attached there.
+func (a *Adapter) FastForwardRef(ctx context.Context, repository, branch, oldCommit, newCommit string) (FastForwardReceipt, error) {
+	if err := validateFastForward(branch, oldCommit, newCommit); err != nil {
+		return FastForwardReceipt{}, err
+	}
+	checkedOut, err := a.BranchCheckedOut(ctx, repository, branch)
+	if err != nil {
+		return FastForwardReceipt{}, err
+	}
+	if checkedOut {
+		return FastForwardReceipt{}, fmt.Errorf("branch %q is checked out", branch)
+	}
+	actual, err := a.ResolveRef(ctx, repository, "refs/heads/"+branch)
+	if err != nil {
+		return FastForwardReceipt{}, err
+	}
+	if actual != oldCommit {
+		return FastForwardReceipt{}, fmt.Errorf("expected branch %q at %q, got %q", branch, oldCommit, actual)
+	}
+	if err := a.assertAncestor(ctx, repository, oldCommit, newCommit); err != nil {
+		return FastForwardReceipt{}, err
+	}
+	if fastForwardRefBeforeRefUpdate != nil {
+		fastForwardRefBeforeRefUpdate()
+	}
+	// Recheck immediately at the final boundary. Git does not expose one
+	// transaction which combines worktree attachment state with update-ref, so
+	// this catches deterministic pre-CAS activation while update-ref retains
+	// the exact OID compare-and-swap for concurrent branch movement.
+	checkedOut, err = a.BranchCheckedOut(ctx, repository, branch)
+	if err != nil {
+		return FastForwardReceipt{}, err
+	}
+	if checkedOut {
+		return FastForwardReceipt{}, fmt.Errorf("branch %q became checked out", branch)
+	}
+	if err := a.updateBranchRef(ctx, repository, branch, newCommit, oldCommit); err != nil {
+		return FastForwardReceipt{}, fmt.Errorf("fast-forward ref transition: %w", err)
+	}
+	receipt := FastForwardReceipt{Branch: branch, OldCommit: oldCommit, NewCommit: newCommit}
+	if fastForwardRefAfterRefUpdate != nil {
+		fastForwardRefAfterRefUpdate()
+	}
+	// A worktree can still be attached by another Git process after the final
+	// pre-CAS observation. Do not report that as clean success. We cannot safely
+	// move the ref back while it is newly attached (that would leave its files
+	// stale), so return the owned receipt with a fail-closed error for recovery
+	// aware callers.
+	checkedOut, err = a.BranchCheckedOut(ctx, repository, branch)
+	if err != nil {
+		return receipt, err
+	}
+	if checkedOut {
+		return receipt, fmt.Errorf("branch %q became checked out after ref update", branch)
+	}
+	if err := ctx.Err(); err != nil {
+		return receipt, err
+	}
+	return receipt, nil
+}
+
+// RestoreFastForwardRef restores an inactive branch only while the exact
+// generation installed by FastForwardRef remains owned.
+func (a *Adapter) RestoreFastForwardRef(ctx context.Context, repository string, receipt FastForwardReceipt) error {
+	if err := validateFastForward(receipt.Branch, receipt.OldCommit, receipt.NewCommit); err != nil {
+		return err
+	}
+	checkedOut, err := a.BranchCheckedOut(ctx, repository, receipt.Branch)
+	if err != nil {
+		return err
+	}
+	if checkedOut {
+		return fmt.Errorf("branch %q is checked out", receipt.Branch)
+	}
+	actual, err := a.ResolveRef(ctx, repository, "refs/heads/"+receipt.Branch)
+	if err != nil {
+		return err
+	}
+	if actual != receipt.NewCommit {
+		return fmt.Errorf("restore fast-forward ref ownership: expected %q, got %q", receipt.NewCommit, actual)
+	}
+	if err := a.updateBranchRef(ctx, repository, receipt.Branch, receipt.OldCommit, receipt.NewCommit); err != nil {
+		return fmt.Errorf("restore fast-forward ref transition: %w", err)
 	}
 	return nil
 }

@@ -13,7 +13,7 @@ func atomicReplaceWithInfo(source, destination string, _ os.FileInfo) error {
 
 // removeAtomicTemporary removes a path only after proving it still identifies
 // the generation that the caller created or intentionally displaced.
-func removeAtomicTemporary(path string, expected os.FileInfo) error {
+var removeAtomicTemporary = func(path string, expected os.FileInfo) error {
 	actual, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
