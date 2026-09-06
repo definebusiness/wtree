@@ -126,10 +126,24 @@ func TestReleaseMaterializeDryRunNeverContactsUnavailableRevision(t *testing.T) 
 }
 
 func TestReleaseMaterializeBaseOnlyRegistersCallerCheckout(t *testing.T) {
+	base, manifest, request := releaseMaterializeBaseOnlyFixture(t, "release-base-only")
+	result, err := NewReleaseMaterializeService().Materialize(context.Background(), request)
+	if err != nil || result.Status != "completed" || len(result.Repositories) != 1 || result.Repositories[0].Role != "caller-provided-base" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	state, err := store.ReadWorkspace(WorkspaceStatePath(request.DataDir, manifest.Project.ID, "default"))
+	if err != nil || !state.Repositories["root"].Detached || state.Repositories["root"].Head != cloneGitOutput(t, base.Path, "rev-parse", "HEAD") {
+		t.Fatalf("state=%#v err=%v", state, err)
+	}
+	assertNoReleaseMaterializeStaging(t, filepath.Dir(base.Path))
+}
+
+func releaseMaterializeBaseOnlyFixture(t *testing.T, id string) (testutil.GitRepository, config.PortableManifest, ReleaseMaterializeRequest) {
+	t.Helper()
 	base := testutil.NewGitRepository(t)
 	base.CommitFile(".gitignore", "/.wtree.yml\n", "ignore")
 	identity := cloneGitOutput(t, base.Path, "rev-parse", "HEAD")
-	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: "release-base-only", Name: "release base only", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "root", URL: testutil.NewBareGitRemote(t)}, Upstream: config.Upstream{Branch: "main", Remote: "root", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{identity}}, Mount: ".", DefaultBranch: "main"}}}
+	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: config.PortableProject{ID: id, Name: id, BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": {Clone: config.CloneSource{Remote: "root", URL: testutil.NewBareGitRemote(t)}, Upstream: config.Upstream{Branch: "main", Remote: "root", Merge: "refs/heads/main"}, Identity: config.RepositoryIdentity{InitialCommits: []string{identity}}, Mount: ".", DefaultBranch: "main"}}}
 	manifestBytes, err := config.MarshalPortableManifest(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -141,13 +155,50 @@ func TestReleaseMaterializeBaseOnlyRegistersCallerCheckout(t *testing.T) {
 	writeAndCommitCloneFiles(t, base.Path, map[string]string{"project.wtree.yml": string(manifestBytes), ReleaseLockFilename: string(lockBytes)}, "release input")
 	base.Run(t, "checkout", "--detach")
 	data := filepath.Join(t.TempDir(), "data")
-	result, err := NewReleaseMaterializeService().Materialize(context.Background(), ReleaseMaterializeRequest{LockPath: filepath.Join(base.Path, ReleaseLockFilename), DataDir: data})
-	if err != nil || result.Status != "completed" || len(result.Repositories) != 1 || result.Repositories[0].Role != "caller-provided-base" {
-		t.Fatalf("result=%#v err=%v", result, err)
+	return base, manifest, ReleaseMaterializeRequest{LockPath: filepath.Join(base.Path, ReleaseLockFilename), DataDir: data}
+}
+
+func TestReleaseMaterializeCloneFailureAfterDestinationCreationCleansStaging(t *testing.T) {
+	base, _, request := releaseMaterializeChildFixture(t, "release-clone-failure-cleanup")
+	service := NewReleaseMaterializeService()
+	injected := errors.New("injected clone failure after destination creation")
+	service.clone = func(_ context.Context, _, destination, _ string) error {
+		if err := os.MkdirAll(destination, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(destination, "partial"), []byte("partial\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return injected
 	}
-	state, err := store.ReadWorkspace(WorkspaceStatePath(data, manifest.Project.ID, "default"))
-	if err != nil || !state.Repositories["root"].Detached || state.Repositories["root"].Head != cloneGitOutput(t, base.Path, "rev-parse", "HEAD") {
-		t.Fatalf("state=%#v err=%v", state, err)
+
+	result, err := service.Materialize(context.Background(), request)
+	if !hasCloneErrorKind(err, ErrorGit) || !errors.Is(err, injected) || hasCloneErrorKind(err, ErrorRollbackIncomplete) {
+		t.Fatalf("Materialize result=%#v error=%v, want clean Git failure", result, err)
+	}
+	if result.Status == "completed" {
+		t.Fatalf("Materialize result=%#v after failed clone", result)
+	}
+	if _, statErr := os.Lstat(filepath.Join(base.Path, "backend")); !os.IsNotExist(statErr) {
+		t.Fatalf("failed child was published: %v", statErr)
+	}
+	assertNoReleaseMaterializeStaging(t, filepath.Dir(base.Path))
+	recoveryPath := filepath.Join(request.DataDir, "projects", "release-clone-failure-cleanup", "recovery", "default.json")
+	if _, recoveryErr := store.ReadRecovery(recoveryPath); !os.IsNotExist(recoveryErr) {
+		t.Fatalf("cleaned clone failure recorded recovery=%v", recoveryErr)
+	}
+}
+
+func assertNoReleaseMaterializeStaging(t *testing.T, parent string) {
+	t.Helper()
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".wtree-release-") {
+			t.Fatalf("release staging artifact remained at %q", filepath.Join(parent, entry.Name()))
+		}
 	}
 }
 
@@ -189,6 +240,35 @@ func TestReleaseMaterializeStagesNestedAndSiblingBeforePublication(t *testing.T)
 		if _, detached, branchErr := gitadapter.NewAdapter("git").CurrentBranch(context.Background(), path); branchErr != nil || !detached {
 			t.Fatalf("%s detached=%t err=%v", path, detached, branchErr)
 		}
+	}
+}
+
+func TestReleaseMaterializeStagingMutationAfterAuthorityReleaseIsNotAdopted(t *testing.T) {
+	base, _, request := releaseMaterializeChildFixture(t, "release-staging-final-mutation")
+	service := NewReleaseMaterializeService()
+	service.afterStagingRelease = func(stage string) {
+		if err := os.WriteFile(filepath.Join(stage, "child"), []byte("foreign\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := service.Materialize(context.Background(), request)
+	if err == nil || result.Status == "completed" {
+		t.Fatalf("Materialize result=%#v error=%v after final staging mutation", result, err)
+	}
+	data, readErr := os.ReadFile(filepath.Join(base.Path, "backend", "child"))
+	if readErr != nil || string(data) != "foreign\n" {
+		t.Fatalf("foreign staged generation was not preserved: %q %v", data, readErr)
+	}
+	if _, statErr := os.Lstat(filepath.Join(base.Path, ".wtree.yml")); !os.IsNotExist(statErr) {
+		t.Fatalf("configuration published after rejected staging mutation: %v", statErr)
+	}
+	recovery, recoveryErr := store.ReadRecovery(filepath.Join(request.DataDir, "projects", "release-staging-final-mutation", "recovery", "default.json"))
+	if recoveryErr != nil {
+		t.Fatalf("read staging mutation recovery: %v; Materialize: %v", recoveryErr, err)
+	}
+	if recovery.FailedStep != "publication-rollback" || len(recovery.UnrevertedSteps) != 1 || recovery.UnrevertedSteps[0] != "publication" || len(recovery.RollbackFailures) != 1 || !strings.Contains(recovery.RollbackFailures[0].Error, filepath.Join(base.Path, "backend")) {
+		t.Fatalf("staging mutation recovery is not actionable: %+v", recovery)
 	}
 }
 
@@ -517,6 +597,10 @@ func TestReleaseMaterializeStagingQuarantinePreservesFinalBoundaryReplacement(t 
 	if err != nil {
 		t.Fatal(err)
 	}
+	owned, err = lease.prepareChild(staging, filepath.Join(staging, "owned"), owned, retainedParent, os.Mkdir, os.Lstat)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(staging, "owned"), []byte("owned\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -544,9 +628,50 @@ type releaseMaterializeObservedLease struct {
 	closeErr   error
 }
 
+type releaseMaterializeUnboundLease struct{ closePreservingCalls int }
+
+func (*releaseMaterializeUnboundLease) prepareChild(string, string, os.FileInfo, os.FileInfo, func(string, os.FileMode) error, func(string) (os.FileInfo, error)) (os.FileInfo, error) {
+	return nil, nil
+}
+
+func (*releaseMaterializeUnboundLease) captureChild(string, string, os.FileInfo, os.FileInfo, func(string) (os.FileInfo, error)) (os.FileInfo, error) {
+	return nil, nil
+}
+
+func (*releaseMaterializeUnboundLease) releaseChild(string, os.FileInfo, os.FileInfo, func(string) (os.FileInfo, error)) error {
+	return nil
+}
+
+func (lease *releaseMaterializeUnboundLease) closePreservingContainer() error {
+	lease.closePreservingCalls++
+	return nil
+}
+
+func (*releaseMaterializeUnboundLease) closeAll() error { return nil }
+
+func TestReleaseMaterializeCleanupUnboundChildRetainsContainer(t *testing.T) {
+	lease := &releaseMaterializeUnboundLease{}
+	staging := filepath.Join(t.TempDir(), "container", "root")
+	evidence, err := releaseMaterializeCleanupStaging(staging, nil, nil, lease, nil, nil)
+	if err == nil {
+		t.Fatal("attempted unbound child cleanup error = nil")
+	}
+	if evidence.retainedPath != filepath.Dir(staging) || !evidence.privateTree || evidence.quarantine || evidence.authorityIncomplete {
+		t.Fatalf("attempted unbound child cleanup evidence=%+v", evidence)
+	}
+	if lease.closePreservingCalls != 1 {
+		t.Fatalf("unbound cleanup closePreserving=%d", lease.closePreservingCalls)
+	}
+}
+
 func (lease releaseMaterializeObservedLease) closeAll() error {
 	*lease.closeCalls++
 	return errors.Join(lease.cloneStagingLease.closeAll(), lease.closeErr)
+}
+
+func (lease releaseMaterializeObservedLease) closePreservingContainer() error {
+	*lease.closeCalls++
+	return lease.cloneStagingLease.closePreservingContainer()
 }
 
 func TestReleaseMaterializePropagatesStagingCleanupAndRecordsRecovery(t *testing.T) {
@@ -624,6 +749,9 @@ func TestReleaseMaterializePropagatesStagingCleanupAndRecordsRecovery(t *testing
 			if test.wantUnreverted == "staging-quarantine" {
 				if !strings.Contains(recovery.RollbackFailures[0].Error, "retained staging quarantine") {
 					t.Fatalf("recovery does not identify retained quarantine: %+v", recovery)
+				}
+				if _, statErr := os.Lstat(retainedStaging); !os.IsNotExist(statErr) {
+					t.Fatalf("quarantine-only failure retained original staging root: %v", statErr)
 				}
 			} else if !strings.Contains(recovery.RollbackFailures[0].Error, retainedStaging) {
 				t.Fatalf("recovery does not identify staging location: %+v", recovery)

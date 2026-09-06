@@ -83,7 +83,7 @@ func containsPathSeparator(name string) bool {
 	return filepath.Base(name) != name || filepath.Clean(name) != name || filepath.IsAbs(name) || name == string(filepath.Separator) || len(name) >= 2 && name[1] == ':'
 }
 
-func openPrivatePath(anchor string, components []string, leaf string, create, protectExisting bool) (*privatePath, error) {
+func openPrivatePath(anchor string, components []string, leaf string, create, protectExisting, publicLeaf bool) (*privatePath, error) {
 	if !filepath.IsAbs(anchor) || filepath.Clean(anchor) != anchor {
 		return nil, errors.New("private path anchor must be a cleaned absolute path")
 	}
@@ -142,7 +142,11 @@ func openPrivatePath(anchor string, components []string, leaf string, create, pr
 		current = next
 	}
 	authority := &privatePath{anchor: anchor, chain: chain, components: append([]string(nil), components...), directory: current, leaf: leaf, user: user}
-	if err := authority.validateLeaf(false); err != nil {
+	validateLeaf := authority.validateLeaf
+	if publicLeaf {
+		validateLeaf = authority.validateExpectedRemovalLeaf
+	}
+	if err := validateLeaf(false); err != nil {
 		if !protectExisting {
 			authority.close()
 			return nil, err
@@ -157,6 +161,40 @@ func openPrivatePath(anchor string, components []string, leaf string, create, pr
 		}
 	}
 	return authority, nil
+}
+
+func (path *privatePath) openExpectedRemovalLeaf(name string, access windows.ACCESS_MASK, share uint32) (windows.Handle, error) {
+	if err := path.validateDirectory(); err != nil {
+		return windows.InvalidHandle, errors.Join(errPrivateDirectoryAuthority, err)
+	}
+	handle, err := openPrivateWindowsRelative(path.directory, name, access, share, windows.FILE_OPEN,
+		windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT, nil)
+	if err != nil {
+		if privatePathNotExist(err) {
+			return windows.InvalidHandle, markPrivatePathNotExist(err)
+		}
+		return windows.InvalidHandle, err
+	}
+	if err := validatePrivateWindowsType(handle, false); err != nil {
+		windows.CloseHandle(handle)
+		return windows.InvalidHandle, errors.Join(errors.New("unsafe expected-removal leaf"), err)
+	}
+	if err := validatePrivateWindowsRelativeIdentity(path.directory, name, handle, false); err != nil {
+		windows.CloseHandle(handle)
+		return windows.InvalidHandle, err
+	}
+	return handle, nil
+}
+
+func (path *privatePath) validateExpectedRemovalLeaf(required bool) error {
+	handle, err := path.openExpectedRemovalLeaf(path.leaf, windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE)
+	if err == nil {
+		return windows.CloseHandle(handle)
+	}
+	if !required && PrivatePathNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func closePrivateWindowsChain(chain []windows.Handle) error {
@@ -720,6 +758,42 @@ func (path *privatePath) remove(hook AtomicStepHook) error {
 		return errors.Join(ErrPrivateRemovalAmbiguous, err)
 	}
 	return removePrivateWindowsHandle(handle)
+}
+
+func (path *privatePath) removeExpected(expected os.FileInfo, expectedData []byte, hook AtomicStepHook) error {
+	if expected == nil || !os.SameFile(expected, expected) {
+		return errors.New("expected removal identity is required")
+	}
+	if err := atomicStep(hook, "before-quarantine"); err != nil {
+		return err
+	}
+	// Omitting FILE_SHARE_WRITE and FILE_SHARE_DELETE freezes both the bytes and
+	// name of the opened generation through handle-bound deletion.
+	handle, err := path.openExpectedRemovalLeaf(path.leaf,
+		windows.DELETE|windows.FILE_GENERIC_READ|windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_SHARE_READ)
+	if err != nil {
+		return err
+	}
+	file := os.NewFile(uintptr(handle), path.leaf)
+	if file == nil {
+		windows.CloseHandle(handle)
+		return errors.New("adopt expected-removal handle")
+	}
+	defer file.Close()
+	if _, err := validateExpectedAtomicFile(file, expected, expectedData); err != nil {
+		return errors.Join(ErrPrivateRemovalAmbiguous, err)
+	}
+	if err := path.validateDirectory(); err != nil {
+		return errors.Join(ErrPrivateRemovalAmbiguous, err)
+	}
+	if err := validatePrivateWindowsRelativeIdentity(path.directory, path.leaf, handle, false); err != nil {
+		return errors.Join(ErrPrivateRemovalAmbiguous, err)
+	}
+	if err := removePrivateWindowsHandle(handle); err != nil {
+		return errors.Join(ErrPrivateRemovalAmbiguous, err)
+	}
+	return path.syncDirectory()
 }
 
 func (path *privatePath) syncDirectory() error {

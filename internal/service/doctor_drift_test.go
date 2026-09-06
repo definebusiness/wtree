@@ -176,6 +176,8 @@ func (g *companionBaselineAuthorityGit) BranchExists(_ context.Context, reposito
 func TestCompanionBaselinePublicationAuthorityRequiresResolvedIdentityAndExistingBranch(t *testing.T) {
 	_, _, _, project := companionBaselinePublicationFixture(t)
 	publication := companionBaselinePublication{repositoryID: "root", baseline: "next"}
+	rootCommon := project.Repositories[0].CommonGitDir
+	otherCommon := filepath.Join(filepath.Dir(rootCommon), "other")
 	rootPath := project.Repositories[0].SourcePath
 	for _, test := range []struct {
 		name         string
@@ -186,11 +188,11 @@ func TestCompanionBaselinePublicationAuthorityRequiresResolvedIdentityAndExistin
 		want         bool
 		wantBranch   bool
 	}{
-		{name: "authorized", common: "/git/root", branchExists: true, want: true, wantBranch: true},
-		{name: "identity mismatch", common: "/git/other"},
+		{name: "authorized", common: rootCommon, branchExists: true, want: true, wantBranch: true},
+		{name: "identity mismatch", common: otherCommon},
 		{name: "identity observation error", commonErr: errors.New("common failed")},
-		{name: "missing branch", common: "/git/root", wantBranch: true},
-		{name: "branch observation error", common: "/git/root", branchErr: errors.New("branch failed"), wantBranch: true},
+		{name: "missing branch", common: rootCommon, wantBranch: true},
+		{name: "branch observation error", common: rootCommon, branchErr: errors.New("branch failed"), wantBranch: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			git := &companionBaselineAuthorityGit{common: test.common, commonErr: test.commonErr, branchExists: test.branchExists, branchErr: test.branchErr}
@@ -211,7 +213,7 @@ func TestCompanionBaselinePublicationAuthorityRequiresResolvedIdentityAndExistin
 		})
 	}
 
-	if authorized, err := companionBaselinePublicationAuthorized(context.Background(), &companionBaselineAuthorityGit{common: "/git/root", branchExists: true}, project, companionBaselinePublication{repositoryID: "missing", baseline: "next"}); err != nil || authorized {
+	if authorized, err := companionBaselinePublicationAuthorized(context.Background(), &companionBaselineAuthorityGit{common: rootCommon, branchExists: true}, project, companionBaselinePublication{repositoryID: "missing", baseline: "next"}); err != nil || authorized {
 		t.Fatalf("unknown repository authority = %t, %v", authorized, err)
 	}
 }
@@ -219,15 +221,16 @@ func TestCompanionBaselinePublicationAuthorityRequiresResolvedIdentityAndExistin
 func TestCompanionBaselinePublicationAuthorityPropagatesCancellation(t *testing.T) {
 	_, _, _, project := companionBaselinePublicationFixture(t)
 	publication := companionBaselinePublication{repositoryID: "root", baseline: "next"}
+	rootCommon := project.Repositories[0].CommonGitDir
 
 	commonContext, cancelCommon := context.WithCancel(context.Background())
-	commonGit := &companionBaselineAuthorityGit{common: "/git/root", branchExists: true, cancelOnCommon: cancelCommon}
+	commonGit := &companionBaselineAuthorityGit{common: rootCommon, branchExists: true, cancelOnCommon: cancelCommon}
 	if authorized, err := companionBaselinePublicationAuthorized(commonContext, commonGit, project, publication); authorized || !errors.Is(err, context.Canceled) || commonGit.branchPath != "" {
 		t.Fatalf("common cancellation = %t, %v, branch path %q", authorized, err, commonGit.branchPath)
 	}
 
 	branchContext, cancelBranch := context.WithCancel(context.Background())
-	branchGit := &companionBaselineAuthorityGit{common: "/git/root", branchExists: true, cancelOnBranch: cancelBranch}
+	branchGit := &companionBaselineAuthorityGit{common: rootCommon, branchExists: true, cancelOnBranch: cancelBranch}
 	if authorized, err := companionBaselinePublicationAuthorized(branchContext, branchGit, project, publication); authorized || !errors.Is(err, context.Canceled) {
 		t.Fatalf("branch cancellation = %t, %v", authorized, err)
 	}
@@ -245,7 +248,7 @@ func companionBaselinePublicationFixture(t *testing.T) (config.PortableManifest,
 	changed.DefaultBranch, changed.Upstream.Branch = "next", "next"
 	working.Repositories["root"] = changed
 	source := t.TempDir()
-	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "next", Companion: true, CommonGitDir: "/git/root", SourcePath: source}, {ID: "child", ParentID: "root", DefaultMount: "child", DefaultBranch: "main", CommonGitDir: "/git/child", SourcePath: filepath.Join(source, "child")}})
+	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "next", Companion: true, CommonGitDir: filepath.Join(source, ".git-root"), SourcePath: source}, {ID: "child", ParentID: "root", DefaultMount: "child", DefaultBranch: "main", CommonGitDir: filepath.Join(source, ".git-child"), SourcePath: filepath.Join(source, "child")}})
 	local := driftLocalConfig(project)
 	local.Version = config.ProjectConfigVersion4
 	local.Repositories["root"] = config.Repository{Source: ".", DefaultMount: ".", DefaultBranch: "next", Companion: true}

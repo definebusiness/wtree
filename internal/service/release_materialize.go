@@ -61,8 +61,10 @@ type ReleaseMaterializeService struct {
 	beforeChildQuarantine    func(string) error
 	beforeGroupingQuarantine func(string) error
 	beforeFileRemoval        func(string) error
+	afterStagingRelease      func(string)
 	wrapStagingLease         func(cloneStagingLease) cloneStagingLease
 	removeStagingQuarantine  func(string) error
+	clone                    func(context.Context, string, string, string) error
 	writeCAS                 func(cloneFileSnapshot, []byte, func() error) (ClonePublicationReceipt, error)
 	registrationCandidates   func(context.Context, string, store.Registry) []RegistrationConflictCandidate
 }
@@ -152,6 +154,13 @@ func (s *ReleaseMaterializeService) Materialize(ctx context.Context, q ReleaseMa
 			return result, err
 		}
 	}
+	if len(nonBaseIDs) == 0 {
+		if err := s.publish(ctx, base, baseHead, manifest, manifestBytes, lockBytes, project, paths, map[string]string{}, result.Repositories, q.DataDir, func() error { return nil }); err != nil {
+			return result, err
+		}
+		result.Status = "completed"
+		return result, nil
+	}
 	stagingRecoveryPath := filepath.Join(q.DataDir, "projects", project.ID, "recovery", "default.json")
 	stagingRecoveryBefore, recoveryErr := secureCloneFileSnapshot(stagingRecoveryPath)
 	if recoveryErr != nil || stagingRecoveryBefore.exists {
@@ -198,6 +207,10 @@ func (s *ReleaseMaterializeService) Materialize(ctx context.Context, q ReleaseMa
 			return result, NewError(ErrorValidation, fmt.Errorf("repository %q has unsafe release mount", id))
 		}
 		stage := filepath.Join(staging, relative)
+		stagingOwned, err = stagingLease.prepareChild(staging, stage, stagingOwned, stagingParentOwned, os.Mkdir, os.Lstat)
+		if err != nil {
+			return result, NewError(ErrorConflict, fmt.Errorf("prepare private release staging root: %w", err))
+		}
 		if err := os.MkdirAll(filepath.Dir(stage), 0o700); err != nil {
 			return result, NewError(ErrorInternal, fmt.Errorf("prepare staging for repository %q: %w", id, err))
 		}
@@ -212,8 +225,20 @@ func (s *ReleaseMaterializeService) Materialize(ctx context.Context, q ReleaseMa
 				return result, NewError(ErrorValidation, fmt.Errorf("repository %q mount is not ignored by its committed parent: %w", id, ignoreErr))
 			}
 		}
-		if err := s.git.Clone(ctx, repository.Clone.URL, stage, repository.Clone.Remote); err != nil {
+		stagingOwned, err = stagingLease.prepareChild(staging, stage, stagingOwned, stagingParentOwned, os.Mkdir, os.Lstat)
+		if err != nil {
+			return result, NewError(ErrorConflict, fmt.Errorf("revalidate private release staging root: %w", err))
+		}
+		clone := s.git.Clone
+		if s.clone != nil {
+			clone = s.clone
+		}
+		if err := clone(ctx, repository.Clone.URL, stage, repository.Clone.Remote); err != nil {
 			return result, NewError(ErrorGit, fmt.Errorf("stage repository %q: %w", id, err))
+		}
+		stagingOwned, err = stagingLease.captureChild(staging, stage, stagingOwned, stagingParentOwned, os.Lstat)
+		if err != nil {
+			return result, NewError(ErrorConflict, fmt.Errorf("capture private release staging root: %w", err))
 		}
 		if err := s.git.FetchAdvertisedRefs(ctx, stage, repository.Clone.Remote); err != nil {
 			return result, NewError(ErrorGit, fmt.Errorf("fetch advertised refs for repository %q: %w", id, err))
@@ -237,7 +262,10 @@ func (s *ReleaseMaterializeService) Materialize(ctx context.Context, q ReleaseMa
 		staged[id] = stage
 	}
 	// Every child is now proven before this first final mount is made public.
-	if err := s.publish(ctx, base, baseHead, manifest, manifestBytes, lockBytes, project, paths, staged, result.Repositories, q.DataDir); err != nil {
+	releaseStaging := func() error {
+		return stagingLease.releaseChild(staging, stagingOwned, stagingParentOwned, os.Lstat)
+	}
+	if err := s.publish(ctx, base, baseHead, manifest, manifestBytes, lockBytes, project, paths, staged, result.Repositories, q.DataDir, releaseStaging); err != nil {
 		return result, err
 	}
 	result.Status = "completed"
@@ -271,6 +299,17 @@ func releaseMaterializeCleanupStaging(staging string, owned, parent os.FileInfo,
 		if lease == nil {
 			evidence.authorityIncomplete = true
 			returnErr = errors.Join(returnErr, errors.New("release staging lease is unavailable"))
+		} else if evidence.retainedPath != "" {
+			// A retained tree or quarantine remains under platform staging
+			// authority. Release its handles without attempting another path-
+			// based disposition; retainedPath is the exact recovery evidence.
+			// Successful cleanup clears retainedPath and may dispose an empty
+			// platform container even when closeAll then reports an independent
+			// authority error.
+			if err := lease.closePreservingContainer(); err != nil {
+				evidence.authorityIncomplete = true
+				returnErr = errors.Join(returnErr, fmt.Errorf("close preserved release staging lease: %w", err))
+			}
 		} else if err := lease.closeAll(); err != nil {
 			evidence.authorityIncomplete = true
 			returnErr = errors.Join(returnErr, fmt.Errorf("close release staging lease: %w", err))
@@ -282,14 +321,15 @@ func releaseMaterializeCleanupStaging(staging string, owned, parent os.FileInfo,
 	if lease == nil {
 		return evidence, errors.New("preserve release staging without ownership lease")
 	}
+	if owned == nil {
+		// Staging is only created for non-base releases. An unbound root is
+		// therefore never a base-only success; retain the containing private
+		// Windows container as the exact recovery location.
+		evidence.retainedPath = filepath.Dir(staging)
+		return evidence, errors.New("release child staging was attempted without retained identity")
+	}
 	if err := lease.releaseChild(staging, owned, parent, os.Lstat); err != nil {
 		return evidence, fmt.Errorf("preserve substituted release staging root: %w", err)
-	}
-	// Base-only materialization owns only the private staging container. There
-	// is no logical staging child to inventory or quarantine; closing the lease
-	// disposes the empty container by its retained Windows handle.
-	if owned == nil {
-		return evidence, nil
 	}
 	tree, err := captureCloneTree(staging)
 	if err != nil {
@@ -478,7 +518,7 @@ func (s *ReleaseMaterializeService) validateLocalPreconditions(ctx context.Conte
 	return nil
 }
 
-func (s *ReleaseMaterializeService) publish(ctx context.Context, base, baseHead string, manifest config.PortableManifest, manifestBytes, lockBytes []byte, project domain.Project, paths, staged map[string]string, results []ReleaseMaterializeRepositoryResult, dataDir string) (returnErr error) {
+func (s *ReleaseMaterializeService) publish(ctx context.Context, base, baseHead string, manifest config.PortableManifest, manifestBytes, lockBytes []byte, project domain.Project, paths, staged map[string]string, results []ReleaseMaterializeRepositoryResult, dataDir string, releaseStaging func() error) (returnErr error) {
 	if s.removeAll == nil {
 		s.removeAll = os.RemoveAll
 	}
@@ -556,7 +596,7 @@ func (s *ReleaseMaterializeService) publish(ctx context.Context, base, baseHead 
 		}
 		for index := len(children) - 1; index >= 0; index-- {
 			if err := s.removeMaterializeChild(ctx, children[index]); err != nil {
-				failures = append(failures, fmt.Errorf("repository %q: %w", children[index].id, err))
+				failures = append(failures, fmt.Errorf("repository %q at %q: %w", children[index].id, children[index].path, err))
 			}
 		}
 		for index := len(groupingCreated) - 1; index >= 0; index-- {
@@ -605,6 +645,31 @@ func (s *ReleaseMaterializeService) publish(ctx context.Context, base, baseHead 
 		}
 		return nil
 	}
+	if releaseStaging == nil {
+		return rollback(NewError(ErrorInternal, errors.New("release staging authority is unavailable")))
+	}
+	stagedTrees := make(map[string]cloneTreeInventory, len(staged))
+	stagedCommon := make(map[string]string, len(staged))
+	stagedCommonRelative := make(map[string]string, len(staged))
+	stagedCommonInside := make(map[string]bool, len(staged))
+	for _, id := range portableIDsParentFirst(manifest) {
+		repository := manifest.Repositories[id]
+		if id == manifest.Project.BaseRepository || (repository.Parent != manifest.Project.BaseRepository && repository.Parent != "") {
+			continue
+		}
+		stageTree, err := captureCloneTree(staged[id])
+		if err != nil {
+			return rollback(NewError(ErrorInternal, fmt.Errorf("inventory staged repository %q: %w", id, err)))
+		}
+		stagedTrees[id] = stageTree
+		common, err := s.git.CommonGitDir(ctx, staged[id])
+		if err != nil {
+			return rollback(NewError(ErrorGit, fmt.Errorf("capture staged repository %q Git identity: %w", id, err)))
+		}
+		stagedCommon[id] = common
+		stagedCommonRelative[id], stagedCommonInside[id] = materializeChildCommonRelative(staged[id], common)
+	}
+	stagingReleased := false
 	// Rename only roots whose parent is the base or a sibling top-level parent;
 	// nested staged checkouts travel inside their already verified parent tree.
 	for _, id := range portableIDsParentFirst(manifest) {
@@ -620,10 +685,7 @@ func (s *ReleaseMaterializeService) publish(ctx context.Context, base, baseHead 
 		if err := revalidate(); err != nil {
 			return rollback(err)
 		}
-		stageTree, err := captureCloneTree(staged[id])
-		if err != nil {
-			return rollback(NewError(ErrorInternal, fmt.Errorf("inventory staged repository %q: %w", id, err)))
-		}
+		stageTree := stagedTrees[id]
 		parentIdentity, err := captureClonePathIdentity(filepath.Dir(paths[id]))
 		if err != nil {
 			return rollback(NewError(ErrorConflict, err))
@@ -631,9 +693,33 @@ func (s *ReleaseMaterializeService) publish(ctx context.Context, base, baseHead 
 		if _, err := os.Lstat(paths[id]); !os.IsNotExist(err) {
 			return rollback(NewError(ErrorConflict, fmt.Errorf("repository %q destination already exists", id)))
 		}
+		if !stagingReleased {
+			// Retain the staging root and its exact Git-object guard through
+			// every local precondition and the first child inventory. Release
+			// them only immediately before the authorized move makes the guard's
+			// old pathname unavailable. Deferred cleanup observes this release
+			// as a no-op, or safely retries a failed release.
+			if err := releaseStaging(); err != nil {
+				return rollback(NewError(ErrorConflict, fmt.Errorf("release private staging authority before publication: %w", err)))
+			}
+			stagingReleased = true
+		}
+		if s.afterStagingRelease != nil {
+			s.afterStagingRelease(staged[id])
+		}
 		if err := fsutil.RenameNoReplace(staged[id], paths[id]); err != nil {
 			return rollback(NewError(ErrorConflict, fmt.Errorf("publish repository %q: %w", id, err)))
 		}
+		common := stagedCommon[id]
+		if stagedCommonInside[id] {
+			common = filepath.Join(paths[id], stagedCommonRelative[id])
+		}
+		child := materializeChildReceipt{id: id, path: paths[id], parent: parentIdentity, grouping: grouping, tree: stageTree, commonGit: common}
+		// Register the frozen receipt immediately after the successful public
+		// rename. Any subsequent validation failure must preserve this public
+		// generation and write actionable recovery evidence rather than leave
+		// an unrecorded path outside both rollback and staging cleanup.
+		children = append(children, child)
 		renameInfo, renameInfoErr := os.Lstat(paths[id])
 		if renameInfoErr != nil {
 			return rollback(NewError(ErrorConflict, fmt.Errorf("capture published repository %q: %w", id, renameInfoErr)))
@@ -641,19 +727,18 @@ func (s *ReleaseMaterializeService) publish(ctx context.Context, base, baseHead 
 		if err := translateCloneRootAfterRename(paths[id], &stageTree, renameInfo); err != nil {
 			return rollback(NewError(ErrorConflict, fmt.Errorf("capture published repository %q: %w", id, err)))
 		}
-		common, err := s.git.CommonGitDir(ctx, paths[id])
-		if err != nil {
-			return rollback(NewError(ErrorGit, err))
-		}
-		child := materializeChildReceipt{id: id, path: paths[id], parent: parentIdentity, grouping: grouping, tree: stageTree, commonGit: common}
 		if err := s.revalidateMaterializeChild(ctx, child); err != nil {
 			return rollback(err)
 		}
-		children = append(children, child)
 		if s.afterPublish != nil {
 			if err := s.afterPublish(id); err != nil {
 				return rollback(err)
 			}
+		}
+	}
+	if !stagingReleased {
+		if err := releaseStaging(); err != nil {
+			return rollback(NewError(ErrorConflict, fmt.Errorf("release private staging authority: %w", err)))
 		}
 	}
 	configuration := releaseLocalConfiguration(manifest, base, paths)
@@ -1031,22 +1116,21 @@ func rollbackMaterializePublication(original cloneFileSnapshot, receipt ClonePub
 		}
 		return nil
 	}
-	authority, err := fsutil.OpenPrivatePath(filepath.Dir(owned.path), nil, filepath.Base(owned.path), false)
+	authority, err := fsutil.OpenExpectedRemovalPath(filepath.Dir(owned.path), filepath.Base(owned.path))
 	if err != nil {
-		return fmt.Errorf("retain exact publication removal authority: %w", err)
+		return fmt.Errorf("retain publication parent authority: %w", err)
 	}
-	defer authority.Close()
-	return authority.RemoveWithHook(func(step string) error {
+	removeErr := authority.RemoveExpectedWithHook(owned.info, owned.data, func(step string) error {
 		if step == "before-quarantine" {
 			if beforeRemoval != nil {
 				if err := beforeRemoval(owned.path); err != nil {
 					return err
 				}
 			}
-			return revalidateCloneFileSnapshot(owned)
 		}
 		return nil
 	})
+	return errors.Join(removeErr, authority.Close())
 }
 
 func (s *ReleaseMaterializeService) writeMaterializeRecovery(expected cloneFileSnapshot, owned *cloneFileSnapshot, ctx context.Context, base, baseHead string, manifest config.PortableManifest, manifestBytes, lockBytes []byte, children []materializeChildReceipt, configReceipt, stateReceipt, registryReceipt ClonePublicationReceipt, dataDir, projectID string, failures []error) error {

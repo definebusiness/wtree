@@ -3,6 +3,7 @@ package fsutil
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -144,6 +145,42 @@ func validateExpectedAtomicGeneration(path string, expected os.FileInfo, expecte
 	}
 	if !bytes.Equal(firstData, expectedData) || !bytes.Equal(secondData, expectedData) {
 		return nil, errors.New("displaced generation content differs from expected")
+	}
+	return last, nil
+}
+
+func validateExpectedAtomicFile(file *os.File, expected os.FileInfo, expectedData []byte) (os.FileInfo, error) {
+	if file == nil || expected == nil {
+		return nil, errors.New("expected file generation is unavailable")
+	}
+	first, err := file.Stat()
+	if err != nil || !first.Mode().IsRegular() || !os.SameFile(first, first) || !os.SameFile(expected, first) || first.Mode() != expected.Mode() {
+		return nil, errors.Join(errors.New("file generation identity or mode differs from expected"), err)
+	}
+	read := func() ([]byte, error) {
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+		return io.ReadAll(file)
+	}
+	firstData, err := read()
+	if err != nil {
+		return nil, err
+	}
+	middle, err := file.Stat()
+	if err != nil || !os.SameFile(first, middle) || middle.Mode() != first.Mode() {
+		return nil, errors.Join(errors.New("file generation changed during inspection"), err)
+	}
+	secondData, err := read()
+	if err != nil {
+		return nil, err
+	}
+	last, err := file.Stat()
+	if err != nil || !os.SameFile(first, last) || last.Mode() != first.Mode() {
+		return nil, errors.Join(errors.New("file generation changed during inspection"), err)
+	}
+	if !bytes.Equal(firstData, expectedData) || !bytes.Equal(secondData, expectedData) {
+		return nil, errors.New("file generation content differs from expected")
 	}
 	return last, nil
 }
