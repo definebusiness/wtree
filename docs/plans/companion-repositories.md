@@ -1,6 +1,6 @@
 # Companion repositories implementation plan
 
-Status: initial
+Status: implemented
 Source specification: [Companion repositories specification](../spec/companion-repositories.md)
 Implementation context: [Companion repositories implementation context](companion-repositories-context.md)
 Source idea: [Companion repositories with independent baselines](../ideas/companion-repositories.md)
@@ -472,7 +472,7 @@ Exit criteria: One command safely brings every eligible present checkout up
 to its companion baseline, retains successful work across independent
 failures, and makes every non-action explicit.
 
-### [ ] M05 — Complete end-to-end documentation, compatibility, and platform acceptance
+### [x] M05 — Complete end-to-end documentation, compatibility, and platform acceptance
 
 Specification coverage: [§2](../spec/companion-repositories.md#2-scope), [§11](../spec/companion-repositories.md#11-explicit-non-goals), and [§12](../spec/companion-repositories.md#12-acceptance-criteria)
 
@@ -533,3 +533,4 @@ Append entries during execution; do not rewrite earlier evidence.
 | 2026-09-05 | M02 | Exact focused service/CLI, `make check-local`, preserved-GOFLAGS full normal, full race, vet, format, build, and whitespace passed in frozen implementation and main-agent post-review runs; Windows fsutil cross-compilation also passed | Normal reviewer approved at remediation attempt 1 after R1–R3 added expected-identity CAS, post-replacement ownership, exact receipt-loss recovery, and regular-only Lstat authority, and R4 added cross-platform auxiliary-generation receipts with truthful recovery for conditional-restore and displaced-cleanup failures; no material findings remain | Not committed; commit was not authorized |
 | 2026-09-05 | M03 | Exact focused Exec, `make check-local`, 775-target full normal, 775-target full race, vet, format, build, and whitespace passed in frozen implementation and main-agent post-review runs | Normal reviewer approved at remediation attempt 0 after R1 restored matching-detached default compatibility while scoped selectors reject detached and R2 constrained path authority to selected repositories plus required present/absent ancestors without unselected sibling collisions; no material findings remain | Not committed; commit was not authorized |
 | 2026-09-06 | M04 | Exact focused normal/race, `make check-local`, preserved-GOFLAGS full normal, full race, vet, format, build, and whitespace passed in frozen implementation and main-agent post-review runs | Normal reviewer approved at remediation attempt 1 after R1–R4 established owned/uncertain state rollback, authenticated exact-ref fetch, cancellation-safe invalid-state reporting, and consistent adoption documentation; no material findings remain | Not committed; commit was not authorized |
+| 2026-09-07 | M05 | Tutorial, release, full normal/race, vet, format, build, whitespace, Windows cross-compilation, and complete release-materialize verification passed locally. Exact SHA `f7254b6` passed both hosted PR run `34076324241` and push run `34076322381` on Ubuntu, macOS, and native Windows, including every normal/race shard and release gate | Normal reviewer approved the complete M05 tree after R1–R7 and hosted H1–H6 remediation; no material findings remain and the durable ledger records attempt count 1 | `f7254b6` is the exact hosted implementation tree on PR #4 targeting `feat/release-lock`; final lifecycle metadata follows as a documentation-only checkpoint |

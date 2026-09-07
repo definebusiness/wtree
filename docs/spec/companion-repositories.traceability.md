@@ -1,16 +1,16 @@
 # Companion repositories traceability
 
-Status: planned
+Status: implemented
 Source idea: none (traceability companion created directly)
 Source specification: [Companion repositories specification](companion-repositories.md)
 Implementation plan: [Companion repositories implementation plan](../plans/companion-repositories.md)
 
 This matrix records acceptance evidence for the companion-repository delivery.
-It does not change the source specification's lifecycle state. Independent
-normal review approved M05-R1-R3-v1 with no unresolved material finding;
-matching exact-tree hosted Linux, macOS, and Windows jobs remain required
-before the source plan, specification, and this traceability companion can
-become implemented.
+Independent normal review approved the complete M05 tree after R1-R7 and
+hosted H1-H6 remediation with no unresolved material finding. Exact
+implementation SHA `f7254b6` passed complete Ubuntu, macOS, and native Windows
+matrices in PR run `34076324241` and push run `34076322381`, so the source plan,
+specification, and this traceability companion are implemented.
 
 | §12 acceptance criterion | Production owner | Focused evidence | Public/tutorial evidence | Safety and platform evidence |
 |---|---|---|---|---|
@@ -20,7 +20,7 @@ become implemented.
 | 4. Atomic future baseline | `internal/service/repository_branch.go`, config atomic publication | `repository_branch` service and CLI tests | runner proves v1 dry-run/JSON then a real baseline change without moving the active checkout | no fetch, switch, merge, reset, staging, commit, push, or branch creation; split-publication/recovery tests are focused |
 | 5. Exact exec scopes | exec service and CLI | CLI/service selection tests | runner proves default, ordinary-only, exact companion, and mutually-exclusive selector failure | empty/incompatible selector preflight precedes launch; ordinary JSON omits additive fields |
 | 6. Best-effort companion update | companion-update service/CLI and configured-ref adapter | `companion_update` service and CLI contract tests, Git aggregate tests | runner proves dry-run envelope, baseline-before-clean-present-workspace ordered entry, exact previous/resulting heads, Git branch advancement, and persisted expected-head update | focused cases cover invalid state, stale authority, cancellation, rollback/recovery, no duplicate processing, no merge/force/push/global rollback, and redaction |
-| 7. End-to-end docs, compatibility, hooks, update/recovery, locking | existing update, hooks, release-lock, rendering, documentation owners | public CLI JSON/human/error tests; release and hook suites; ordinary compatibility tests | [companion](../../tutorial/COMPANIONS.md), [all-command](../../tutorial/ALL-COMMANDS.md), [release](../../tutorial/RELEASES.md), README, and INSTALL; runner binds dry-run and real lock backend revision to the companion Git HEAD | local tutorial/release/normal/race/vet/format/build/whitespace gates are required; exact delivered-tree hosted platform evidence is outstanding and not claimed |
+| 7. End-to-end docs, compatibility, hooks, update/recovery, locking | existing update, hooks, release-lock, rendering, documentation owners | public CLI JSON/human/error tests; release and hook suites; ordinary compatibility tests | [companion](../../tutorial/COMPANIONS.md), [all-command](../../tutorial/ALL-COMMANDS.md), [release](../../tutorial/RELEASES.md), README, and INSTALL; runner binds dry-run and real lock backend revision to the companion Git HEAD | local tutorial/release/normal/race/vet/format/build/whitespace gates passed; exact SHA `f7254b6` passed complete Ubuntu, macOS, and native Windows PR and push matrices |
 
 ## Result and error contract audit
 

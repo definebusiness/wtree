@@ -1,6 +1,6 @@
 # Companion repositories specification
 
-Status: planned
+Status: implemented
 Source idea: [Companion repositories with independent baselines](../ideas/companion-repositories.md)
 Implementation plan: [Companion repositories implementation plan](../plans/companion-repositories.md)
 Traceability companion: [Companion repositories traceability](companion-repositories.traceability.md)
