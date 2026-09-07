@@ -21,9 +21,9 @@ import (
 	"github.com/spf13/pflag"
 )
 
-// Version is replaced by release builds when needed. Its development value is
-// deterministic so local builds and tests have a stable identity.
-var Version = "0.5.0"
+// Version is set by release builds through linker flags. Local builds default
+// to a development identity.
+var Version = "dev"
 
 // Execute runs wtree without taking process-level actions such as os.Exit.
 func Execute(args []string, stdout, stderr io.Writer) error {

@@ -18,6 +18,10 @@ import (
 )
 
 func TestExecuteVersion(t *testing.T) {
+	original := cli.Version
+	cli.Version = "test-version"
+	t.Cleanup(func() { cli.Version = original })
+
 	for _, argument := range []string{"--version", "-v"} {
 		t.Run(argument, func(t *testing.T) {
 			result := testutil.RunCommand(t, cli.Execute, argument)
@@ -25,7 +29,7 @@ func TestExecuteVersion(t *testing.T) {
 			if result.Err != nil {
 				t.Fatalf("Execute() error = %v", result.Err)
 			}
-			if got, want := result.Stdout, "wtree 0.2.0\n"; got != want {
+			if got, want := result.Stdout, "wtree test-version\n"; got != want {
 				t.Errorf("stdout = %q, want %q", got, want)
 			}
 			if result.Stderr != "" {
