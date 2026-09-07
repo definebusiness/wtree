@@ -40,6 +40,61 @@ names match the documented Linux/macOS/Windows artifact schema, plus its own
 `SHA256SUMS`, `LICENSE`, and `NOTICE`. Other files, including other `wtree_*`
 names that do not match that schema, are preserved.
 
+## Publish a public GitHub release
+
+The `github-release` target builds the exact local release artifact set and
+passes it to GitHub CLI. It does not create or push tags, change repository
+visibility, commit changes, or push branches. It refuses to continue unless:
+
+- the worktree is clean;
+- `v<VERSION>` exists locally and identifies `HEAD`;
+- the same tag is already present at the configured `REMOTE` (default
+  `origin`) and identifies the same commit;
+- `gh` is authenticated and the selected GitHub repository is public; and
+- every expected artifact exists and passes `SHA256SUMS` verification.
+
+Authenticate GitHub CLI, prepare the reviewed release commit, then create and
+push an annotated tag:
+
+```sh
+gh auth login -h github.com
+make check
+git tag -a v1.2.3 -m 'wtree v1.2.3'
+git push origin v1.2.3
+```
+
+Draft creation is the safe default:
+
+```sh
+VERSION=1.2.3 make github-release
+gh release view v1.2.3 --web
+```
+
+After reviewing its notes and six uploaded assets, publish the draft through
+GitHub CLI or the GitHub web interface:
+
+```sh
+gh release edit v1.2.3 --draft=false --latest
+```
+
+Set `PUBLISH=1` only when the release should become public immediately:
+
+```sh
+VERSION=1.2.3 PUBLISH=1 make github-release
+```
+
+`GH_REPO=owner/name` selects an explicit GitHub repository,
+`REMOTE=upstream` selects the Git remote used for tag verification, and
+`DIST_DIR=/path/to/output` selects the local artifact directory. The publisher
+never makes a private repository public; change visibility separately only
+after auditing the complete Git history, Actions logs, and repository data.
+
+Publishing uses `gh release create --verify-tag --generate-notes`. It refuses
+an absent remote tag instead of allowing GitHub CLI to create one from a
+default branch. A failed or repeated creation remains visible for manual
+inspection; the script never deletes, overwrites, or replaces an existing
+release or asset.
+
 `wtree` is licensed under the MIT License. The source and each locally built
 release directory include `LICENSE` and `NOTICE`; the notice identifies Define
 Business LTD as copyright holder and Marcel Linnenfelser with Codex as author.

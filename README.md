@@ -102,6 +102,153 @@ git -C services/api add .gitignore project.wtree.yml
 stages, commits, or pushes; review and commit the portable manifest and any
 automatic `.gitignore` changes yourself.
 
+## Git authentication troubleshooting
+
+`wtree` delegates authentication to Git and SSH. It does not store
+credentials, accept credential flags, or permit credentials in repository
+URLs. Network operations are noninteractive, so configure and test
+authentication before running the corresponding `wtree` command.
+
+Authentication has two intentionally different boundaries:
+
+- `wtree fetch` and `wtree release materialize` preserve the caller's normal
+  noninteractive Git authentication environment, including an SSH agent or
+  credential helper.
+- Repository discovery, `init`, `clone`, and advertised-ref checks use a
+  hardened Git environment. It disables terminal and askpass prompts, ignores
+  global and system Git configuration, and does not pass `SSH_AUTH_SOCK`.
+
+Consequently, `git fetch` can work in the same terminal while `wtree init` or
+`wtree clone` fails. First identify the remote and test the same transport
+directly:
+
+```sh
+git remote -v
+git ls-remote --refs -- git@gitlab.example.com:group/project.git \
+  refs/heads/main
+ssh -T git@gitlab.example.com
+ssh -G git@gitlab.example.com
+```
+
+For SSH, the remote user is normally `git`; the server maps the offered public
+key to the GitLab, GitHub, or other hosting account. If a key has a custom
+filename, declare it in the OpenSSH user configuration with an absolute path
+and restrict selection with `IdentitiesOnly yes`:
+
+```sshconfig
+Host gitlab.example.com
+    HostName gitlab.example.com
+    User git
+    IdentityFile /absolute/path/to/.ssh/id_ed25519_gitlab
+    IdentitiesOnly yes
+```
+
+Verify the host key through the hosting provider or an administrator before
+accepting or adding it to `known_hosts`. Do not blindly trust a host-key prompt
+or paste a credential-bearing HTTPS URL into `.wtree.yml` or
+`project.wtree.yml`.
+
+### Linux
+
+Use OpenSSH permissions and load an encrypted key into the agent before an
+authenticated `wtree fetch` or release materialization:
+
+```sh
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/config ~/.ssh/id_ed25519_gitlab
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519_gitlab
+ssh -T git@gitlab.example.com
+```
+
+An agent-only key is not visible to the hardened `init` and `clone` boundary.
+Prefer an explicit `IdentityFile` that SSH can use noninteractively. When an
+encrypted key must remain agent-backed, the following temporary Git wrapper
+restores only the current agent socket for one invocation:
+
+```sh
+wtree_auth_dir=$(mktemp -d)
+wtree_real_git=$(command -v git)
+cat >"$wtree_auth_dir/git" <<EOF
+#!/bin/sh
+export SSH_AUTH_SOCK="$SSH_AUTH_SOCK"
+exec "$wtree_real_git" "\$@"
+EOF
+chmod 700 "$wtree_auth_dir/git"
+
+PATH="$wtree_auth_dir:$PATH" wtree init --dry-run
+rm -r -- "$wtree_auth_dir"
+```
+
+The wrapper contains the socket path, not the private key, and should be
+deleted immediately. Recreate it after the agent or login session changes.
+
+### macOS
+
+Configure the identity explicitly and let Apple's OpenSSH retrieve its
+passphrase from Keychain when appropriate:
+
+```sshconfig
+Host gitlab.example.com
+    HostName gitlab.example.com
+    User git
+    IdentityFile /Users/alice/.ssh/id_ed25519_gitlab
+    IdentitiesOnly yes
+    AddKeysToAgent yes
+    UseKeychain yes
+```
+
+Then register and test the key:
+
+```sh
+chmod 600 ~/.ssh/config ~/.ssh/id_ed25519_gitlab
+ssh-add --apple-use-keychain ~/.ssh/id_ed25519_gitlab
+ssh -T git@gitlab.example.com
+```
+
+If the key is available only through an environment-selected agent, use the
+temporary wrapper from the Linux section for `init` or `clone`. Keychain or
+agent access belongs in local machine configuration and must never be copied
+into a project manifest.
+
+### Windows
+
+Prefer the built-in Windows OpenSSH Authentication Agent instead of an agent
+that depends on Git Bash, Pageant, or another process-specific environment.
+In an elevated PowerShell session, enable the service, then add and test the
+key from a normal PowerShell session:
+
+```powershell
+Set-Service -Name ssh-agent -StartupType Automatic
+Start-Service ssh-agent
+ssh-add "$env:USERPROFILE\.ssh\id_ed25519_gitlab"
+ssh -T git@gitlab.example.com
+```
+
+Create `%USERPROFILE%\.ssh\config` with forward-slash absolute paths:
+
+```sshconfig
+Host gitlab.example.com
+    HostName gitlab.example.com
+    User git
+    IdentityFile C:/Users/Alice/.ssh/id_ed25519_gitlab
+    IdentitiesOnly yes
+```
+
+Check which executables are used with `where.exe git` and `where.exe ssh`.
+When Git for Windows selects a bundled SSH client that cannot reach the
+Windows agent service, put `C:\Windows\System32\OpenSSH` before the Git SSH
+directory in `PATH` for the `wtree` invocation. Environment-dependent Pageant
+or Git Bash agent sockets are not available to hardened `init` and `clone`
+checks.
+
+For HTTPS remotes, configure the platform credential helper before
+authenticated fetch or release commands and confirm it with `git ls-remote`.
+Global credential helpers and askpass programs are deliberately unavailable
+to hardened `init` and `clone` checks; use SSH for private repositories at
+that boundary. Never place a personal access token, password, or credentialed
+URL in a manifest, shell history, diagnostic, or wrapper.
+
 Before manually publishing a complete workspace, run `wtree push`. It only
 reports whether each checkout is already at its exact configured upstream tip;
 it never runs `git push`, fetches, or creates refs or tags. Publication remains

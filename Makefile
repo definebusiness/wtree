@@ -1,4 +1,4 @@
-.PHONY: test test-race test-full test-full-race test-changed test-changed-race check-local check-full local-test-targets-test local-integration-smoke vet build release release-test tutorial-test companion-hostile-tutorial-test lifecycle-hook-tutorial-test check fmt-check
+.PHONY: test test-race test-full test-full-race test-changed test-changed-race check-local check-full local-test-targets-test local-integration-smoke vet build release github-release github-release-test release-test tutorial-test companion-hostile-tutorial-test lifecycle-hook-tutorial-test check fmt-check
 
 # TEST_TIMEOUT remains a compatibility override for callers that intentionally
 # want one bound for both test modes. The mode-specific defaults match CI's
@@ -67,8 +67,18 @@ install:
 release:
 	VERSION=$${VERSION:?set VERSION, for example VERSION=1.2.3} DIST_DIR=$${DIST_DIR:-dist} ./scripts/release-build.sh
 
+# github-release invokes an explicit guarded publisher, which validates the
+# source before calling the same local release builder above. Draft creation is
+# the default; PUBLISH=1 is required to make the release immediately public.
+github-release:
+	VERSION=$${VERSION:?set VERSION, for example VERSION=1.2.3} DIST_DIR=$${DIST_DIR:-dist} PUBLISH=$${PUBLISH:-0} ./scripts/github-release.sh
+
+github-release-test:
+	./scripts/github-release_test.sh
+
 release-test:
 	./scripts/release-build_test.sh
+	$(MAKE) github-release-test
 
 tutorial-test:
 	./tutorial/run-all-commands.sh
