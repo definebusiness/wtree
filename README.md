@@ -140,6 +140,37 @@ contract. A version 2 document must remain hook-free: adding `hooks` or
 versions are independent, and loading a version 3 manifest never upgrades the
 ignored local `.wtree.yml` or installs anything.
 
+### Companion repositories (configuration v4)
+
+Version 4 of `project.wtree.yml` and `.wtree.yml` adds an optional
+`companion: true` repository marker. A companion remains a normal member of
+the repository forest, but its existing `default_branch` is its independent
+baseline. `wtree clone` checks out that baseline; a named `wtree create`
+creates the normal workspace-named branch from it. `--from` continues to
+select the base only for ordinary repositories.
+
+```yaml
+version: 4
+repositories:
+  tools:
+    companion: true
+    default_branch: main
+```
+
+The field is rejected by strict v2/v3 readers. Canonical v4 output writes
+`companion: true` only for companions and omits false. To adopt the checkpoint,
+commit a reviewed version-4 `project.wtree.yml` with the marker, then run
+`wtree update` from the tracked project so it writes the matching local v4
+configuration. A fresh `wtree clone` does the same. Do not hand-edit local
+state to infer a role, and `init` does not infer roles. After adoption, use the
+separate `wtree repo branch` command to change a companion baseline or
+`wtree companion update` to bring safe present workspaces forward.
+
+The [executable companion tutorial](tutorial/COMPANIONS.md) walks through v4
+adoption, mixed-baseline create, local commits, explicit exec scopes, baseline
+change, best-effort update, lifecycle retention, and release-lock inclusion in
+an isolated local fixture.
+
 There are three intentionally separate sources:
 
 - Local `.wtree.yml` `hooks.post-create` runs after a successful `wtree create`.
@@ -238,6 +269,12 @@ wtree create feature/login
 cd "$(wtree path feature/login)"
 ```
 
+For a companion, the new workspace branch is based on that repository's
+configured `default_branch`; `--from` continues to apply only to ordinary
+repositories. A plan or dry run shows the companion role and resolved baseline
+when any companion is present. Its JSON adds `companion` and `baseline` only
+for companions, preserving ordinary plan output.
+
 The original clone is the `default` workspace. Jump back to it—and later back
 to the branch workspace—through `wtree path` rather than reconstructing either
 location:
@@ -269,12 +306,19 @@ wtree status feature/login --json
 ```
 
 Run one direct executable in every verified repository checkout with `exec`.
-It preflights the complete workspace before starting anything, passes arguments
-literally, and does not add an implicit shell or roll back effects made by your
-program. Use an explicit shell only when shell syntax is actually wanted:
+Use `--no-companions` for only present ordinary repositories, or
+`--repository <id>` for one configured present repository. Selection happens
+before preflight, so an unselected broken checkout does not block the command.
+Selected checkouts are verified before anything starts; arguments remain
+literal, there is no implicit shell, and program effects cannot be rolled back.
+The selectors are mutually exclusive; `exec` does not provide named groups or
+any broader repository-selection language.
+Use an explicit shell only when shell syntax is actually wanted:
 
 ```sh
 wtree exec -- go test ./...
+wtree exec --no-companions -- go test ./...
+wtree exec --repository backend -- git status --short
 wtree exec -- sh -c 'make test | tee test.log'
 ```
 
@@ -295,6 +339,28 @@ ordered `repositories` list. Each repository entry carries its declared
 commands stay scalar: `wtree path` and `wtree repo path` print only one path.
 When a project is stale or a failure happens before topology is validated,
 those unproven topology fields are omitted rather than guessed.
+
+For a configured companion repository, `wtree repo branch <repository> <branch>`
+changes the baseline used by future workspaces. The local branch must already
+exist. The command updates the matching local and portable configuration
+atomically; it does not fetch, switch, create, delete, stage, commit, or push
+anything. Use `--dry-run` to inspect the exact future-facing change and
+`--json` for its v1 result envelope. If a publication cannot be completely
+reversed, `wtree` records recovery evidence and refuses another baseline
+change until that evidence is reconciled.
+
+To bring present workspaces forward after the configured upstream branch has
+advanced, use `wtree companion update <repository>`. It fetches that exact
+configured companion ref once, settles the baseline, then best-effort
+fast-forwards only safe present checkouts. It never updates removed workspaces,
+creates worktrees, merges, rebases, resets, forces, or pushes. `--dry-run`
+performs local observation only and marks the fetch-dependent facts deferred;
+`--json` returns one v1 result document with each baseline/workspace outcome.
+
+```sh
+wtree companion update tools --dry-run
+wtree companion update tools --json
+```
 
 Inspect the global project registry from any directory. This is read-only and
 reports inconsistent registrations without pruning repositories, worktrees, or
@@ -357,6 +423,15 @@ Permanently remove the worktrees, branches, and retained state:
 wtree delete feature/login
 ```
 
+For a repository declared as a companion, a workspace may safely be ahead of
+its recorded checkout generation on its attached workspace branch. `status`
+reports that clean state as `advanced`; it is informational rather than local
+drift. `remove` and `checkout` retain and restore that branch. `delete` still
+removes only workspace-specific local branches: it preserves the companion's
+currently configured baseline (including with `--force`) and never deletes a
+remote branch. Delete JSON marks that retained branch with
+`preserved: true` and `reason: "companion-baseline"`.
+
 Use `--dry-run` on mutating commands that support it to validate and preview an
 operation. Command help lists whether that option is available. Use `--force`
 only when you explicitly intend to override the reported safety checks. `wtree
@@ -370,13 +445,13 @@ and later mutations remain blocked until the retained work is inspected and
 reconciled. Start with `wtree doctor <workspace>` and follow the
 [incomplete-rollback guidance](docs/TROUBLESHOOTING.md#an-operation-reports-an-incomplete-rollback).
 
-Local project configuration is strictly schema version 2 or version 3 when it
-contains lifecycle hooks. A version 1
-`.wtree.yml` is rejected with reinitialization guidance; it is never silently
-rewritten. Hook-free portable manifests remain version 2; hook-bearing portable
-manifests are explicitly version 3. Global configuration,
-workspace state/plans, registry, and recovery records retain their established
-versions.
+Local project configuration is strictly schema version 2, version 3 when it
+contains lifecycle hooks, or version 4 when it declares companions. A version
+1 `.wtree.yml` is rejected with reinitialization guidance; it is never silently
+rewritten. Hook-free portable manifests remain version 2, hook-bearing portable
+manifests are version 3, and companion manifests are version 4. Global
+configuration, workspace state/plans, registry, and recovery records retain
+their established versions.
 
 Run `wtree --how-to` for the installed workflow guide, or
 `wtree <command> --help` for the full command reference.

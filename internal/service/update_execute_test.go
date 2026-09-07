@@ -2260,6 +2260,62 @@ func TestUpdateExecutRecoveryReopensStrictJournalAndRestoresExactTrackedManifest
 	}
 }
 
+func TestUpdateExecutRecoveryRestoresV4CompanionHooksWithoutRoleLoss(t *testing.T) {
+	// RED: crash replay restores the exact tracked generation, so v4's role
+	// and the carried-over v3 hook metadata cannot be reconstructed from a
+	// lossy repository projection.
+	root := driftRepository("", ".")
+	root.Companion = true
+	original, err := config.MarshalPortableManifest(config.PortableManifest{
+		Version:      config.PortableManifestVersion4,
+		Project:      config.PortableProject{ID: "project", Name: "original v4", BaseRepository: "root"},
+		Repositories: map[string]config.PortableRepository{"root": root},
+		Hooks:        config.HookEvents{config.HookEventPostClone: {{ID: "portable", Command: []string{"hooks/portable"}}}},
+		SharedHooks:  config.HookEvents{config.HookEventPostCreate: {{ID: "shared", Command: []string{"hooks/shared"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := append(append([]byte(nil), original...), []byte("# interrupted candidate generation\n")...)
+	target := filepath.Join(t.TempDir(), "project.wtree.yml")
+	if err := os.WriteFile(target, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	plan := updateRecoveryPlan(t, target, original, candidate)
+	request := UpdateExecutionRequest{DataDir: filepath.Join(t.TempDir(), "data"), ProjectID: "project", OperationID: "operation-v4-recover", Plan: plan}
+	sources, err := prepareUpdateBackupSources([]updateBackupSource{{kind: "tracked-manifest", path: target}}, map[string][]byte{"tracked-manifest": original})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeUpdateBackups(request, sources); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := newUpdateJournal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.Backups = backupMetadata(sources)
+	journal.Progress = []UpdateJournalEffect{{Sequence: 1, Name: "repository-root-fast-forward", Repository: "root", Receipt: updateRecoveryFastForwardReceipt(t, request, "root", driftOID('2')), State: "completed"}}
+	journalPath, err := UpdateJournalPath(request.DataDir, request.ProjectID, request.OperationID)
+	if err != nil || writeNewUpdateJournal(NewUpdateExecutor(), journalPath, journal) != nil {
+		t.Fatalf("write v4 recovery journal path=%q err=%v", journalPath, err)
+	}
+	if err := os.WriteFile(target, candidate, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewUpdateExecutorWith(UpdateExecutorDependencies{Git: &updateExecutionGit{}}).Recover(context.Background(), request); err != nil {
+		t.Fatalf("Recover() = %v", err)
+	}
+	restoredBytes, err := os.ReadFile(target)
+	if err != nil || !bytes.Equal(restoredBytes, original) {
+		t.Fatalf("exact v4 tracked-manifest restore=%q err=%v", restoredBytes, err)
+	}
+	restored, err := config.LoadPortableManifest(restoredBytes)
+	if err != nil || restored.Version != config.PortableManifestVersion4 || !restored.Repositories["root"].Companion || len(restored.Hooks) != 1 || len(restored.SharedHooks) != 1 {
+		t.Fatalf("v4 recovery lost role or hooks manifest=%#v err=%v", restored, err)
+	}
+}
+
 func TestUpdateExecutRecoveryRetainsTamperedOrConcurrentEvidence(t *testing.T) {
 	root := t.TempDir()
 	original := driftManifest(t, map[string]config.PortableRepository{"root": driftRepository("", ".")})

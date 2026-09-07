@@ -29,6 +29,8 @@ type DeletionBranch struct {
 	Branch       string `json:"branch"`
 	Merged       bool   `json:"merged"`
 	ForceBranch  bool   `json:"forceBranch,omitempty"`
+	Preserved    bool   `json:"preserved,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 // WorkspaceDeleter owns the destructive branch/state boundary. Its recovery
@@ -66,6 +68,13 @@ func (d *WorkspaceDeleter) PlanDelete(ctx context.Context, project domain.Projec
 	value := DeletionPlan{RemovalPlan: removal, Branches: make([]DeletionBranch, 0, len(removal.Repositories))}
 	for _, item := range removal.Repositories {
 		repository := repositories[item.ID]
+		// A companion baseline is shared authority, not a workspace-owned
+		// branch. Preserve it even when a workspace is named after the baseline
+		// and even when --force would otherwise permit deleting an unmerged ref.
+		if repository.Companion && item.Branch == repository.DefaultBranch {
+			value.Branches = append(value.Branches, DeletionBranch{RepositoryID: item.ID, Branch: item.Branch, Preserved: true, Reason: "companion-baseline"})
+			continue
+		}
 		exists, err := d.git.BranchExists(ctx, repository.SourcePath, item.Branch)
 		if err != nil {
 			return DeletionPlan{}, NewError(ErrorGit, fmt.Errorf("check branch %q for repository %q: %w", item.Branch, item.ID, err))
@@ -184,6 +193,9 @@ func (d *WorkspaceDeleter) deletionSteps(project domain.Project, value DeletionP
 		repositories[repository.ID] = repository
 	}
 	for _, branch := range value.Branches {
+		if branch.Preserved {
+			continue
+		}
 		repository := repositories[branch.RepositoryID]
 		item := removalRepositoryByID(value.RemovalPlan, branch.RepositoryID)
 		branch := branch

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/definebusiness/wtree/internal/config"
+	"github.com/definebusiness/wtree/internal/domain"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
 	"github.com/definebusiness/wtree/internal/store"
 )
@@ -57,6 +58,201 @@ func TestDoctorDriftFindingsProjectsStableNonFixableCodes(t *testing.T) {
 	if !reflect.DeepEqual(codes, want) {
 		t.Fatalf("projected codes = %#v, want %#v", codes, want)
 	}
+}
+
+func TestExactCompanionBaselinePublicationAllowsOnlyOneMatchedCompanionBaseline(t *testing.T) {
+	tracked, working, local, project := companionBaselinePublicationFixture(t)
+	publication, exact := exactCompanionBaselinePublication(tracked, working, local, project)
+	if !exact || publication.repositoryID != "root" || publication.baseline != "next" {
+		t.Fatalf("exact companion baseline publication = %#v, %t", publication, exact)
+	}
+	if !companionBaselinePublicationStatus(gitadapter.Status{Entries: []gitadapter.StatusEntry{{Index: ' ', Worktree: 'M', Path: ".wtree.yml"}, {Index: ' ', Worktree: 'M', Path: "project.wtree.yml"}}}, "project.wtree.yml", ".wtree.yml") {
+		t.Fatal("exact unstaged configuration status was rejected")
+	}
+	if companionBaselinePublicationStatus(gitadapter.Status{Entries: []gitadapter.StatusEntry{{Index: ' ', Worktree: 'M', Path: "project.wtree.yml"}, {Index: ' ', Worktree: 'M', Path: "README.md"}}}, "project.wtree.yml", ".wtree.yml") {
+		t.Fatal("unrelated working-tree dirt was accepted")
+	}
+	if companionBaselinePublicationStatus(gitadapter.Status{Entries: []gitadapter.StatusEntry{{Index: 'M', Worktree: ' ', Path: "project.wtree.yml"}}}, "project.wtree.yml", ".wtree.yml") {
+		t.Fatal("staged manifest was accepted")
+	}
+
+	for _, test := range []struct {
+		name   string
+		change func(*config.PortableManifest, *config.ProjectConfig)
+	}{
+		{name: "split local baseline", change: func(_ *config.PortableManifest, local *config.ProjectConfig) {
+			repository := local.Repositories["root"]
+			repository.DefaultBranch = "main"
+			local.Repositories["root"] = repository
+		}},
+		{name: "ordinary baseline", change: func(working *config.PortableManifest, _ *config.ProjectConfig) {
+			repository := working.Repositories["root"]
+			repository.Companion = false
+			working.Repositories["root"] = repository
+		}},
+		{name: "merge changed", change: func(working *config.PortableManifest, _ *config.ProjectConfig) {
+			repository := working.Repositories["root"]
+			repository.Upstream.Merge = "refs/heads/changed"
+			working.Repositories["root"] = repository
+		}},
+		{name: "remote changed", change: func(working *config.PortableManifest, _ *config.ProjectConfig) {
+			repository := working.Repositories["root"]
+			repository.Upstream.Remote = "other"
+			working.Repositories["root"] = repository
+		}},
+		{name: "topology changed", change: func(working *config.PortableManifest, _ *config.ProjectConfig) {
+			repository := working.Repositories["child"]
+			repository.Mount = "moved"
+			working.Repositories["child"] = repository
+		}},
+		{name: "second repository changed", change: func(working *config.PortableManifest, _ *config.ProjectConfig) {
+			repository := working.Repositories["child"]
+			repository.DefaultBranch, repository.Upstream.Branch = "other", "other"
+			working.Repositories["child"] = repository
+		}},
+		{name: "hooks changed", change: func(working *config.PortableManifest, _ *config.ProjectConfig) {
+			working.Hooks = config.HookEvents{"post-create": {{ID: "changed", Command: []string{"echo", "changed"}}}}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, candidate, candidateLocal, candidateProject := companionBaselinePublicationFixture(t)
+			// Start from the exact working generation, then introduce exactly one
+			// forbidden difference.
+			test.change(&candidate, &candidateLocal)
+			if _, exact := exactCompanionBaselinePublication(tracked, candidate, candidateLocal, candidateProject); exact {
+				t.Fatalf("forbidden %s was accepted", test.name)
+			}
+		})
+	}
+	ordinaryTracked, ordinaryWorking, ordinaryLocal, ordinaryProject := companionBaselinePublicationFixture(t)
+	ordinaryBefore := ordinaryTracked.Repositories["root"]
+	ordinaryBefore.Companion = false
+	ordinaryTracked.Repositories["root"] = ordinaryBefore
+	ordinaryAfter := ordinaryWorking.Repositories["root"]
+	ordinaryAfter.Companion = false
+	ordinaryWorking.Repositories["root"] = ordinaryAfter
+	ordinaryLocalRepository := ordinaryLocal.Repositories["root"]
+	ordinaryLocalRepository.Companion = false
+	ordinaryLocal.Repositories["root"] = ordinaryLocalRepository
+	for index := range ordinaryProject.Repositories {
+		if ordinaryProject.Repositories[index].ID == "root" {
+			ordinaryProject.Repositories[index].Companion = false
+		}
+	}
+	if _, exact := exactCompanionBaselinePublication(ordinaryTracked, ordinaryWorking, ordinaryLocal, ordinaryProject); exact {
+		t.Fatal("ordinary baseline edit was accepted")
+	}
+}
+
+type companionBaselineAuthorityGit struct {
+	gitadapter.Git
+	common         string
+	commonErr      error
+	branchExists   bool
+	branchErr      error
+	commonPath     string
+	branchPath     string
+	observedBranch string
+	cancelOnCommon context.CancelFunc
+	cancelOnBranch context.CancelFunc
+}
+
+func (g *companionBaselineAuthorityGit) CommonGitDir(_ context.Context, repository string) (string, error) {
+	g.commonPath = repository
+	if g.cancelOnCommon != nil {
+		g.cancelOnCommon()
+	}
+	return g.common, g.commonErr
+}
+
+func (g *companionBaselineAuthorityGit) BranchExists(_ context.Context, repository, branch string) (bool, error) {
+	g.branchPath, g.observedBranch = repository, branch
+	if g.cancelOnBranch != nil {
+		g.cancelOnBranch()
+	}
+	return g.branchExists, g.branchErr
+}
+
+func TestCompanionBaselinePublicationAuthorityRequiresResolvedIdentityAndExistingBranch(t *testing.T) {
+	_, _, _, project := companionBaselinePublicationFixture(t)
+	publication := companionBaselinePublication{repositoryID: "root", baseline: "next"}
+	rootCommon := project.Repositories[0].CommonGitDir
+	otherCommon := filepath.Join(filepath.Dir(rootCommon), "other")
+	rootPath := project.Repositories[0].SourcePath
+	for _, test := range []struct {
+		name         string
+		common       string
+		commonErr    error
+		branchExists bool
+		branchErr    error
+		want         bool
+		wantBranch   bool
+	}{
+		{name: "authorized", common: rootCommon, branchExists: true, want: true, wantBranch: true},
+		{name: "identity mismatch", common: otherCommon},
+		{name: "identity observation error", commonErr: errors.New("common failed")},
+		{name: "missing branch", common: rootCommon, wantBranch: true},
+		{name: "branch observation error", common: rootCommon, branchErr: errors.New("branch failed"), wantBranch: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			git := &companionBaselineAuthorityGit{common: test.common, commonErr: test.commonErr, branchExists: test.branchExists, branchErr: test.branchErr}
+			got, err := companionBaselinePublicationAuthorized(context.Background(), git, project, publication)
+			if err != nil || got != test.want {
+				t.Fatalf("authority = %t, %v, want %t, nil", got, err, test.want)
+			}
+			if git.commonPath != rootPath {
+				t.Fatalf("CommonGitDir path = %q, want resolved source %q", git.commonPath, rootPath)
+			}
+			if test.wantBranch {
+				if git.branchPath != rootPath || git.observedBranch != "next" {
+					t.Fatalf("BranchExists = (%q, %q), want resolved source and proposed baseline", git.branchPath, git.observedBranch)
+				}
+			} else if git.branchPath != "" {
+				t.Fatalf("BranchExists called after failed identity authority: %q", git.branchPath)
+			}
+		})
+	}
+
+	if authorized, err := companionBaselinePublicationAuthorized(context.Background(), &companionBaselineAuthorityGit{common: rootCommon, branchExists: true}, project, companionBaselinePublication{repositoryID: "missing", baseline: "next"}); err != nil || authorized {
+		t.Fatalf("unknown repository authority = %t, %v", authorized, err)
+	}
+}
+
+func TestCompanionBaselinePublicationAuthorityPropagatesCancellation(t *testing.T) {
+	_, _, _, project := companionBaselinePublicationFixture(t)
+	publication := companionBaselinePublication{repositoryID: "root", baseline: "next"}
+	rootCommon := project.Repositories[0].CommonGitDir
+
+	commonContext, cancelCommon := context.WithCancel(context.Background())
+	commonGit := &companionBaselineAuthorityGit{common: rootCommon, branchExists: true, cancelOnCommon: cancelCommon}
+	if authorized, err := companionBaselinePublicationAuthorized(commonContext, commonGit, project, publication); authorized || !errors.Is(err, context.Canceled) || commonGit.branchPath != "" {
+		t.Fatalf("common cancellation = %t, %v, branch path %q", authorized, err, commonGit.branchPath)
+	}
+
+	branchContext, cancelBranch := context.WithCancel(context.Background())
+	branchGit := &companionBaselineAuthorityGit{common: rootCommon, branchExists: true, cancelOnBranch: cancelBranch}
+	if authorized, err := companionBaselinePublicationAuthorized(branchContext, branchGit, project, publication); authorized || !errors.Is(err, context.Canceled) {
+		t.Fatalf("branch cancellation = %t, %v", authorized, err)
+	}
+}
+
+func companionBaselinePublicationFixture(t *testing.T) (config.PortableManifest, config.PortableManifest, config.ProjectConfig, domain.Project) {
+	t.Helper()
+	root := driftRepository("", ".")
+	root.Companion = true
+	child := driftRepository("root", "child")
+	tracked := config.PortableManifest{Version: config.PortableManifestVersion4, Project: config.PortableProject{ID: "project", Name: "Project", BaseRepository: "root"}, Repositories: map[string]config.PortableRepository{"root": root, "child": child}}
+	working := tracked
+	working.Repositories = map[string]config.PortableRepository{"root": root, "child": child}
+	changed := working.Repositories["root"]
+	changed.DefaultBranch, changed.Upstream.Branch = "next", "next"
+	working.Repositories["root"] = changed
+	source := t.TempDir()
+	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "next", Companion: true, CommonGitDir: filepath.Join(source, ".git-root"), SourcePath: source}, {ID: "child", ParentID: "root", DefaultMount: "child", DefaultBranch: "main", CommonGitDir: filepath.Join(source, ".git-child"), SourcePath: filepath.Join(source, "child")}})
+	local := driftLocalConfig(project)
+	local.Version = config.ProjectConfigVersion4
+	local.Repositories["root"] = config.Repository{Source: ".", DefaultMount: ".", DefaultBranch: "next", Companion: true}
+	return tracked, working, local, project
 }
 
 type doctorCancellationGit struct {

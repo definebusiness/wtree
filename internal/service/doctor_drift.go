@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -48,9 +49,10 @@ func wrapDoctorObservation(check string, err error) error {
 }
 
 // collectLocalDriftSnapshot is the single local-only collection seam shared by
-// doctor and status. It deliberately reads the manifest tracked at the local
-// base HEAD and local state/registry generations; it does not advertise,
-// fetch, or otherwise contact a remote.
+// doctor and status. It reads the manifest tracked at the local base HEAD
+// unless the working tree contains the one exact unstaged companion-baseline
+// publication that the repo-branch command is allowed to leave behind.
+// It never advertises, fetches, or otherwise contacts a remote.
 func collectLocalDriftSnapshot(ctx context.Context, git gitadapter.Git, project domain.Project, dataDir string) (DriftSnapshot, error) {
 	if !filepath.IsAbs(dataDir) || filepath.Clean(dataDir) != dataDir {
 		return DriftSnapshot{}, fmt.Errorf("doctor data directory must be absolute")
@@ -102,6 +104,30 @@ func collectLocalDriftSnapshot(ctx context.Context, git gitadapter.Git, project 
 	if _, err := config.LoadPortableManifest(manifestBytes); err != nil {
 		return DriftSnapshot{}, fmt.Errorf("decode tracked portable manifest: %w", err)
 	}
+	workingBaselineAuthority := false
+	workingManifestBytes, workingErr := os.ReadFile(manifestPath)
+	if workingErr == nil {
+		working, decodeErr := config.LoadPortableManifest(workingManifestBytes)
+		tracked, trackedErr := config.LoadPortableManifest(manifestBytes)
+		status, statusErr := git.Status(ctx, base.SourcePath)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return DriftSnapshot{}, ctxErr
+		}
+		localRelativePath, relativeErr := filepath.Rel(base.SourcePath, project.ConfigPath)
+		if decodeErr == nil && trackedErr == nil && statusErr == nil && relativeErr == nil && companionBaselinePublicationStatus(status, filepath.ToSlash(local.Manifest.Path), filepath.ToSlash(localRelativePath)) {
+			publication, exact := exactCompanionBaselinePublication(tracked, working, local, project)
+			if exact {
+				authorized, authorityErr := companionBaselinePublicationAuthorized(ctx, git, project, publication)
+				if authorityErr != nil {
+					return DriftSnapshot{}, authorityErr
+				}
+				if authorized {
+					manifestBytes = workingManifestBytes
+					workingBaselineAuthority = true
+				}
+			}
+		}
+	}
 	registryPath := filepath.Join(dataDir, "registry.json")
 	registryBytes, err := os.ReadFile(registryPath)
 	if err != nil {
@@ -119,7 +145,7 @@ func collectLocalDriftSnapshot(ctx context.Context, git gitadapter.Git, project 
 	if _, err := store.DecodeWorkspace(defaultBytes); err != nil {
 		return DriftSnapshot{}, fmt.Errorf("decode default workspace state: %w", err)
 	}
-	observations, failures, err := collectLocalDriftObservations(ctx, git, project, workspace, manifestBytes, local.Manifest.Path)
+	observations, failures, err := collectLocalDriftObservations(ctx, git, project, workspace, manifestBytes, local.Manifest.Path, workingBaselineAuthority)
 	if err != nil {
 		return DriftSnapshot{}, err
 	}
@@ -196,7 +222,105 @@ func doctorProjectRepository(project domain.Project, id string) (domain.Reposito
 	return domain.Repository{}, false
 }
 
-func collectLocalDriftObservations(ctx context.Context, git gitadapter.Git, project domain.Project, workspace domain.Workspace, manifestBytes []byte, manifestPath string) ([]DriftRepositoryObservation, []DriftFailure, error) {
+// companionBaselinePublicationStatus permits only the two configuration files
+// a repo-branch publication can leave modified. The portable manifest must be
+// present, unstaged, and modified; the local configuration can be absent from
+// Git status when it is ignored, but if tracked it has the same constraints.
+func companionBaselinePublicationStatus(status gitadapter.Status, manifestPath, localConfigPath string) bool {
+	if manifestPath == "" || localConfigPath == "" || filepath.IsAbs(manifestPath) || filepath.IsAbs(localConfigPath) {
+		return false
+	}
+	manifestModified := false
+	for _, entry := range status.Entries {
+		if entry.Untracked || entry.Index != ' ' || entry.Worktree != 'M' {
+			return false
+		}
+		path := filepath.ToSlash(entry.Path)
+		if path != manifestPath && path != localConfigPath {
+			return false
+		}
+		if path == manifestPath {
+			manifestModified = true
+		}
+	}
+	return manifestModified
+}
+
+// companionBaselinePublication is the immutable semantic candidate produced
+// before Git authority is consulted. Its unexported fields prevent callers
+// from constructing a partially checked publication.
+type companionBaselinePublication struct {
+	repositoryID string
+	baseline     string
+}
+
+// exactCompanionBaselinePublication proves that a dirty portable manifest is
+// precisely the one-repository, future-facing companion baseline publication
+// and identifies that repository and proposed baseline. It intentionally
+// accepts no role, topology, hook, identity, remote, merge, or
+// ordinary-repository change.
+func exactCompanionBaselinePublication(tracked, working config.PortableManifest, local config.ProjectConfig, project domain.Project) (companionBaselinePublication, bool) {
+	if tracked.Version != config.PortableManifestVersion4 || working.Version != config.PortableManifestVersion4 || local.Version != config.ProjectConfigVersion4 || tracked.Project != working.Project || local.Project.ID != working.Project.ID || local.Project.Name != working.Project.Name || local.Project.BaseRepository != working.Project.BaseRepository || project.ID != working.Project.ID || project.Name != working.Project.Name || project.BaseRepository != working.Project.BaseRepository || !reflect.DeepEqual(tracked.Hooks, working.Hooks) || !reflect.DeepEqual(tracked.SharedHooks, working.SharedHooks) || len(tracked.Repositories) != len(working.Repositories) || len(local.Repositories) != len(project.Repositories) {
+		return companionBaselinePublication{}, false
+	}
+	publication := companionBaselinePublication{}
+	for id, before := range tracked.Repositories {
+		after, exists := working.Repositories[id]
+		if !exists {
+			return companionBaselinePublication{}, false
+		}
+		localRepository, localExists := local.Repositories[id]
+		projectRepository, projectExists := doctorProjectRepository(project, id)
+		if !localExists || !projectExists || localRepository.Parent != after.Parent || localRepository.DefaultMount != after.Mount || localRepository.DefaultBranch != after.DefaultBranch || localRepository.Companion != after.Companion || projectRepository.ParentID != after.Parent || projectRepository.DefaultMount != after.Mount || projectRepository.DefaultBranch != after.DefaultBranch || projectRepository.Companion != after.Companion {
+			return companionBaselinePublication{}, false
+		}
+		if reflect.DeepEqual(before, after) {
+			continue
+		}
+		if !before.Companion || !after.Companion || before.DefaultBranch == after.DefaultBranch || before.Upstream.Branch != before.DefaultBranch || after.Upstream.Branch != after.DefaultBranch || before.Upstream.Merge != after.Upstream.Merge {
+			return companionBaselinePublication{}, false
+		}
+		expected := before
+		expected.DefaultBranch = after.DefaultBranch
+		expected.Upstream.Branch = after.Upstream.Branch
+		if !reflect.DeepEqual(expected, after) {
+			return companionBaselinePublication{}, false
+		}
+		if publication.repositoryID != "" {
+			return companionBaselinePublication{}, false
+		}
+		publication = companionBaselinePublication{repositoryID: id, baseline: after.DefaultBranch}
+	}
+	return publication, publication.repositoryID != ""
+}
+
+// companionBaselinePublicationAuthorized binds the exact semantic candidate
+// to the resolved repository's canonical Git identity and an existing local
+// branch. Ordinary observation failures deny working-manifest authority so
+// tracked dirt remains diagnostic; cancellation remains a control-flow error.
+func companionBaselinePublicationAuthorized(ctx context.Context, git gitadapter.Git, project domain.Project, publication companionBaselinePublication) (bool, error) {
+	repository, found := doctorProjectRepository(project, publication.repositoryID)
+	if !found || publication.baseline == "" || repository.SourcePath == "" || repository.CommonGitDir == "" {
+		return false, nil
+	}
+	common, err := git.CommonGitDir(ctx, repository.SourcePath)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, ctxErr
+	}
+	if err != nil || common != repository.CommonGitDir {
+		return false, nil
+	}
+	exists, err := git.BranchExists(ctx, repository.SourcePath, publication.baseline)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, ctxErr
+	}
+	if err != nil {
+		return false, nil
+	}
+	return exists, nil
+}
+
+func collectLocalDriftObservations(ctx context.Context, git gitadapter.Git, project domain.Project, workspace domain.Workspace, manifestBytes []byte, manifestPath string, workingBaselineAuthority bool) ([]DriftRepositoryObservation, []DriftFailure, error) {
 	manifest, err := config.LoadPortableManifest(manifestBytes)
 	if err != nil {
 		return nil, nil, err
@@ -245,6 +369,9 @@ func collectLocalDriftObservations(ctx context.Context, git gitadapter.Git, proj
 		}
 		if clean, cleanErr := git.IsClean(ctx, path); cleanErr == nil {
 			observation.Clean = clean
+			if workingBaselineAuthority && repository.ID == project.BaseRepository {
+				observation.Clean = true
+			}
 		} else {
 			failures = append(failures, updateObservationFailure(repository.ID, "cleanliness-observation", cleanErr))
 		}
@@ -285,7 +412,7 @@ func collectLocalDriftObservations(ctx context.Context, git gitadapter.Git, proj
 				return nil, nil, ctxErr
 			}
 			if trackedErr == nil {
-				observation.TrackedManifestKnown, observation.TrackedManifestExact = true, bytes.Equal(tracked, manifestBytes)
+				observation.TrackedManifestKnown, observation.TrackedManifestExact = true, workingBaselineAuthority || bytes.Equal(tracked, manifestBytes)
 			} else {
 				failures = append(failures, updateObservationFailure(repository.ID, "tracked-manifest-observation", trackedErr))
 			}

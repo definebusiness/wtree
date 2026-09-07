@@ -77,6 +77,7 @@ type ClonePlanRepository struct {
 	LocalBranch    string            `json:"localBranch"`
 	RemoteRef      string            `json:"remoteRef"`
 	ObservedCommit string            `json:"observedCommit"`
+	Companion      bool              `json:"companion,omitempty"`
 	Verification   CloneVerification `json:"verification"`
 }
 
@@ -174,7 +175,14 @@ func (plan ClonePlan) Validate() error {
 	if len(plan.Repositories) == 0 || len(plan.Actions) == 0 {
 		return errors.New("clone plan has no repositories or actions")
 	}
-	manifest := config.PortableManifest{Version: config.PortableManifestVersion, Project: plan.Project, Repositories: make(map[string]config.PortableRepository, len(plan.Repositories))}
+	manifestVersion := config.PortableManifestVersion
+	for _, repository := range plan.Repositories {
+		if repository.Companion {
+			manifestVersion = config.PortableManifestVersion4
+			break
+		}
+	}
+	manifest := config.PortableManifest{Version: manifestVersion, Project: plan.Project, Repositories: make(map[string]config.PortableRepository, len(plan.Repositories))}
 	seen := map[string]bool{}
 	paths := map[string]string{}
 	for _, repository := range plan.Repositories {
@@ -184,7 +192,7 @@ func (plan ClonePlan) Validate() error {
 		if repository.Verification.TrackedManifestExact != (repository.ID == plan.BaseRepository) || repository.Verification.CommittedParentIgnore != (repository.Parent != "") || !repository.Verification.CleanWorktree || !repository.Verification.NoSubmodules {
 			return fmt.Errorf("invalid clone verification or path for repository %q", repository.ID)
 		}
-		manifest.Repositories[repository.ID] = config.PortableRepository{Clone: config.CloneSource{Remote: repository.CloneRemote, URL: repository.CloneURL}, Upstream: config.Upstream{Branch: repository.LocalBranch, Remote: repository.CloneRemote, Merge: repository.RemoteRef}, Identity: config.RepositoryIdentity{InitialCommits: append([]string(nil), repository.Verification.InitialCommits...)}, Parent: repository.Parent, Mount: repository.Mount, DefaultBranch: repository.LocalBranch}
+		manifest.Repositories[repository.ID] = config.PortableRepository{Clone: config.CloneSource{Remote: repository.CloneRemote, URL: repository.CloneURL}, Upstream: config.Upstream{Branch: repository.LocalBranch, Remote: repository.CloneRemote, Merge: repository.RemoteRef}, Identity: config.RepositoryIdentity{InitialCommits: append([]string(nil), repository.Verification.InitialCommits...)}, Parent: repository.Parent, Mount: repository.Mount, DefaultBranch: repository.LocalBranch, Companion: repository.Companion}
 		seen[repository.ID] = true
 		paths[repository.ID] = repository.Path
 	}
@@ -375,8 +383,8 @@ func (planner *ClonePlanner) planAttempt(ctx context.Context, request ClonePlanR
 			ID: id, Parent: repository.Parent, Mount: repository.Mount, Path: path,
 			CloneRemote: repository.Clone.Remote, CloneURL: repository.Clone.URL,
 			LocalBranch: repository.DefaultBranch, RemoteRef: repository.Upstream.Merge,
-			ObservedCommit: commit,
-			Verification:   CloneVerification{TrackedManifestExact: id == manifest.Project.BaseRepository, InitialCommits: append([]string(nil), repository.Identity.InitialCommits...), CleanWorktree: true, NoSubmodules: true, CommittedParentIgnore: repository.Parent != ""},
+			ObservedCommit: commit, Companion: repository.Companion,
+			Verification: CloneVerification{TrackedManifestExact: id == manifest.Project.BaseRepository, InitialCommits: append([]string(nil), repository.Identity.InitialCommits...), CleanWorktree: true, NoSubmodules: true, CommittedParentIgnore: repository.Parent != ""},
 		})
 	}
 	if len(remoteErrors) != 0 {
@@ -693,7 +701,7 @@ func portableRepositoryOrder(manifest config.PortableManifest) ([]string, error)
 func cloneDomainProject(manifest config.PortableManifest) domain.Project {
 	repositories := make([]domain.Repository, 0, len(manifest.Repositories))
 	for id, repository := range manifest.Repositories {
-		repositories = append(repositories, domain.Repository{ID: id, ParentID: repository.Parent, DefaultMount: repository.Mount, DefaultBranch: repository.DefaultBranch})
+		repositories = append(repositories, domain.Repository{ID: id, ParentID: repository.Parent, DefaultMount: repository.Mount, DefaultBranch: repository.DefaultBranch, Companion: repository.Companion})
 	}
 	return domain.Project{Version: domain.CurrentVersion, ID: manifest.Project.ID, Name: manifest.Project.Name, BaseRepository: manifest.Project.BaseRepository, Repositories: repositories}
 }

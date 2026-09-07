@@ -44,6 +44,7 @@ type FetchRepositoryResult struct {
 	RemoteRef            string            `json:"remoteRef,omitempty"`
 	PreviousRemoteCommit string            `json:"previousRemoteCommit,omitempty"`
 	ActualRemoteCommit   string            `json:"actualRemoteCommit,omitempty"`
+	Companion            bool              `json:"companion,omitempty"`
 	Failure              *AggregateFailure `json:"failure,omitempty"`
 }
 
@@ -189,7 +190,7 @@ func newFetchResult(project domain.Project, workspace domain.Workspace, dryRun b
 	for _, repository := range project.ParentFirst() {
 		if checkout, ok := checkouts[repository.ID]; ok {
 			indexes[repository.ID] = len(result.Repositories)
-			result.Repositories = append(result.Repositories, FetchRepositoryResult{ID: repository.ID, ParentID: repository.ParentID, Mount: checkout.Mount, Path: checkout.ResolvedPath, Branch: checkout.Branch, Head: checkout.Head, Status: AggregateStatusPlanned})
+			result.Repositories = append(result.Repositories, FetchRepositoryResult{ID: repository.ID, ParentID: repository.ParentID, Mount: checkout.Mount, Path: checkout.ResolvedPath, Branch: checkout.Branch, Head: checkout.Head, Companion: repository.Companion, Status: AggregateStatusPlanned})
 		}
 	}
 	return result, indexes
@@ -268,7 +269,16 @@ func (s *FetchService) fetchRepository(ctx context.Context, repository domain.Re
 		return fetchRepository{}, NewError(ErrorGit, fmt.Errorf("fetch preflight %q: read HEAD: %w", repository.ID, err))
 	}
 	if head != checkout.Head {
-		return fetchRepository{}, NewError(ErrorValidation, fmt.Errorf("fetch preflight %q: HEAD does not match persisted checkout", repository.ID))
+		advanced := false
+		if repository.Companion {
+			advanced, err = gitIsAncestor(ctx, s.git, path, checkout.Head, head)
+			if err != nil {
+				return fetchRepository{}, NewError(ErrorGit, fmt.Errorf("fetch preflight %q: compare companion checkout history: %w", repository.ID, err))
+			}
+		}
+		if !advanced {
+			return fetchRepository{}, NewError(ErrorValidation, fmt.Errorf("fetch preflight %q: HEAD does not match persisted checkout", repository.ID))
+		}
 	}
 	upstream, err := s.git.Upstream(ctx, path)
 	if contextErr := fetchObservationContextError(ctx, err); contextErr != nil {

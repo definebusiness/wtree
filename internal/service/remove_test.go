@@ -65,6 +65,34 @@ func TestWorkspaceRemoverRemovesNestedWorktreesChildFirstAndRetainsState(t *test
 	}
 }
 
+func TestWorkspaceRemoverRejectsRewrittenCompanionHistoryBeforeMutation(t *testing.T) {
+	project, _, _, data := createFixture(t)
+	for index := range project.Repositories {
+		if project.Repositories[index].ID == "backend" {
+			project.Repositories[index].Companion = true
+		}
+	}
+	target := filepath.Join(t.TempDir(), "workspace")
+	if _, err := createFixtureWorkspace(t, project, "feature/rewrite", target, data); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := service.RequireWorkspace(project, data, "feature/rewrite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	companion := testutil.GitRepository{Path: filepath.Join(target, "api")}
+	companion.Run(t, "checkout", "--orphan", "rewritten")
+	companion.Run(t, "rm", "-rf", ".")
+	companion.Run(t, "commit", "--allow-empty", "-m", "unrelated companion history")
+	companion.Run(t, "branch", "-M", "feature/rewrite")
+	if _, err := service.NewWorkspaceRemover().PlanRemove(context.Background(), project, workspace, false); !cliExitKind(t, err, service.ErrorValidation) {
+		t.Fatalf("rewritten companion remove = %v, want validation failure", err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("rewritten-history preflight removed workspace: %v", err)
+	}
+}
+
 func TestWorkspaceRemoverDoesNotMutateWhenProjectLockIsContended(t *testing.T) {
 	project, _, _, data := createFixture(t)
 	target := filepath.Join(t.TempDir(), "workspace")

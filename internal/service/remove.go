@@ -103,6 +103,15 @@ func (r *WorkspaceRemover) PlanRemove(ctx context.Context, project domain.Projec
 		if err != nil {
 			return RemovalPlan{}, NewError(ErrorGit, fmt.Errorf("read checkout HEAD for repository %q: %w", repository.ID, err))
 		}
+		if repository.Companion && head != checkout.Head {
+			advanced, ancestryErr := gitIsAncestor(ctx, r.git, checkout.ResolvedPath, checkout.Head, head)
+			if ancestryErr != nil {
+				return RemovalPlan{}, NewError(ErrorGit, fmt.Errorf("compare companion checkout history for repository %q: %w", repository.ID, ancestryErr))
+			}
+			if !advanced {
+				return RemovalPlan{}, NewError(ErrorValidation, fmt.Errorf("workspace checkout for companion repository %q has rewritten or unrelated history", repository.ID))
+			}
+		}
 		value.Repositories = append(value.Repositories, RemovalRepository{ID: repository.ID, ParentID: repository.ParentID, Branch: checkout.Branch, Mount: checkout.Mount, Path: checkout.ResolvedPath, ResolvedPath: checkout.ResolvedPath, Head: head, ForceWorktree: len(overrides) != 0})
 		value.Overrides = append(value.Overrides, overrides...)
 	}

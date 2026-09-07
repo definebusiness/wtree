@@ -98,6 +98,7 @@ type Repository struct {
 	ParentID      string
 	DefaultMount  string
 	DefaultBranch string
+	Companion     bool
 }
 
 // Validate confirms that the repository hierarchy is a non-empty acyclic

@@ -212,6 +212,47 @@ func TestClonePlanV3HooksAreDeferredAndSharedHooksRemainInert(t *testing.T) {
 	}
 }
 
+func TestClonePlanV4CarriesCompanionRoleWithoutLosingHooks(t *testing.T) {
+	base := t.TempDir()
+	rootURL, childURL := filepath.Join(base, "root.git"), filepath.Join(base, "api.git")
+	manifest, err := config.LoadPortableManifest(clonePlanManifest(t, rootURL, childURL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Version = config.PortableManifestVersion4
+	child := manifest.Repositories["api"]
+	child.Companion = true
+	manifest.Repositories["api"] = child
+	manifest.Hooks = config.HookEvents{config.HookEventPostClone: {{ID: "clone-setup", Command: []string{"hooks/setup"}}}}
+	manifest.SharedHooks = config.HookEvents{config.HookEventPostCreate: {{ID: "shared-setup", Command: []string{"hooks/shared"}}}}
+	data, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := NewClonePlannerWith(ClonePlannerDependencies{RemoteFacts: newClonePlanRemote(rootURL, childURL)}).Plan(context.Background(), ClonePlanRequest{ManifestSource: writeClonePlanManifest(t, base, data), Destination: filepath.Join(base, "clone"), CWD: base, DataDir: filepath.Join(base, "data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Repositories[1].Companion || len(plan.Hooks) != 2 {
+		t.Fatalf("v4 clone plan lost role or hooks: %#v", plan)
+	}
+	if err := plan.Validate(); err != nil {
+		t.Fatalf("v4 plan validation = %v", err)
+	}
+}
+
+func TestCloneLocalConfigurationUsesV4ForCompanion(t *testing.T) {
+	root := t.TempDir()
+	value := cloneLocalConfiguration(ClonePlan{
+		Project:     config.PortableProject{ID: "project", Name: "Project", BaseRepository: "root"},
+		Destination: CloneDestinationFacts{Path: root}, Source: ClonePlanSource{Value: filepath.Join(root, "project.wtree.yml")},
+		Repositories: []ClonePlanRepository{{ID: "root", Mount: ".", Path: root, LocalBranch: "main"}, {ID: "tools", Parent: "root", Mount: "tools", Path: filepath.Join(root, "tools"), LocalBranch: "main", Companion: true}},
+	})
+	if value.Version != config.ProjectConfigVersion4 || !value.Repositories["tools"].Companion {
+		t.Fatalf("clone local v4 role = %#v", value)
+	}
+}
+
 func TestClonePlanHTTPV3HooksRemainDeferredWithoutCoreMutation(t *testing.T) {
 	base := t.TempDir()
 	rootURL, childURL := "https://example.test/root.git", "https://example.test/api.git"

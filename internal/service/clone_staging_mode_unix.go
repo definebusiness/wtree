@@ -35,6 +35,9 @@ func (unixCloneStagingLease) captureChild(_, _ string, owned, _ os.FileInfo, _ f
 }
 
 func (unixCloneStagingLease) releaseChild(staging string, owned, parent os.FileInfo, lstat func(string) (os.FileInfo, error)) error {
+	if owned == nil {
+		return errors.New("private clone staging root is unbound")
+	}
 	if !clonePathHasParentIdentity(staging, parent, lstat) {
 		return errors.New("clone staging parent identity changed")
 	}
@@ -46,6 +49,8 @@ func (unixCloneStagingLease) releaseChild(staging string, owned, parent os.FileI
 }
 
 func (unixCloneStagingLease) closeAll() error { return nil }
+
+func (unixCloneStagingLease) closePreservingContainer() error { return nil }
 
 func cloneStagingModeIsPrivate(mode os.FileMode) bool { return mode.Perm()&0o077 == 0 }
 

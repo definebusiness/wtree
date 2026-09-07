@@ -371,7 +371,7 @@ func isUnsupportedAtomicRenameError(err error) bool {
 
 // removeAtomicTemporary deletes only the generation identified before close.
 // If another process replaces the pathname, it is deliberately preserved.
-func removeAtomicTemporary(path string, expected os.FileInfo) error {
+var removeAtomicTemporary = func(path string, expected os.FileInfo) error {
 	file, handle, err := openAtomicReplacementSource(path)
 	if os.IsNotExist(err) || errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
 		return nil

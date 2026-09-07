@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -17,47 +16,63 @@ import (
 
 var replaceFileProc = windows.NewLazySystemDLL("kernel32.dll").NewProc("ReplaceFileW")
 
+// expectedAtomicBeforeExchange is a test seam at the actual conditional
+// publication boundary. Production leaves it nil.
+var expectedAtomicBeforeExchange func()
+
 // replaceExpectedAtomic uses ReplaceFile's backup generation as the Windows
 // equivalent of Unix exchange: the current destination is atomically moved to
 // a private recovery name, then its identity is checked before accepting the
 // new destination. A changed destination is restored atomically when possible
 // and otherwise retained at the reported recovery path.
-func replaceExpectedAtomic(source, destination string, temporary, expected os.FileInfo) error {
+func replaceExpectedAtomic(source, destination string, temporary, expected os.FileInfo, replacementData, expectedData []byte) error {
 	backup, err := conditionalReplacementBackupPath(destination)
 	if err != nil {
 		return err
 	}
+	if expectedAtomicBeforeExchange != nil {
+		expectedAtomicBeforeExchange()
+	}
 	if err := replaceWindowsFile(destination, source, backup); err != nil {
 		return err
 	}
-	displaced, err := os.Lstat(backup)
-	if err == nil && displaced.Mode().IsRegular() && os.SameFile(expected, displaced) {
-		if err := removeAtomicTemporary(backup, expected); err != nil {
-			return &postReplacementError{Err: errors.Join(errors.New("remove displaced expected generation"), err)}
+	displaced, validationErr := validateExpectedAtomicGeneration(backup, expected, expectedData)
+	if validationErr == nil {
+		if err := removeAtomicTemporary(backup, displaced); err != nil {
+			return &postReplacementError{Err: &atomicAuxiliaryError{Paths: []string{backup}, Err: errors.Join(errors.New("remove displaced expected generation"), err)}}
 		}
 		return nil
 	}
 	// Source no longer names writer data after ReplaceFile. Roll back with the
 	// backup as replacement and source as the backup name for our generation.
 	if restoreErr := replaceWindowsFile(destination, backup, source); restoreErr != nil {
-		return &postReplacementError{Err: &preservedConditionalReplacementError{
+		return &postReplacementError{Err: &atomicAuxiliaryError{Paths: []string{backup}, Err: &preservedConditionalReplacementError{
 			RecoveryPath: backup,
 			Err:          errors.Join(errors.New("conditional replacement destination changed and could not be restored"), restoreErr),
-		}}
+		}}}
+	}
+	if syncErr := syncDirectory(filepath.Dir(destination)); syncErr != nil {
+		return &postReplacementError{Err: &atomicAuxiliaryError{Paths: []string{source}, Err: &preservedConditionalReplacementError{
+			RecoveryPath: source,
+			Err:          errors.Join(errors.New("conditional replacement restored destination but directory sync failed"), validationErr, syncErr),
+		}}}
 	}
 	// The second ReplaceFile placed the writer generation at source. The
-	// generic cleanup will remove it only if it still has this exact identity.
-	if actual, statErr := os.Lstat(source); statErr != nil || !os.SameFile(temporary, actual) {
-		identityErr := statErr
-		if identityErr == nil {
-			identityErr = errors.New("writer recovery pathname no longer names writer generation")
-		}
-		return &postReplacementError{Err: &preservedConditionalReplacementError{
+	// writer now removes it only after proving exact identity and bytes.
+	writer, writerErr := validateExpectedAtomicGeneration(source, temporary, replacementData)
+	if writerErr != nil {
+		return &postReplacementError{Err: &atomicAuxiliaryError{Paths: []string{source}, Err: &preservedConditionalReplacementError{
 			RecoveryPath: source,
-			Err:          fmt.Errorf("conditional replacement restored destination but writer recovery identity is unproven: %w", identityErr),
-		}}
+			Err:          errors.Join(errors.New("conditional replacement restored destination but writer recovery identity is unproven"), validationErr, writerErr),
+		}}}
 	}
-	return errors.New("conditional replacement destination changed")
+	if cleanupErr := removeAtomicTemporary(source, writer); cleanupErr != nil {
+		return &postReplacementError{Err: &atomicAuxiliaryError{Paths: []string{source}, Err: &preservedConditionalReplacementError{
+			RecoveryPath: source,
+			Err:          errors.Join(errors.New("conditional replacement restored destination but writer generation cleanup failed"), validationErr, cleanupErr),
+		}}}
+	}
+	return errors.Join(errors.New("conditional replacement destination changed"), validationErr)
 }
 
 func conditionalReplacementBackupPath(destination string) (string, error) {
@@ -107,5 +122,6 @@ func (e *preservedConditionalReplacementError) Unwrap() error { return e.Err }
 
 func preserveAtomicTemporary(err error) bool {
 	var preserved *preservedConditionalReplacementError
-	return errors.As(err, &preserved)
+	var auxiliary *atomicAuxiliaryError
+	return errors.As(err, &preserved) || errors.As(err, &auxiliary)
 }

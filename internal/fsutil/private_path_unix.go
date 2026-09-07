@@ -35,7 +35,7 @@ func containsPathSeparator(name string) bool {
 	return filepath.Base(name) != name || filepath.Clean(name) != name || name == string(filepath.Separator)
 }
 
-func openPrivatePath(anchor string, components []string, leaf string, create, protectExisting bool) (*privatePath, error) {
+func openPrivatePath(anchor string, components []string, leaf string, create, protectExisting, publicLeaf bool) (*privatePath, error) {
 	if !filepath.IsAbs(anchor) || filepath.Clean(anchor) != anchor {
 		return nil, errors.New("private path anchor must be a cleaned absolute path")
 	}
@@ -80,7 +80,11 @@ func openPrivatePath(anchor string, components []string, leaf string, create, pr
 		current = next
 	}
 	authority := &privatePath{anchor: anchor, chain: chain, components: append([]string(nil), components...), directory: current, leaf: leaf}
-	if err := authority.validateLeaf(false); err != nil {
+	validateLeaf := authority.validateLeaf
+	if publicLeaf {
+		validateLeaf = authority.validateExpectedRemovalLeaf
+	}
+	if err := validateLeaf(false); err != nil {
 		if !protectExisting {
 			authority.close()
 			return nil, err
@@ -95,6 +99,41 @@ func openPrivatePath(anchor string, components []string, leaf string, create, pr
 		}
 	}
 	return authority, nil
+}
+
+func (path *privatePath) openExpectedRemovalLeaf(name string) (*os.File, error) {
+	if err := path.validateDirectory(); err != nil {
+		return nil, errors.Join(errPrivateDirectoryAuthority, err)
+	}
+	fd, err := unix.Openat(int(path.directory.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if privatePathNotExist(err) {
+			return nil, markPrivatePathNotExist(err)
+		}
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), name)
+	if file == nil {
+		unix.Close(fd)
+		return nil, errors.New("adopt expected-removal leaf")
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		file.Close()
+		return nil, errors.Join(errors.New("unsafe expected-removal leaf"), err)
+	}
+	return file, nil
+}
+
+func (path *privatePath) validateExpectedRemovalLeaf(required bool) error {
+	file, err := path.openExpectedRemovalLeaf(path.leaf)
+	if err == nil {
+		return file.Close()
+	}
+	if !required && PrivatePathNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func closePrivateUnixChain(chain []*os.File) error {
@@ -495,6 +534,50 @@ func (path *privatePath) remove(hook AtomicStepHook) error {
 		return errors.Join(ErrPrivateRemovalAmbiguous, err)
 	}
 	return errors.Join(ErrPrivateRemovalAmbiguous, ErrPrivateRemovalQuarantined)
+}
+
+func (path *privatePath) removeExpected(expected os.FileInfo, expectedData []byte, hook AtomicStepHook) error {
+	if expected == nil || !os.SameFile(expected, expected) {
+		return errors.New("expected removal identity is required")
+	}
+	if err := atomicStep(hook, "before-quarantine"); err != nil {
+		return err
+	}
+	quarantine, err := path.quarantineLeaf()
+	if err != nil {
+		return err
+	}
+	quarantined, openErr := path.openExpectedRemovalLeaf(quarantine)
+	if openErr != nil {
+		return path.restoreExpectedRemoval(quarantine, openErr)
+	}
+	_, validationErr := validateExpectedAtomicFile(quarantined, expected, expectedData)
+	closeErr := quarantined.Close()
+	if validationErr != nil || closeErr != nil {
+		return path.restoreExpectedRemoval(quarantine, errors.Join(validationErr, closeErr))
+	}
+	if err := path.syncDirectory(); err != nil {
+		return &postReplacementError{Err: &AuxiliaryOutcomeError{Paths: []string{path.expectedRemovalQuarantinePath(quarantine)}, Err: errors.Join(ErrPrivateRemovalAmbiguous, ErrPrivateRemovalQuarantined, err)}}
+	}
+	// Unix has no descriptor-bound unlink. The exact owned generation remains
+	// at one bounded relative quarantine name rather than risking deletion of a
+	// foreign replacement at that name.
+	return &postReplacementError{Err: &AuxiliaryOutcomeError{Paths: []string{path.expectedRemovalQuarantinePath(quarantine)}, Err: errors.Join(ErrPrivateRemovalAmbiguous, ErrPrivateRemovalQuarantined)}}
+}
+
+func (path *privatePath) restoreExpectedRemoval(quarantine string, cause error) error {
+	restoreErr := privateRenameNoReplace(int(path.directory.Fd()), quarantine, path.leaf)
+	syncErr := path.syncDirectory()
+	if restoreErr != nil {
+		return &postReplacementError{Err: &AuxiliaryOutcomeError{Paths: []string{path.expectedRemovalQuarantinePath(quarantine)}, Err: errors.Join(ErrPrivateRemovalAmbiguous, cause, restoreErr, syncErr)}}
+	}
+	return errors.Join(ErrPrivateRemovalAmbiguous, cause, syncErr)
+}
+
+func (path *privatePath) expectedRemovalQuarantinePath(quarantine string) string {
+	parts := append([]string{path.anchor}, path.components...)
+	parts = append(parts, quarantine)
+	return filepath.Join(parts...)
 }
 
 func (path *privatePath) quarantineLeaf() (string, error) {

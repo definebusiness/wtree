@@ -1,7 +1,9 @@
 package fsutil
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -18,6 +20,59 @@ func (e *postReplacementError) Unwrap() error { return e.Err }
 func ReplacementCompleted(err error) bool {
 	var post *postReplacementError
 	return errors.As(err, &post)
+}
+
+// AtomicWriteOutcome describes generations which remain actionable after an
+// atomic write returns.  A completed replacement alone is not sufficient to
+// establish a clean transaction: conditional exchange can retain a foreign or
+// displaced generation at an auxiliary pathname.
+type AtomicWriteOutcome struct {
+	ReplacementCompleted bool
+	AuxiliaryPaths       []string
+}
+
+type atomicAuxiliaryError struct {
+	Paths []string
+	Err   error
+}
+
+func (e *atomicAuxiliaryError) Error() string { return e.Err.Error() }
+func (e *atomicAuxiliaryError) Unwrap() error { return e.Err }
+func (e *atomicAuxiliaryError) AuxiliaryPaths() []string {
+	return append([]string(nil), e.Paths...)
+}
+
+// AuxiliaryOutcomeError lets an atomic replacement adapter retain every
+// actionable generation when it cannot finish cleanup.  It is also the
+// portable outcome contract for callers which provide an equivalent writer.
+type AuxiliaryOutcomeError struct {
+	Paths []string
+	Err   error
+}
+
+func (e *AuxiliaryOutcomeError) Error() string { return e.Err.Error() }
+func (e *AuxiliaryOutcomeError) Unwrap() error { return e.Err }
+func (e *AuxiliaryOutcomeError) AuxiliaryPaths() []string {
+	return append([]string(nil), e.Paths...)
+}
+
+// AtomicOutcome extracts every durable auxiliary pathname reported by the
+// platform conditional-replacement implementation.
+func AtomicOutcome(err error) AtomicWriteOutcome {
+	outcome := AtomicWriteOutcome{ReplacementCompleted: ReplacementCompleted(err)}
+	var auxiliary interface{ AuxiliaryPaths() []string }
+	if errors.As(err, &auxiliary) {
+		outcome.AuxiliaryPaths = append([]string(nil), auxiliary.AuxiliaryPaths()...)
+	} else {
+		var internal *atomicAuxiliaryError
+		if errors.As(err, &internal) {
+			outcome.AuxiliaryPaths = append([]string(nil), internal.Paths...)
+		}
+	}
+	if len(outcome.AuxiliaryPaths) != 0 {
+		outcome.ReplacementCompleted = true
+	}
+	return outcome
 }
 
 // AtomicStepHook is deliberately small so owning packages can retain their
@@ -41,16 +96,93 @@ func WriteFileAtomicMode(path string, data []byte, mode os.FileMode) error {
 }
 
 // WriteFileAtomicModeExpected replaces an existing regular destination only
-// when it is still the expected filesystem object at publication. Platforms
-// without an atomic exchange primitive reject the operation rather than
-// falling back to an overwrite race.
-func WriteFileAtomicModeExpected(path string, data []byte, mode os.FileMode, expected os.FileInfo) error {
+// when the atomically displaced generation still has the expected filesystem
+// identity and exact bytes. Platforms without an atomic exchange primitive
+// reject the operation rather than falling back to an overwrite race.
+func WriteFileAtomicModeExpected(path string, data []byte, mode os.FileMode, expected os.FileInfo, expectedData []byte) error {
 	if expected == nil {
 		return errors.New("expected destination identity is required")
 	}
+	// Windows resolves os.FileInfo identity lazily from its original pathname.
+	// Bind it before the conditional exchange can move that pathname.
+	if !os.SameFile(expected, expected) {
+		return errors.New("expected destination identity is unavailable")
+	}
+	data = append([]byte(nil), data...)
+	expectedData = append([]byte(nil), expectedData...)
 	return writeFileAtomicModeWithInfo(path, data, mode, nil, func(source, destination string, temporary os.FileInfo) error {
-		return replaceExpectedAtomic(source, destination, temporary, expected)
+		return replaceExpectedAtomic(source, destination, temporary, expected, data, expectedData)
 	}, false)
+}
+
+// validateExpectedAtomicGeneration binds identity and exact bytes after the
+// conditional exchange has moved a generation to a private pathname. The
+// repeated observations fail closed if that displaced file changes while it
+// is being inspected.
+func validateExpectedAtomicGeneration(path string, expected os.FileInfo, expectedData []byte) (os.FileInfo, error) {
+	first, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !first.Mode().IsRegular() || !os.SameFile(first, first) || !os.SameFile(expected, first) || first.Mode() != expected.Mode() {
+		return nil, errors.New("displaced generation identity or mode differs from expected")
+	}
+	firstData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	middle, err := os.Lstat(path)
+	if err != nil || !os.SameFile(middle, middle) || !os.SameFile(first, middle) || middle.Mode() != first.Mode() {
+		return nil, errors.Join(errors.New("displaced generation changed during inspection"), err)
+	}
+	secondData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	last, err := os.Lstat(path)
+	if err != nil || !os.SameFile(last, last) || !os.SameFile(first, last) || last.Mode() != first.Mode() {
+		return nil, errors.Join(errors.New("displaced generation changed during inspection"), err)
+	}
+	if !bytes.Equal(firstData, expectedData) || !bytes.Equal(secondData, expectedData) {
+		return nil, errors.New("displaced generation content differs from expected")
+	}
+	return last, nil
+}
+
+func validateExpectedAtomicFile(file *os.File, expected os.FileInfo, expectedData []byte) (os.FileInfo, error) {
+	if file == nil || expected == nil {
+		return nil, errors.New("expected file generation is unavailable")
+	}
+	first, err := file.Stat()
+	if err != nil || !first.Mode().IsRegular() || !os.SameFile(first, first) || !os.SameFile(expected, first) || first.Mode() != expected.Mode() {
+		return nil, errors.Join(errors.New("file generation identity or mode differs from expected"), err)
+	}
+	read := func() ([]byte, error) {
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+		return io.ReadAll(file)
+	}
+	firstData, err := read()
+	if err != nil {
+		return nil, err
+	}
+	middle, err := file.Stat()
+	if err != nil || !os.SameFile(first, middle) || middle.Mode() != first.Mode() {
+		return nil, errors.Join(errors.New("file generation changed during inspection"), err)
+	}
+	secondData, err := read()
+	if err != nil {
+		return nil, err
+	}
+	last, err := file.Stat()
+	if err != nil || !os.SameFile(first, last) || last.Mode() != first.Mode() {
+		return nil, errors.Join(errors.New("file generation changed during inspection"), err)
+	}
+	if !bytes.Equal(firstData, expectedData) || !bytes.Equal(secondData, expectedData) {
+		return nil, errors.New("file generation content differs from expected")
+	}
+	return last, nil
 }
 
 // WriteFileAtomicCreateMode durably creates a file using creation permissions
@@ -200,6 +332,13 @@ func writeFileAtomicModeWithInfo(path string, data []byte, mode os.FileMode, hoo
 		}
 	}()
 	if err := temporary.Chmod(mode); err != nil {
+		temporary.Close()
+		return err
+	}
+	// Refresh the writer receipt after chmod so a restored writer generation
+	// can be validated against the mode that will actually be published.
+	temporaryInfo, err = temporary.Stat()
+	if err != nil {
 		temporary.Close()
 		return err
 	}

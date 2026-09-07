@@ -15,28 +15,47 @@ var expectedAtomicExchange = func(source, destination string) error {
 
 var expectedAtomicBeforeExchange func()
 
-func replaceExpectedAtomic(source, destination string, _ os.FileInfo, expected os.FileInfo) error {
+func replaceExpectedAtomic(source, destination string, temporary, expected os.FileInfo, replacementData, expectedData []byte) error {
 	if expectedAtomicBeforeExchange != nil {
 		expectedAtomicBeforeExchange()
 	}
 	if err := expectedAtomicExchange(source, destination); err != nil {
 		return err
 	}
-	displaced, err := os.Lstat(source)
-	if err == nil && displaced.Mode().IsRegular() && os.SameFile(expected, displaced) {
-		if err := removeAtomicTemporary(source, expected); err != nil {
-			return &postReplacementError{Err: errors.Join(errors.New("remove displaced expected generation"), err)}
+	displaced, validationErr := validateExpectedAtomicGeneration(source, expected, expectedData)
+	if validationErr == nil {
+		if err := removeAtomicTemporary(source, displaced); err != nil {
+			return &postReplacementError{Err: &atomicAuxiliaryError{Paths: []string{source}, Err: errors.Join(errors.New("remove displaced expected generation"), err)}}
 		}
 		return nil
 	}
 	if restoreErr := expectedAtomicExchange(source, destination); restoreErr != nil {
 		syncErr := syncDirectory(filepath.Dir(destination))
-		return &postReplacementError{Err: &preservedConditionalReplacementError{
+		return &postReplacementError{Err: &atomicAuxiliaryError{Paths: []string{source}, Err: &preservedConditionalReplacementError{
 			RecoveryPath: source,
 			Err:          errors.Join(errors.New("conditional replacement destination changed and could not be restored"), restoreErr, syncErr),
-		}}
+		}}}
 	}
-	return errors.Join(errors.New("conditional replacement destination changed"), syncDirectory(filepath.Dir(destination)))
+	if syncErr := syncDirectory(filepath.Dir(destination)); syncErr != nil {
+		return &postReplacementError{Err: &atomicAuxiliaryError{Paths: []string{source}, Err: &preservedConditionalReplacementError{
+			RecoveryPath: source,
+			Err:          errors.Join(errors.New("conditional replacement restored destination but directory sync failed"), validationErr, syncErr),
+		}}}
+	}
+	writer, writerErr := validateExpectedAtomicGeneration(source, temporary, replacementData)
+	if writerErr != nil {
+		return &postReplacementError{Err: &atomicAuxiliaryError{Paths: []string{source}, Err: &preservedConditionalReplacementError{
+			RecoveryPath: source,
+			Err:          errors.Join(errors.New("conditional replacement restored destination but writer recovery identity is unproven"), validationErr, writerErr),
+		}}}
+	}
+	if cleanupErr := removeAtomicTemporary(source, writer); cleanupErr != nil {
+		return &postReplacementError{Err: &atomicAuxiliaryError{Paths: []string{source}, Err: &preservedConditionalReplacementError{
+			RecoveryPath: source,
+			Err:          errors.Join(errors.New("conditional replacement restored destination but writer generation cleanup failed"), validationErr, cleanupErr),
+		}}}
+	}
+	return errors.Join(errors.New("conditional replacement destination changed"), validationErr)
 }
 
 type preservedConditionalReplacementError struct {
@@ -52,5 +71,6 @@ func (e *preservedConditionalReplacementError) Unwrap() error { return e.Err }
 
 func preserveAtomicTemporary(err error) bool {
 	var preserved *preservedConditionalReplacementError
-	return errors.As(err, &preserved)
+	var auxiliary *atomicAuxiliaryError
+	return errors.As(err, &preserved) || errors.As(err, &auxiliary)
 }

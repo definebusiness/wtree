@@ -709,7 +709,7 @@ func (r *Resolver) loadProject(ctx context.Context, configPath string) (domain.P
 	project := domain.Project{Version: domain.CurrentVersion, ID: configuration.Project.ID, Name: configuration.Project.Name, ConfigPath: configPath, BaseRepository: configuration.Project.BaseRepository, LogicalRoot: logicalRoot, DiscoveryIgnores: append([]string(nil), configuration.Discovery.Ignore...), Repositories: make([]domain.Repository, 0, len(ids))}
 	for _, id := range ids {
 		repository := configuration.Repositories[id]
-		project.Repositories = append(project.Repositories, domain.Repository{ID: id, ParentID: repository.Parent, DefaultMount: repository.DefaultMount, DefaultBranch: repository.DefaultBranch})
+		project.Repositories = append(project.Repositories, domain.Repository{ID: id, ParentID: repository.Parent, DefaultMount: repository.DefaultMount, DefaultBranch: repository.DefaultBranch, Companion: repository.Companion})
 	}
 	if err := project.Validate(); err != nil {
 		return domain.Project{}, fmt.Errorf("validate project configuration %q: %w", configPath, err)
@@ -744,7 +744,7 @@ func (r *Resolver) loadProject(ctx context.Context, configPath string) (domain.P
 				return domain.Project{}, fmt.Errorf("project repositories %q and %q share Git identity %q", existing.ID, id, commonGitDir)
 			}
 		}
-		loaded = append(loaded, domain.Repository{ID: id, CommonGitDir: commonGitDir, SourcePath: sourcePath, ParentID: repository.Parent, DefaultMount: repository.DefaultMount, DefaultBranch: repository.DefaultBranch})
+		loaded = append(loaded, domain.Repository{ID: id, CommonGitDir: commonGitDir, SourcePath: sourcePath, ParentID: repository.Parent, DefaultMount: repository.DefaultMount, DefaultBranch: repository.DefaultBranch, Companion: repository.Companion})
 	}
 	project.Repositories = loaded
 	return project, nil

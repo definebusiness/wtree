@@ -18,6 +18,12 @@ const (
 	// PortableManifestVersion3 is the hook-capable portable manifest schema.
 	// PortableManifestVersion intentionally remains v2 for existing writers.
 	PortableManifestVersion3 = 3
+	// ProjectConfigVersion4 adds the companion repository role while retaining
+	// the v3 local hook contract.
+	ProjectConfigVersion4 = 4
+	// PortableManifestVersion4 adds the companion repository role while
+	// retaining the v3 portable and shared hook contracts.
+	PortableManifestVersion4 = 4
 
 	HookEventPostCreate = "post-create"
 	HookEventPostClone  = "post-clone"

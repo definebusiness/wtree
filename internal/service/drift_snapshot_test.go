@@ -1066,9 +1066,43 @@ func TestDriftSnapshotClassifiesUnexpectedDiskAndDuplicateObservation(t *testing
 func TestUpdateClassificationRejectsActualUpstreamMismatch(t *testing.T) {
 	current := driftRepository("", ".")
 	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "main", CommonGitDir: "/git/root", SourcePath: "/tree"}})
-	fact := classifyExistingDriftRepository("root", current, current, DriftRepositoryObservation{RepositoryID: "root", Path: driftFixturePath("/tree"), CommonGitDir: driftFixturePath("/git/root"), Branch: "main", Head: driftOID('0'), Clean: true, IdentityKnown: true, IdentityMatches: true, AdvertisedCommit: driftOID('0'), TrackedManifestExact: true, UpstreamKnown: true, Upstream: gitadapter.Upstream{LocalBranch: "main", Remote: "origin", Merge: "refs/heads/main", FetchURL: "https://other.test/project.git"}}, project, true)
+	fact := classifyExistingDriftRepository("root", current, current, DriftRepositoryObservation{RepositoryID: "root", Path: driftFixturePath("/tree"), CommonGitDir: driftFixturePath("/git/root"), Branch: "main", Head: driftOID('0'), Clean: true, IdentityKnown: true, IdentityMatches: true, AdvertisedCommit: driftOID('0'), TrackedManifestExact: true, UpstreamKnown: true, Upstream: gitadapter.Upstream{LocalBranch: "main", Remote: "origin", Merge: "refs/heads/main", FetchURL: "https://other.test/project.git"}}, project, domain.Checkout{}, false, true)
 	if fact.Classification != UpdateClassificationStructurallyInconsistent || len(fact.Failures) != 1 || fact.Failures[0].Check != "upstream" {
 		t.Fatalf("upstream classification = %#v", fact)
+	}
+}
+
+func TestUpdateClassificationAcceptsExistingCompanionWorkspaceBranchAfterBaselineChange(t *testing.T) {
+	current := driftRepository("", ".")
+	current.Companion, current.DefaultBranch, current.Upstream.Branch, current.Upstream.Merge = true, "new-baseline", "new-baseline", "refs/heads/new-baseline"
+	project := driftProject([]domain.Repository{{ID: "root", DefaultMount: ".", DefaultBranch: "new-baseline", Companion: true, CommonGitDir: "/git/root", SourcePath: "/tree"}})
+	observation := DriftRepositoryObservation{RepositoryID: "root", Path: driftFixturePath("/tree"), CommonGitDir: driftFixturePath("/git/root"), Branch: "old-workspace", Head: driftOID('0'), Clean: true, IdentityKnown: true, IdentityMatches: true, AdvertisedCommit: driftOID('0'), TrackedManifestExact: true, UpstreamKnown: true, Upstream: gitadapter.Upstream{LocalBranch: "old-workspace", Remote: "origin", Merge: "refs/heads/old-workspace", FetchURL: current.Clone.URL}}
+	persisted := domain.Checkout{RepositoryID: "root", Branch: "old-workspace", Head: driftOID('0'), Mount: ".", ResolvedPath: driftFixturePath("/tree")}
+	fact := classifyExistingDriftRepository("root", current, current, observation, project, persisted, true, true)
+	if fact.Classification != UpdateClassificationUnchanged || len(fact.Failures) != 0 {
+		t.Fatalf("companion workspace classification = %#v", fact)
+	}
+	observation.Upstream.LocalBranch = "wrong"
+	fact = classifyExistingDriftRepository("root", current, current, observation, project, persisted, true, true)
+	if fact.Classification != UpdateClassificationStructurallyInconsistent || len(fact.Failures) != 1 || fact.Failures[0].Check != "upstream" {
+		t.Fatalf("companion upstream local branch mismatch = %#v", fact)
+	}
+	observation.Upstream.LocalBranch = "old-workspace"
+	fact = classifyExistingDriftRepository("root", current, current, observation, project, domain.Checkout{}, false, true)
+	if fact.Classification != UpdateClassificationStructurallyInconsistent || len(fact.Failures) != 1 || fact.Failures[0].Check != "checkout-authority" {
+		t.Fatalf("unbound companion workspace classification = %#v", fact)
+	}
+	wrongBranch := persisted
+	wrongBranch.Branch = "wrong"
+	fact = classifyExistingDriftRepository("root", current, current, observation, project, wrongBranch, true, true)
+	if fact.Classification != UpdateClassificationStructurallyInconsistent || len(fact.Failures) != 1 || fact.Failures[0].Check != "checkout-authority" {
+		t.Fatalf("wrong persisted companion branch classification = %#v", fact)
+	}
+	detached := observation
+	detached.Detached, detached.Branch = true, ""
+	fact = classifyExistingDriftRepository("root", current, current, detached, project, persisted, true, true)
+	if fact.Classification != UpdateClassificationStructurallyInconsistent || len(fact.Failures) != 1 || fact.Failures[0].Check != "checkout-authority" {
+		t.Fatalf("detached companion checkout classification = %#v", fact)
 	}
 }
 

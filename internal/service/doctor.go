@@ -175,7 +175,8 @@ func (d *DoctorService) Doctor(ctx context.Context, project domain.Project, work
 		if headErr != nil {
 			return DoctorReport{}, NewError(ErrorGit, fmt.Errorf("read HEAD for %q: %w", repository.ID, headErr))
 		}
-		if head != checkout.Head {
+		attachedAtRecordedPath := expectedErr == nil && sameCheckoutPath(expected, actual) && sameCheckoutPath(checkout.ResolvedPath, actual) && !detached && branch == checkout.Branch
+		if head != checkout.Head && !(attachedAtRecordedPath && d.validCompanionDescendant(ctx, repository, checkout, actual, head)) {
 			report.Findings = append(report.Findings, DoctorFinding{Code: "head-mismatch", Severity: "warning", RepositoryID: repository.ID, Message: "actual Git HEAD differs from workspace state"})
 		}
 	}
@@ -244,6 +245,17 @@ func (d *DoctorService) Doctor(ctx context.Context, project domain.Project, work
 	})
 	report.Findings = uniqueDoctorFindings(report.Findings)
 	return report, nil
+}
+
+// validCompanionDescendant recognizes the one writable-history exception. It
+// is deliberately called only after Doctor has established identity, mount,
+// and branch attachment above; it never repairs or changes a ref.
+func (d *DoctorService) validCompanionDescendant(ctx context.Context, repository domain.Repository, checkout domain.Checkout, path, head string) bool {
+	if !repository.Companion || checkout.Head == "" || checkout.Detached || head == checkout.Head {
+		return false
+	}
+	advanced, err := gitIsAncestor(ctx, d.git, path, checkout.Head, head)
+	return err == nil && advanced
 }
 
 func doctorRepositories(project domain.Project, workspace domain.Workspace, observed map[string]string, findings []DoctorFinding) []DoctorRepository {

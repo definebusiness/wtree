@@ -30,6 +30,48 @@ func TestLoadProjectConfigStrictlyDecodesVersionTwoTopology(t *testing.T) {
 	}
 }
 
+func TestLoadProjectConfigV4CompanionIsStrictAndCanonical(t *testing.T) {
+	manifestSource := filepath.Join(t.TempDir(), "project.wtree.yml")
+	input := strings.Replace(projectConfigV2Fixture(manifestSource), "version: 2", "version: 4", 1)
+	input = strings.Replace(input, "    default_branch: main\n", "    default_branch: main\n    companion: true\n", 1)
+	value, err := config.LoadProject([]byte(input))
+	if err != nil || !value.Repositories["root"].Companion {
+		t.Fatalf("LoadProject(v4) = %#v, %v", value, err)
+	}
+	encoded, err := config.MarshalProject(value)
+	if err != nil || !strings.Contains(string(encoded), "    companion: true\n") {
+		t.Fatalf("MarshalProject(v4) = %q, %v", encoded, err)
+	}
+	legacy := strings.Replace(projectConfigV2Fixture(manifestSource), "    default_branch: main\n", "    default_branch: main\n    companion: true\n", 1)
+	if _, err := config.LoadProject([]byte(legacy)); err == nil {
+		t.Fatal("v2 accepted companion")
+	}
+	if _, err := config.LoadProject([]byte(strings.Replace(legacy, "version: 2", "version: 3", 1))); err == nil {
+		t.Fatal("v3 accepted companion")
+	}
+}
+
+func TestMarshalProjectRejectsProgrammaticCompanionBeforeV4(t *testing.T) {
+	// RED: the shared Repository type used to let an in-memory v2 value emit a
+	// companion field which the strict v2 decoder then rejected.
+	manifestSource := filepath.Join(t.TempDir(), "project.wtree.yml")
+	for _, version := range []int{config.ProjectConfigVersion, config.ProjectConfigVersion3} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			input := strings.Replace(projectConfigV2Fixture(manifestSource), "version: 2", fmt.Sprintf("version: %d", version), 1)
+			value, err := config.LoadProject([]byte(input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			repository := value.Repositories["root"]
+			repository.Companion = true
+			value.Repositories["root"] = repository
+			if encoded, marshalErr := config.MarshalProject(value); marshalErr == nil || len(encoded) != 0 {
+				t.Fatalf("MarshalProject(v%d companion) bytes=%q err=%v, want pre-encoding rejection", version, encoded, marshalErr)
+			}
+		})
+	}
+}
+
 func TestLoadProjectConfigV2RequiresTopologyFieldsAndCleanPaths(t *testing.T) {
 	manifestSource := filepath.Join(t.TempDir(), "projects", "product", "project.wtree.yml")
 	valid := projectConfigV2Fixture(manifestSource)

@@ -172,6 +172,80 @@ func TestHookShareAndInstallMutateOnlyTheirTargetGeneration(t *testing.T) {
 	}
 }
 
+func TestHookShareAndInstallPreserveV4CompanionAndHooks(t *testing.T) {
+	root, data := t.TempDir(), t.TempDir()
+	manifestPath, configPath := filepath.Join(root, "project.wtree.yml"), filepath.Join(root, ".wtree.yml")
+	local := hookManagementLocal(manifestPath)
+	local.Version = config.ProjectConfigVersion4
+	repository := local.Repositories["root"]
+	repository.Companion = true
+	local.Repositories["root"] = repository
+	local.Hooks = config.HookEvents{config.HookEventPostCreate: {{ID: "local", Command: []string{"echo", "setup"}}}}
+	if err := config.WriteProjectFile(configPath, local); err != nil {
+		t.Fatal(err)
+	}
+	manifest := hookManagementManifest()
+	manifest.Version = config.PortableManifestVersion4
+	portable := manifest.Repositories["root"]
+	portable.Companion = true
+	manifest.Repositories["root"] = portable
+	if data, err := config.MarshalPortableManifest(manifest); err != nil {
+		t.Fatal(err)
+	} else if err := os.WriteFile(manifestPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := HookManagementRequest{Project: hookManagementCompanionProject(configPath, root, true), DataDir: data}
+	service := NewHookManagementService()
+	if result, err := service.Share(context.Background(), HookShareRequest{HookManagementRequest: request, Event: config.HookEventPostCreate}); err != nil || !result.Changed {
+		t.Fatalf("Share=%#v err=%v", result, err)
+	}
+	shared, err := config.LoadPortableManifest(mustReadHookManagement(t, manifestPath))
+	if err != nil || shared.Version != config.PortableManifestVersion4 || !shared.Repositories["root"].Companion || len(shared.SharedHooks) != 1 {
+		t.Fatalf("shared v4=%#v err=%v", shared, err)
+	}
+	local.Hooks = nil
+	if err := config.WriteProjectFile(configPath, local); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := service.Install(context.Background(), HookInstallRequest{HookManagementRequest: request}); err != nil || !result.Changed {
+		t.Fatalf("Install=%#v err=%v", result, err)
+	}
+	installed, err := config.LoadProject(mustReadHookManagement(t, configPath))
+	if err != nil || installed.Version != config.ProjectConfigVersion4 || !installed.Repositories["root"].Companion || len(installed.Hooks) != 1 {
+		t.Fatalf("installed v4=%#v err=%v", installed, err)
+	}
+}
+
+func TestHookManagementRejectsCompanionRoleMismatchWithoutMutation(t *testing.T) {
+	root, data := t.TempDir(), t.TempDir()
+	manifestPath, configPath := filepath.Join(root, "project.wtree.yml"), filepath.Join(root, ".wtree.yml")
+	local := hookManagementLocal(manifestPath)
+	local.Version = config.ProjectConfigVersion4
+	if err := config.WriteProjectFile(configPath, local); err != nil {
+		t.Fatal(err)
+	}
+	manifest := hookManagementManifest()
+	manifest.Version = config.PortableManifestVersion4
+	repository := manifest.Repositories["root"]
+	repository.Companion = true
+	manifest.Repositories["root"] = repository
+	encoded, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beforeLocal, beforeManifest := mustReadHookManagement(t, configPath), mustReadHookManagement(t, manifestPath)
+	request := HookManagementRequest{Project: hookManagementCompanionProject(configPath, root, true), DataDir: data}
+	if _, err := NewHookManagementService().Share(context.Background(), HookShareRequest{HookManagementRequest: request, Event: config.HookEventPostCreate}); err == nil {
+		t.Fatal("role mismatch accepted")
+	}
+	if string(beforeLocal) != string(mustReadHookManagement(t, configPath)) || string(beforeManifest) != string(mustReadHookManagement(t, manifestPath)) {
+		t.Fatal("role mismatch mutated configuration")
+	}
+}
+
 type hookTrackingFact bool
 
 func (fact hookTrackingFact) WorkingFileTracked(context.Context, string, string) (bool, error) {
@@ -1786,6 +1860,12 @@ func mustReadHookManagement(t *testing.T, path string) []byte {
 
 func hookManagementProject(configPath, root string) domain.Project {
 	return domain.Project{Version: domain.CurrentVersion, ID: "hooks-project", Name: "Hooks", ConfigPath: configPath, LogicalRoot: root, BaseRepository: "root", Repositories: []domain.Repository{{ID: "root", SourcePath: root, DefaultMount: ".", DefaultBranch: "main"}}}
+}
+
+func hookManagementCompanionProject(configPath, root string, companion bool) domain.Project {
+	project := hookManagementProject(configPath, root)
+	project.Repositories[0].Companion = companion
+	return project
 }
 
 func hookManagementLocal(manifestPath string) config.ProjectConfig {

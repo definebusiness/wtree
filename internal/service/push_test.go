@@ -30,6 +30,76 @@ func TestPushReadyAndReadOnlyBoundary(t *testing.T) {
 	}
 }
 
+func TestPushCompanionAllowsWorkspaceUpstreamButRetainsRemoteAndBranchChecks(t *testing.T) {
+	project, workspace := pushWorkspace(t)
+	repository := testutil.GitRepository{Path: workspace.RootPath}
+	repository.Run(t, "checkout", "-b", "companion/work")
+
+	manifestBytes, err := os.ReadFile(filepath.Join(workspace.RootPath, "project.wtree.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := config.LoadPortableManifest(manifestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Version = config.PortableManifestVersion4
+	companion := manifest.Repositories["root"]
+	companion.Companion = true
+	manifest.Repositories["root"] = companion
+	manifestBytes, err = config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace.RootPath, "project.wtree.yml"), manifestBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repository.Run(t, "add", "project.wtree.yml")
+	repository.Run(t, "commit", "-m", "declare companion")
+	repository.Run(t, "push", "origin", "companion/work")
+	repository.Run(t, "config", "branch.companion/work.remote", "origin")
+	repository.Run(t, "config", "branch.companion/work.merge", "refs/heads/companion/work")
+
+	localBytes, err := os.ReadFile(project.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := config.LoadProject(localBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local.Version = config.ProjectConfigVersion4
+	localRepository := local.Repositories["root"]
+	localRepository.Companion = true
+	local.Repositories["root"] = localRepository
+	if err := config.WriteProjectFile(project.ConfigPath, local); err != nil {
+		t.Fatal(err)
+	}
+	head, err := gitadapter.NewAdapter("git").Head(context.Background(), workspace.RootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project.Repositories[0].Companion = true
+	workspace.Checkouts[0].Branch, workspace.Checkouts[0].Head = "companion/work", head
+
+	ready, err := NewPushService().Push(context.Background(), project, workspace, PushRequest{})
+	if err != nil || ready.Status != PushStatusReady || !ready.Repositories[0].Companion {
+		t.Fatalf("companion workspace upstream readiness = %#v, %v", ready, err)
+	}
+	repository.Run(t, "remote", "add", "other", strings.TrimSpace(pushGitOutput(t, workspace.RootPath, "remote", "get-url", "origin")))
+	repository.Run(t, "fetch", "other", "companion/work")
+	repository.Run(t, "config", "branch.companion/work.remote", "other")
+	blocked, err := NewPushService().Push(context.Background(), project, workspace, PushRequest{})
+	if err == nil || blocked.Status != PushStatusBlocked || !pushHasFinding(blocked, "identity-mismatch") {
+		t.Fatalf("companion wrong remote name = %#v, %v", blocked, err)
+	}
+	workspace.Checkouts[0].Branch = "wrong-local-branch"
+	blocked, err = NewPushService().Push(context.Background(), project, workspace, PushRequest{})
+	if err == nil || blocked.Status != PushStatusBlocked || !pushHasFinding(blocked, "identity-mismatch") {
+		t.Fatalf("companion wrong local branch = %#v, %v", blocked, err)
+	}
+}
+
 func TestPushReadOnlySnapshotAcrossResultWindows(t *testing.T) {
 	for _, test := range []struct {
 		name string

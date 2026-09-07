@@ -4,7 +4,9 @@ set -eu
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 source_root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
-test_root=$(mktemp -d "${TMPDIR:-/tmp}/wtree-release-tutorial.XXXXXX")
+temp_base=$(CDPATH='' cd -- "${TMPDIR:-/tmp}" && pwd -P)
+test_root=$(mktemp -d "$temp_base/wtree-release-tutorial.XXXXXX")
+test_root=$(CDPATH='' cd -- "$test_root" && pwd -P)
 trap 'rm -rf "$test_root"' EXIT HUP INT TERM
 git_real=$(command -v git)
 

@@ -144,6 +144,75 @@ func TestWindowsCloneStagingLetsGitCreateAbsentDestination(t *testing.T) {
 	}
 }
 
+func TestWindowsCloneStagingReleaseAllowsAuthorizedGuardMove(t *testing.T) {
+	parent := t.TempDir()
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staging, _, stagingParent, leaseValue, err := createCloneStaging(parent, ".clone.wtree-clone-", parentInfo, os.MkdirTemp, os.Lstat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*windowsCloneStagingLease)
+	container := lease.containerPath
+	published := filepath.Join(parent, "published")
+	t.Cleanup(func() {
+		_ = lease.closePreservingContainer()
+		_ = os.RemoveAll(container)
+		_ = os.RemoveAll(published)
+	})
+	checkout := filepath.Join(staging, "backend")
+	owned, err := lease.prepareChild(staging, checkout, nil, stagingParent, os.Mkdir, os.Lstat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createWindowsCloneGitObjects(t, checkout)
+	owned, err = lease.captureChild(staging, checkout, owned, stagingParent, os.Lstat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.releaseChild(staging, owned, stagingParent, os.Lstat); err != nil {
+		t.Fatalf("release before authorized checkout move: %v", err)
+	}
+	if lease.child != nil || lease.guard != nil {
+		t.Fatal("release retained child or guard handle")
+	}
+	if err := os.Rename(checkout, published); err != nil {
+		t.Fatalf("publish staged checkout after authority release: %v", err)
+	}
+}
+
+func TestWindowsCloneStagingClosePreservesNonemptyContainer(t *testing.T) {
+	parent := t.TempDir()
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staging, _, _, leaseValue, err := createCloneStaging(parent, ".clone.wtree-clone-", parentInfo, os.MkdirTemp, os.Lstat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*windowsCloneStagingLease)
+	container := lease.containerPath
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(staging, "foreign")
+	if err := os.WriteFile(marker, []byte("foreign"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.closePreservingContainer(); err != nil {
+		t.Fatalf("close preserving container: %v", err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "foreign" {
+		t.Fatalf("preserved marker = %q, %v", data, err)
+	}
+	if err := os.RemoveAll(container); err != nil {
+		t.Fatalf("remove after handle release: %v", err)
+	}
+}
+
 func TestWindowsClonePrecreatedForestRootAllowsInventoryAndBlocksRename(t *testing.T) {
 	parent := t.TempDir()
 	parentInfo, err := os.Lstat(parent)

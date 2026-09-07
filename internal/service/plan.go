@@ -95,6 +95,8 @@ func (p *WorkspacePlanner) Plan(ctx context.Context, project domain.Project, req
 		baseRef := base
 		if request.Operation == plan.Checkout {
 			baseRef = request.WorkspaceName
+		} else if repository.Companion {
+			baseRef = "refs/heads/" + repository.DefaultBranch
 		}
 		resolvedBase, err := p.resolveBase(ctx, repository, baseRef)
 		if err != nil {
@@ -104,6 +106,8 @@ func (p *WorkspacePlanner) Plan(ctx context.Context, project domain.Project, req
 		repositories = append(repositories, plan.RepositoryPlan{
 			ID: repository.ID, ParentID: repository.ParentID, Base: resolvedBase,
 			Branch: request.WorkspaceName, Mount: mount, Path: paths[repository.ID],
+			Companion: repository.Companion,
+			Baseline:  companionBaseline(repository),
 		})
 	}
 	value := plan.WorkspacePlan{
@@ -125,6 +129,13 @@ func (p *WorkspacePlanner) Plan(ctx context.Context, project domain.Project, req
 		return plan.WorkspacePlan{}, NewError(ErrorValidation, fmt.Errorf("derive workspace ignore ensures: %w", err))
 	}
 	return value, nil
+}
+
+func companionBaseline(repository domain.Repository) string {
+	if !repository.Companion {
+		return ""
+	}
+	return repository.DefaultBranch
 }
 
 func (p *WorkspacePlanner) preflightRepositories(ctx context.Context, project domain.Project, request WorkspacePlanRequest, mounts map[string]string, paths map[string]string) error {

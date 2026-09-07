@@ -165,6 +165,12 @@ func (s *HookManagementService) Share(ctx context.Context, request HookShareRequ
 func (s *HookManagementService) validateSharePortability(ctx context.Context, project domain.Project, local config.ProjectConfig, manifest config.PortableManifest, event string, hooks []config.Hook) error {
 	probe := cloneHookManifest(manifest)
 	probe.Version = config.PortableManifestVersion3
+	for _, repository := range probe.Repositories {
+		if repository.Companion {
+			probe.Version = config.PortableManifestVersion4
+			break
+		}
+	}
 	probe.SharedHooks = config.HookEvents{event: cloneHookSlice(hooks)}
 	if _, err := config.MarshalPortableManifest(probe); err != nil {
 		return NewError(ErrorValidation, errors.New("portable hook definition is invalid"))
@@ -704,7 +710,7 @@ func hookManagementTopologyMatches(project domain.Project, local config.ProjectC
 		configured, ok := local.Repositories[repository.ID]
 		source, sourceErr := sourcePath(logicalRoot, configured.Source)
 		repositorySource, repositoryErr := filepath.EvalSymlinks(repository.SourcePath)
-		if !ok || sourceErr != nil || repositoryErr != nil || configured.Parent != repository.ParentID || configured.DefaultMount != repository.DefaultMount || configured.DefaultBranch != repository.DefaultBranch || filepath.Clean(source) != filepath.Clean(repositorySource) {
+		if !ok || sourceErr != nil || repositoryErr != nil || configured.Parent != repository.ParentID || configured.DefaultMount != repository.DefaultMount || configured.DefaultBranch != repository.DefaultBranch || configured.Companion != repository.Companion || filepath.Clean(source) != filepath.Clean(repositorySource) {
 			return NewError(ErrorConflict, errors.New("project repository topology changed"))
 		}
 	}

@@ -31,6 +31,7 @@ type Repository struct {
 	Parent        string `yaml:"parent" json:"parent"`
 	DefaultMount  string `yaml:"mount" json:"mount"`
 	DefaultBranch string `yaml:"default_branch" json:"defaultBranch"`
+	Companion     bool   `yaml:"companion,omitempty" json:"companion,omitempty"`
 }
 type Worktrees struct {
 	Root string `yaml:"root" json:"root"`
@@ -74,21 +75,25 @@ func LoadProject(data []byte) (ProjectConfig, error) {
 	if version == 1 {
 		return ProjectConfig{}, fmt.Errorf("local project config version 1 is unsupported; reinitialization is required")
 	}
-	if version != ProjectConfigVersion && version != ProjectConfigVersion3 {
+	if version != ProjectConfigVersion && version != ProjectConfigVersion3 && version != ProjectConfigVersion4 {
 		return ProjectConfig{}, fmt.Errorf("unsupported local project config version %d", version)
 	}
 	var value ProjectConfig
 	if version == ProjectConfigVersion {
 		var v2 projectConfigV2
 		err = strictYAML(data, &v2)
-		value = ProjectConfig{Version: v2.Version, Project: v2.Project, LogicalRoot: v2.LogicalRoot, Repositories: v2.Repositories, Worktrees: v2.Worktrees, Discovery: v2.Discovery, Manifest: v2.Manifest}
+		value = ProjectConfig{Version: v2.Version, Project: v2.Project, LogicalRoot: v2.LogicalRoot, Repositories: v2.Repositories.asRepositories(), Worktrees: v2.Worktrees, Discovery: v2.Discovery, Manifest: v2.Manifest}
+	} else if version == ProjectConfigVersion3 {
+		var v3 projectConfigV3
+		err = strictYAML(data, &v3)
+		value = ProjectConfig{Version: v3.Version, Project: v3.Project, LogicalRoot: v3.LogicalRoot, Repositories: v3.Repositories.asRepositories(), Worktrees: v3.Worktrees, Discovery: v3.Discovery, Manifest: v3.Manifest, Hooks: v3.Hooks}
 	} else {
 		err = strictYAML(data, &value)
 	}
 	if err != nil {
 		return ProjectConfig{}, err
 	}
-	if version == ProjectConfigVersion3 {
+	if version == ProjectConfigVersion3 || version == ProjectConfigVersion4 {
 		if err := validateExplicitHookTimeouts(data); err != nil {
 			return ProjectConfig{}, err
 		}
@@ -105,13 +110,42 @@ func LoadProject(data []byte) (ProjectConfig, error) {
 // projectConfigV2 intentionally omits Hooks. Strict decoding through this
 // wire type preserves v2's rejection of the otherwise known v3 field.
 type projectConfigV2 struct {
-	Version      int                   `yaml:"version" json:"version"`
-	Project      Project               `yaml:"project" json:"project"`
-	LogicalRoot  string                `yaml:"logical_root" json:"logical_root"`
-	Repositories map[string]Repository `yaml:"repositories" json:"repositories"`
-	Worktrees    Worktrees             `yaml:"worktrees" json:"worktrees"`
-	Discovery    Discovery             `yaml:"discovery,omitempty" json:"discovery,omitempty"`
-	Manifest     ManifestMetadata      `yaml:"manifest,omitempty" json:"manifest,omitempty"`
+	Version      int               `yaml:"version" json:"version"`
+	Project      Project           `yaml:"project" json:"project"`
+	LogicalRoot  string            `yaml:"logical_root" json:"logical_root"`
+	Repositories repositoryWireMap `yaml:"repositories" json:"repositories"`
+	Worktrees    Worktrees         `yaml:"worktrees" json:"worktrees"`
+	Discovery    Discovery         `yaml:"discovery,omitempty" json:"discovery,omitempty"`
+	Manifest     ManifestMetadata  `yaml:"manifest,omitempty" json:"manifest,omitempty"`
+}
+
+// repositoryWire deliberately omits Companion. v2/v3 decode through it so
+// adding the v4 role cannot weaken their strict unknown-field contract.
+type repositoryWire struct {
+	Source        string `yaml:"source" json:"source"`
+	Parent        string `yaml:"parent" json:"parent"`
+	DefaultMount  string `yaml:"mount" json:"mount"`
+	DefaultBranch string `yaml:"default_branch" json:"defaultBranch"`
+}
+type repositoryWireMap map[string]repositoryWire
+
+func (values repositoryWireMap) asRepositories() map[string]Repository {
+	result := make(map[string]Repository, len(values))
+	for id, value := range values {
+		result[id] = Repository{Source: value.Source, Parent: value.Parent, DefaultMount: value.DefaultMount, DefaultBranch: value.DefaultBranch}
+	}
+	return result
+}
+
+type projectConfigV3 struct {
+	Version      int               `yaml:"version" json:"version"`
+	Project      Project           `yaml:"project" json:"project"`
+	LogicalRoot  string            `yaml:"logical_root" json:"logical_root"`
+	Repositories repositoryWireMap `yaml:"repositories" json:"repositories"`
+	Worktrees    Worktrees         `yaml:"worktrees" json:"worktrees"`
+	Discovery    Discovery         `yaml:"discovery,omitempty" json:"discovery,omitempty"`
+	Manifest     ManifestMetadata  `yaml:"manifest,omitempty" json:"manifest,omitempty"`
+	Hooks        HookEvents        `yaml:"hooks,omitempty" json:"hooks,omitempty"`
 }
 
 func localConfigVersion(data []byte) (int, error) {
@@ -191,7 +225,7 @@ func LoadGlobal(data []byte) (GlobalConfig, error) {
 // actual filesystem placement. Placement and canonical inversion are checked
 // by the service loader, which has the base configuration path.
 func (value ProjectConfig) Validate() error {
-	if value.Version != ProjectConfigVersion && value.Version != ProjectConfigVersion3 {
+	if value.Version != ProjectConfigVersion && value.Version != ProjectConfigVersion3 && value.Version != ProjectConfigVersion4 {
 		return fmt.Errorf("unsupported local project config version %d", value.Version)
 	}
 	if err := ValidatePortableID(value.Project.ID); err != nil {
@@ -231,13 +265,16 @@ func (value ProjectConfig) Validate() error {
 		if err := ValidateBranchName(repository.DefaultBranch); err != nil {
 			return fmt.Errorf("repository %q default branch: %w", id, err)
 		}
-		repositories = append(repositories, domain.Repository{ID: id, ParentID: repository.Parent, DefaultMount: repository.DefaultMount, DefaultBranch: repository.DefaultBranch})
+		if repository.Companion && value.Version != ProjectConfigVersion4 {
+			return fmt.Errorf("local project config version %d does not support companion repositories", value.Version)
+		}
+		repositories = append(repositories, domain.Repository{ID: id, ParentID: repository.Parent, DefaultMount: repository.DefaultMount, DefaultBranch: repository.DefaultBranch, Companion: repository.Companion})
 	}
 	project := domain.Project{Version: domain.CurrentVersion, ID: value.Project.ID, Name: value.Project.Name, BaseRepository: value.Project.BaseRepository, Repositories: repositories}
 	if err := project.Validate(); err != nil {
 		return err
 	}
-	if value.Version == ProjectConfigVersion3 {
+	if value.Version == ProjectConfigVersion3 || value.Version == ProjectConfigVersion4 {
 		if err := validateHookEventsForRepositories(value.Hooks, value.Project.BaseRepository, value.Repositories, hookSourceLocal); err != nil {
 			return err
 		}
