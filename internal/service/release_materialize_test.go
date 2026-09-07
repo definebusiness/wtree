@@ -8,12 +8,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/definebusiness/wtree/internal/config"
 	"github.com/definebusiness/wtree/internal/domain"
 	gitadapter "github.com/definebusiness/wtree/internal/git"
+	"github.com/definebusiness/wtree/internal/pathutil"
 	"github.com/definebusiness/wtree/internal/store"
 	"github.com/definebusiness/wtree/internal/testutil"
 )
@@ -77,12 +79,19 @@ func TestReleaseMaterializeFetchesAdvertisedCommitAndPublishesDetachedChild(t *t
 		t.Fatal(rootErr)
 	}
 	binary := filepath.Join(t.TempDir(), "wtree")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
 	build := exec.Command("go", "build", "-o", binary, "./cmd/wtree")
 	build.Dir = moduleRoot
 	if output, buildErr := build.CombinedOutput(); buildErr != nil {
 		t.Fatalf("build wtree exec fixture: %v %s", buildErr, output)
 	}
-	command := exec.Command(binary, "exec", "--data-dir", data, "--", "/bin/sh", "-c", "git rev-parse HEAD >> '"+marker+"'")
+	commandArgs := []string{"exec", "--data-dir", data, "--", "/bin/sh", "-c", "git rev-parse HEAD >> '" + marker + "'"}
+	if runtime.GOOS == "windows" {
+		commandArgs = []string{"exec", "--data-dir", data, "--", "cmd", "/C", "git rev-parse HEAD >> \"" + marker + "\""}
+	}
+	command := exec.Command(binary, commandArgs...)
 	command.Dir = base.Path
 	command.Env = os.Environ()
 	if output, commandErr := command.CombinedOutput(); commandErr != nil {
@@ -267,9 +276,42 @@ func TestReleaseMaterializeStagingMutationAfterAuthorityReleaseIsNotAdopted(t *t
 	if recoveryErr != nil {
 		t.Fatalf("read staging mutation recovery: %v; Materialize: %v", recoveryErr, err)
 	}
-	if recovery.FailedStep != "publication-rollback" || len(recovery.UnrevertedSteps) != 1 || recovery.UnrevertedSteps[0] != "publication" || len(recovery.RollbackFailures) != 1 || !strings.Contains(recovery.RollbackFailures[0].Error, filepath.Join(base.Path, "backend")) {
+	if recovery.FailedStep != "publication-rollback" || len(recovery.UnrevertedSteps) != 1 || recovery.UnrevertedSteps[0] != "publication" || len(recovery.RollbackFailures) != 1 || !releaseMaterializeRecoveryMentionsPath(recovery, filepath.Join(base.Path, "backend")) {
 		t.Fatalf("staging mutation recovery is not actionable: %+v", recovery)
 	}
+}
+
+// releaseMaterializeRecoveryMentionsPath compares quoted diagnostics as paths,
+// rather than byte strings. Windows can render one file-generation path with
+// its short-name alias while the fixture retains the long-name spelling.
+func releaseMaterializeRecoveryMentionsPath(recovery store.RecoveryRecord, want string) bool {
+	for _, failure := range recovery.RollbackFailures {
+		remaining := failure.Error
+		for {
+			start := strings.IndexByte(remaining, '"')
+			if start < 0 {
+				break
+			}
+			remaining = remaining[start:]
+			end := strings.IndexByte(remaining[1:], '"')
+			if end < 0 {
+				break
+			}
+			quoted := remaining[:end+2]
+			candidate, err := strconv.Unquote(quoted)
+			if err == nil && releaseMaterializeDiagnosticPathEqual(candidate, want) {
+				return true
+			}
+			remaining = remaining[end+2:]
+		}
+	}
+	return false
+}
+
+func releaseMaterializeDiagnosticPathEqual(left, right string) bool {
+	left, leftErr := pathutil.CanonicalPotentialPath(left)
+	right, rightErr := pathutil.CanonicalPotentialPath(right)
+	return leftErr == nil && rightErr == nil && pathutil.CaseFoldedPathEqual(left, right)
 }
 
 func TestReleaseLocalConfigurationPreservesV4CompanionRole(t *testing.T) {
@@ -506,13 +548,13 @@ func TestReleaseMaterializeFileRemovalPreservesFinalBoundaryReplacement(t *testi
 	service := NewReleaseMaterializeService()
 	service.writeCAS = func(original cloneFileSnapshot, data []byte, compare func() error) (ClonePublicationReceipt, error) {
 		receipt, err := defaultMaterializeCAS(original, data, compare, nil)
-		if original.path == filepath.Join(base.Path, ".wtree.yml") && err == nil {
+		if materializePathsEqual(original.path, filepath.Join(base.Path, ".wtree.yml")) && err == nil {
 			return receipt, errors.New("post-replacement config failure")
 		}
 		return receipt, err
 	}
 	service.beforeFileRemoval = func(path string) error {
-		if path != filepath.Join(base.Path, ".wtree.yml") {
+		if !materializePathsEqual(path, filepath.Join(base.Path, ".wtree.yml")) {
 			return nil
 		}
 		return os.WriteFile(path, []byte("foreign\n"), 0o600)
@@ -753,7 +795,7 @@ func TestReleaseMaterializePropagatesStagingCleanupAndRecordsRecovery(t *testing
 				if _, statErr := os.Lstat(retainedStaging); !os.IsNotExist(statErr) {
 					t.Fatalf("quarantine-only failure retained original staging root: %v", statErr)
 				}
-			} else if !strings.Contains(recovery.RollbackFailures[0].Error, retainedStaging) {
+			} else if !releaseMaterializeRecoveryMentionsPath(recovery, retainedStaging) {
 				t.Fatalf("recovery does not identify staging location: %+v", recovery)
 			}
 			if !test.substitute && strings.Contains(strings.Join(recovery.UnrevertedSteps, ","), "private-staging") {
@@ -871,9 +913,9 @@ func TestReleaseMaterializePostReplacementMetadataErrorsRollbackOnlyOwnedGenerat
 				if err != nil {
 					return receipt, err
 				}
-				matches := (target == "config" && original.path == filepath.Join(base.Path, ".wtree.yml")) ||
-					(target == "state" && original.path == WorkspaceStatePath(request.DataDir, "release-metadata-"+target, "default")) ||
-					(target == "registry" && original.path == filepath.Join(request.DataDir, "registry.json"))
+				matches := (target == "config" && materializePathsEqual(original.path, filepath.Join(base.Path, ".wtree.yml"))) ||
+					(target == "state" && materializePathsEqual(original.path, WorkspaceStatePath(request.DataDir, "release-metadata-"+target, "default"))) ||
+					(target == "registry" && materializePathsEqual(original.path, filepath.Join(request.DataDir, "registry.json")))
 				if matches {
 					return receipt, errors.New("injected post-replacement writer error")
 				}
@@ -913,7 +955,7 @@ func TestReleaseMaterializePreservesForeignPublicationMutationsAndRecordsRecover
 			mutate: func(service *ReleaseMaterializeService, base testutil.GitRepository, _ ReleaseMaterializeRequest) {
 				service.writeCAS = func(original cloneFileSnapshot, data []byte, compare func() error) (ClonePublicationReceipt, error) {
 					receipt, err := defaultMaterializeCAS(original, data, compare, nil)
-					if err == nil && original.path == filepath.Join(base.Path, ".wtree.yml") {
+					if err == nil && materializePathsEqual(original.path, filepath.Join(base.Path, ".wtree.yml")) {
 						err = os.WriteFile(original.path, []byte("foreign\n"), 0o600)
 					}
 					return receipt, err

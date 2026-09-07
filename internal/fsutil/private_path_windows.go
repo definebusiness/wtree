@@ -187,7 +187,12 @@ func (path *privatePath) openExpectedRemovalLeaf(name string, access windows.ACC
 }
 
 func (path *privatePath) validateExpectedRemovalLeaf(required bool) error {
-	handle, err := path.openExpectedRemovalLeaf(path.leaf, windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE)
+	// openExpectedRemovalLeaf uses synchronous NtCreateFile options.  Windows
+	// requires SYNCHRONIZE in that case; FILE_READ_ATTRIBUTES alone otherwise
+	// fails with ERROR_INVALID_PARAMETER before the expected generation can be
+	// bound.  This is observation-only access and does not relax the later
+	// handle-bound DELETE authority.
+	handle, err := path.openExpectedRemovalLeaf(path.leaf, windows.FILE_READ_ATTRIBUTES|windows.SYNCHRONIZE, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE)
 	if err == nil {
 		return windows.CloseHandle(handle)
 	}
