@@ -31,12 +31,18 @@ func secureCloneFileSnapshot(path string) (cloneFileSnapshot, error) {
 	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
 		return cloneFileSnapshot{}, fmt.Errorf("%q must be a regular non-symlink file", path)
 	}
+	// Windows FileInfo values returned by Lstat bind their file ID lazily. Bind
+	// this authority while the pathname is still ours: a later comparison must
+	// never discover the identity of a replacement generation instead.
+	if !primeFileIdentity(before) {
+		return cloneFileSnapshot{}, NewError(ErrorConflict, fmt.Errorf("capture file identity: %q", path))
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return cloneFileSnapshot{}, err
 	}
 	after, err := os.Lstat(path)
-	if err != nil || !os.SameFile(before, after) || before.Mode() != after.Mode() || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+	if err != nil || !primeFileIdentity(after) || !os.SameFile(before, after) || before.Mode() != after.Mode() || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
 		return cloneFileSnapshot{}, NewError(ErrorConflict, fmt.Errorf("%q changed while captured", path))
 	}
 	return cloneFileSnapshot{path: path, exists: true, data: data, mode: before.Mode(), info: before}, nil
@@ -197,7 +203,7 @@ func captureClonePathIdentity(path string) (clonePathIdentity, error) {
 	if err != nil {
 		return clonePathIdentity{}, err
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !primeFileIdentity(info) {
 		return clonePathIdentity{}, fmt.Errorf("%q is not a real directory", path)
 	}
 	return clonePathIdentity{path: path, info: info}, nil

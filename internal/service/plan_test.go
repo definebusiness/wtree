@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -87,6 +88,63 @@ func TestWorkspacePlannerAllowsMountWithoutCommittedParentGitignoreRule(t *testi
 	request.From = "base-without-ignore"
 	if _, err := service.NewWorkspacePlanner().Plan(context.Background(), project, request); err != nil {
 		t.Fatalf("Plan() from base without ignore rule = %v, want success", err)
+	}
+}
+
+func TestWorkspacePlannerUsesCompanionBaselineInsteadOfFrom(t *testing.T) {
+	project, root, backend, data := plannerFixture(t)
+	root.Run(t, "branch", "ordinary-base")
+	backend.Run(t, "branch", "companion-base")
+	for index := range project.Repositories {
+		if project.Repositories[index].ID == "backend" {
+			project.Repositories[index].Companion = true
+			project.Repositories[index].DefaultBranch = "companion-base"
+		}
+	}
+	value, err := service.NewWorkspacePlanner().Plan(context.Background(), project, service.WorkspacePlanRequest{Operation: plan.Create, WorkspaceName: "feature", From: "ordinary-base", WorktreeRoot: filepath.Join(data, "worktrees"), DataDir: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, repository := range value.Repositories {
+		if repository.ID == "root" && repository.Companion {
+			t.Fatal("ordinary root gained companion role")
+		}
+		if repository.ID == "backend" && (!repository.Companion || repository.Baseline != "companion-base") {
+			t.Fatalf("companion plan = %#v", repository)
+		}
+	}
+	rootBase, err := gitadapter.NewAdapter("git").ResolveRef(context.Background(), root.Path, "ordinary-base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backendBase, err := gitadapter.NewAdapter("git").ResolveRef(context.Background(), backend.Path, "refs/heads/companion-base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Repositories[0].Base != rootBase || value.Repositories[1].Base != backendBase {
+		t.Fatalf("bases = %#v, want ordinary=%s companion=%s", value.Repositories, rootBase, backendBase)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil || !strings.Contains(string(encoded), `"companion":true`) || !strings.Contains(string(encoded), `"baseline":"companion-base"`) {
+		t.Fatalf("companion v1 plan JSON = %s, %v", encoded, err)
+	}
+}
+
+func TestWorkspacePlannerRejectsMissingCompanionBaselineBeforeMutation(t *testing.T) {
+	project, _, backend, data := plannerFixture(t)
+	for index := range project.Repositories {
+		if project.Repositories[index].ID == "backend" {
+			project.Repositories[index].Companion = true
+			project.Repositories[index].DefaultBranch = "missing-companion-baseline"
+		}
+	}
+	_, err := service.NewWorkspacePlanner().Plan(context.Background(), project, service.WorkspacePlanRequest{Operation: plan.Create, WorkspaceName: "feature", WorktreeRoot: filepath.Join(data, "worktrees"), DataDir: data})
+	if err == nil || !strings.Contains(err.Error(), "missing-companion-baseline") {
+		t.Fatalf("missing companion baseline error=%v", err)
+	}
+	exists, branchErr := gitBranchExists(backend, "feature")
+	if branchErr != nil || exists {
+		t.Fatalf("failed companion preflight mutated branch exists=%t err=%v", exists, branchErr)
 	}
 }
 

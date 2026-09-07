@@ -174,7 +174,7 @@ func populateInventoryTopology(entry *ProjectInventoryEntry, local config.Projec
 	}
 	project := domain.Project{Version: domain.CurrentVersion, ID: local.Project.ID, Name: local.Project.Name, BaseRepository: local.Project.BaseRepository, Repositories: make([]domain.Repository, 0, len(local.Repositories))}
 	for id, repository := range local.Repositories {
-		project.Repositories = append(project.Repositories, domain.Repository{ID: id, ParentID: repository.Parent, DefaultMount: repository.DefaultMount, DefaultBranch: repository.DefaultBranch})
+		project.Repositories = append(project.Repositories, domain.Repository{ID: id, ParentID: repository.Parent, DefaultMount: repository.DefaultMount, DefaultBranch: repository.DefaultBranch, Companion: repository.Companion})
 	}
 	workspace, err := workspaceFromState(state)
 	logicalRoot := filepath.Clean(filepath.Join(filepath.Dir(entry.ConfigPath), filepath.FromSlash(local.LogicalRoot)))
@@ -303,9 +303,23 @@ func groupWithout(group []string, id string) []string {
 	return result
 }
 func hasProjectRecovery(dataDir, id string) (bool, error) {
-	entries, err := os.ReadDir(filepath.Join(dataDir, "projects", id, "recovery"))
+	recoveryPath := filepath.Join(dataDir, "projects", id, "recovery")
+	entries, err := os.ReadDir(recoveryPath)
 	if os.IsNotExist(err) {
-		return false, nil
+		// Windows may report a non-directory path as not found to ReadDir.
+		// Re-observe the exact path before accepting recovery absence so a
+		// substituted file cannot disable this mutation guard.
+		info, statErr := os.Lstat(recoveryPath)
+		if os.IsNotExist(statErr) {
+			return false, nil
+		}
+		if statErr != nil {
+			return false, statErr
+		}
+		if !info.IsDir() {
+			return false, fmt.Errorf("recovery path is not a directory: %q", recoveryPath)
+		}
+		return false, err
 	}
 	if err != nil {
 		return false, err

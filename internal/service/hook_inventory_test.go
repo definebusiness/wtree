@@ -881,6 +881,47 @@ func TestHookRetryPortableExecutableTrackedFileSentinelsPropagateWithoutStaleOrM
 	}
 }
 
+func TestHookRetryRebuildAcceptsV4CompanionPortableAuthority(t *testing.T) {
+	root, data := t.TempDir(), t.TempDir()
+	executable := filepath.Join(root, "setup")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	project := hookManagementCompanionProject(filepath.Join(root, ".wtree.yml"), root, true)
+	local := hookManagementLocal(root)
+	local.Version = config.ProjectConfigVersion4
+	repository := local.Repositories["root"]
+	repository.Companion = true
+	local.Repositories["root"] = repository
+	if err := config.WriteProjectFile(project.ConfigPath, local); err != nil {
+		t.Fatal(err)
+	}
+	workspace := domain.Workspace{Version: domain.CurrentVersion, ID: "workspace", Name: "Workspace", RootPath: root, Checkouts: []domain.Checkout{{RepositoryID: "root", Branch: "main", Head: strings.Repeat("a", 40), Mount: ".", ResolvedPath: root}}}
+	statePath := WorkspaceStatePath(data, project.ID, workspace.ID)
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, []byte("state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := hookManagementManifest()
+	manifest.Version = config.PortableManifestVersion4
+	portable := manifest.Repositories["root"]
+	portable.Companion = true
+	manifest.Repositories["root"] = portable
+	manifest.Hooks = config.HookEvents{config.HookEventPostClone: {{ID: "setup", Command: []string{"setup"}}}}
+	manifestBytes, err := config.MarshalPortableManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := &hookRetryPortableGit{manifest: manifestBytes, root: root, head: workspace.Checkouts[0].Head, tracked: map[string]bool{}}
+	builder := hookRetryDefaultBuilder{git: git, process: hookTestProcess{factSet: true, fact: HookExecutableFact{Resolved: executable, Available: true}}}
+	planValue, _, err := builder.Rebuild(context.Background(), HookRetryPlanRequest{Project: project, Workspace: workspace, Record: store.HookRunRecord{Source: "portable", Operation: "clone", Event: "post-clone"}, DataDir: data})
+	if err != nil || len(planValue.Entries()) != 1 {
+		t.Fatalf("v4 companion retry rebuild=%#v err=%v", planValue, err)
+	}
+}
+
 func TestHookRetryPortableRelativeExecutableRequiresTrackedPhysicalAuthorityBeforeAndUnderLock(t *testing.T) {
 	root, data := t.TempDir(), t.TempDir()
 	executable := filepath.Join(root, "hooks", "nested", "setup")

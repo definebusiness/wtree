@@ -16,7 +16,7 @@ func newDeleteCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Comm
 	command := &cobra.Command{
 		Use:   "delete <workspace>",
 		Short: "delete forest worktrees child-first, branches, and retained state",
-		Long:  "Delete managed repository-forest worktrees in child-first order, then retained branches and workspace state after preflight. Ordinary logical-root and grouping-directory contents are preserved.",
+		Long:  "Delete managed repository-forest worktrees in child-first order, then retained workspace-specific local branches and workspace state after preflight. Ordinary logical-root and grouping-directory contents are preserved. A companion repository's configured baseline and all remote branches are preserved.",
 		Args:  exactArguments(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
 			project, dataDir, err := resolveWorkspaceProject(command.Context(), *projectPath, dataDir)
@@ -90,6 +90,12 @@ func renderDeletionPlan(stdout io.Writer, value service.DeletionPlan, dryRun boo
 		}
 	}
 	for _, branch := range value.Branches {
+		if branch.Preserved {
+			if err := render.Line(stdout, fmt.Sprintf("preserve branch %s  %s  (%s)", branch.RepositoryID, branch.Branch, branch.Reason)); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := render.Line(stdout, fmt.Sprintf("delete branch %s  %s", branch.RepositoryID, branch.Branch)); err != nil {
 			return err
 		}

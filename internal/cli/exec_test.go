@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/definebusiness/wtree/internal/cli"
+	"github.com/definebusiness/wtree/internal/config"
 	"github.com/definebusiness/wtree/internal/domain"
 	"github.com/definebusiness/wtree/internal/service"
 	"github.com/definebusiness/wtree/internal/store"
@@ -30,8 +31,60 @@ func TestExecuteExecRequiresSeparatorAndHasNoForeachAlias(t *testing.T) {
 		t.Fatalf("exec without separator error = %v", err)
 	}
 	stdout.Reset()
-	if err := cli.Execute([]string{"exec", "--help"}, &stdout, &stderr); err != nil || !strings.Contains(stdout.String(), "exec -- <executable> [argument...]") || strings.Contains(stdout.String(), "foreach") {
+	if err := cli.Execute([]string{"exec", "--help"}, &stdout, &stderr); err != nil || !strings.Contains(stdout.String(), "--no-companions") || !strings.Contains(stdout.String(), "--repository") || strings.Contains(stdout.String(), "foreach") {
 		t.Fatalf("exec help = %q, %v", stdout.String(), err)
+	}
+}
+
+func TestExecuteExecSelectorsChooseOnlyConfiguredPresentRepositories(t *testing.T) {
+	fixture := newExecCLIFixture(t)
+	markExecCLICompanion(t, fixture, fixture.childID)
+	childPath := filepath.Join(fixture.root.Path, "backend")
+	testutil.GitRepository{Path: childPath}.CommitFile("advanced.txt", "advanced\n", "advance companion")
+
+	ordinary := testutil.RunCommand(t, cli.Execute, "exec", "--project", fixture.root.Path, "--data-dir", fixture.data, "--no-companions", "--dry-run", "--json", "--", "not-started")
+	ordinaryWire := decodeExecCLIDocument(t, ordinary.Stdout)
+	if ordinary.Err != nil || ordinary.Stderr != "" || !reflect.DeepEqual(ordinaryWire["executionOrder"], []any{fixture.project.BaseRepository}) || len(ordinaryWire["repositories"].([]any)) != 1 {
+		t.Fatalf("ordinary selector = %#v wire=%#v", ordinary, ordinaryWire)
+	}
+	if _, exists := ordinaryWire["repositories"].([]any)[0].(map[string]any)["companion"]; exists {
+		t.Fatalf("ordinary selector exposed companion marker: %#v", ordinaryWire)
+	}
+
+	exact := testutil.RunCommand(t, cli.Execute, "exec", "--project", fixture.root.Path, "--data-dir", fixture.data, "--workspace", "default", "--repository", fixture.childID, "--json", "--", os.Args[0], "-test.run=^TestExecCLIEnvironmentHelper$")
+	exactWire := decodeExecCLIDocument(t, exact.Stdout)
+	if exact.Err != nil || exact.Stderr != "" || !reflect.DeepEqual(exactWire["executionOrder"], []any{fixture.childID}) || len(exactWire["repositories"].([]any)) != 1 || exactWire["repositories"].([]any)[0].(map[string]any)["companion"] != true {
+		t.Fatalf("exact companion selector = %#v wire=%#v", exact, exactWire)
+	}
+	entry := exactWire["repositories"].([]any)[0].(map[string]any)
+	var observation struct {
+		Cwd string            `json:"cwd"`
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal([]byte(entry["stdout"].(string)), &observation); err != nil || observation.Cwd != entry["path"] || observation.Env["WTREE_REPOSITORY_ID"] != fixture.childID || observation.Env["WTREE_COMMIT"] != entry["head"] {
+		t.Fatalf("exact companion environment = %#v observation=%#v err=%v", entry, observation, err)
+	}
+}
+
+func TestExecuteExecSelectorArgumentsFailBeforeLaunch(t *testing.T) {
+	fixture := newExecCLIFixture(t)
+	for _, arguments := range [][]string{
+		{"exec", "--project", fixture.root.Path, "--data-dir", fixture.data, "--no-companions", "--repository", fixture.childID, "--", "not-started"},
+		{"exec", "--project", fixture.root.Path, "--data-dir", fixture.data, "--repository", fixture.childID, "--repository", fixture.project.BaseRepository, "--", "not-started"},
+		{"exec", "--project", fixture.root.Path, "--data-dir", fixture.data, "--no-companions", "--no-companions", "--", "not-started"},
+		{"exec", "--project", fixture.root.Path, "--data-dir", fixture.data, "--repository", "", "--", "not-started"},
+		{"exec", "--project", fixture.root.Path, "--data-dir", fixture.data, "--repository", "unknown", "--", "not-started"},
+	} {
+		result := testutil.RunCommand(t, cli.Execute, arguments...)
+		if result.Err == nil || cli.ExitCode(result.Err) != 2 {
+			t.Fatalf("selector arguments %q = %#v", arguments, result)
+		}
+	}
+	markExecCLICompanion(t, fixture, fixture.project.BaseRepository)
+	markExecCLICompanion(t, fixture, fixture.childID)
+	empty := testutil.RunCommand(t, cli.Execute, "exec", "--project", fixture.root.Path, "--data-dir", fixture.data, "--no-companions", "--", "not-started")
+	if empty.Err == nil || cli.ExitCode(empty.Err) != 2 {
+		t.Fatalf("empty ordinary selector = %#v", empty)
 	}
 }
 
@@ -452,6 +505,47 @@ func newExecCLIFixture(t *testing.T) execCLIFixture {
 		t.Fatalf("exec fixture has no child repository: %#v", project)
 	}
 	return execCLIFixture{root: root, project: project, data: data, childID: childID}
+}
+
+func markExecCLICompanion(t *testing.T, fixture execCLIFixture, id string) {
+	t.Helper()
+	localPath := filepath.Join(fixture.root.Path, ".wtree.yml")
+	local, err := config.ReadProjectFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local.Version = config.ProjectConfigVersion4
+	repository := local.Repositories[id]
+	repository.Companion = true
+	local.Repositories[id] = repository
+	if err := config.WriteProjectFile(localPath, local); err != nil {
+		t.Fatal(err)
+	}
+	portablePath := filepath.Join(fixture.root.Path, local.Manifest.Path)
+	portable, err := config.LoadPortableManifest(mustExecCLIRead(t, portablePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	portable.Version = config.PortableManifestVersion4
+	portableRepository := portable.Repositories[id]
+	portableRepository.Companion = true
+	portable.Repositories[id] = portableRepository
+	encoded, err := config.MarshalPortableManifest(portable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(portablePath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustExecCLIRead(t *testing.T, path string) []byte {
+	t.Helper()
+	value, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
 }
 
 func execCLICheckout(workspace domain.Workspace, id string) (domain.Checkout, bool) {

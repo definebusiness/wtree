@@ -178,8 +178,70 @@ func newRepoCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 	command.AddCommand(
 		newRepoPathCommand(stdout, projectPath, &dataDir),
 		newRepoGetCommand(stdout, projectPath, &dataDir),
+		newRepoBranchCommand(stdout, projectPath, &dataDir),
 	)
 	return command
+}
+
+func newRepoBranchCommand(stdout io.Writer, projectPath, dataDir *string) *cobra.Command {
+	var dryRun, jsonOutput bool
+	command := &cobra.Command{
+		Use:   "branch <repository-id> <branch>",
+		Short: "change a companion baseline for future workspaces",
+		Long:  "Change one companion repository's future baseline in both project configuration files. The branch must already exist locally. This command never fetches, switches, creates, deletes, stages, commits, or pushes branches.",
+		Args:  exactArguments(2),
+		RunE: func(command *cobra.Command, arguments []string) error {
+			project, effectiveData, err := resolveWorkspaceProject(command.Context(), *projectPath, *dataDir)
+			if err != nil {
+				return err
+			}
+			result, err := service.NewRepositoryBranchService().Execute(command.Context(), service.RepositoryBranchRequest{Project: project, DataDir: effectiveData, RepositoryID: arguments[0], Branch: arguments[1], DryRun: dryRun})
+			if err != nil {
+				if jsonOutput {
+					if renderErr := render.JSON(stdout, repoBranchFailureResult(project, arguments[0], arguments[1], dryRun, err)); renderErr != nil {
+						return renderErr
+					}
+					return outputFailure{err}
+				}
+				return err
+			}
+			if jsonOutput {
+				return render.JSON(stdout, result)
+			}
+			return renderRepoBranchSuccess(stdout, result)
+		},
+	}
+	command.Flags().BoolVar(&dryRun, "dry-run", false, "validate and render without mutation")
+	command.Flags().BoolVar(&jsonOutput, "json", false, "emit JSON")
+	return command
+}
+
+func repoBranchFailureResult(project domain.Project, repositoryID, branch string, dryRun bool, err error) service.RepositoryBranchResult {
+	previous := ""
+	for _, repository := range project.Repositories {
+		if repository.ID == repositoryID {
+			previous = repository.DefaultBranch
+			break
+		}
+	}
+	return service.RepositoryBranchResult{Version: 1, Operation: "repo-branch", Status: "failed", DryRun: dryRun, ProjectID: project.ID, RepositoryID: repositoryID, PreviousBaseline: previous, Baseline: branch, Failure: &service.RepositoryBranchFailure{Code: render.ErrorCode(err), Message: err.Error()}}
+}
+
+func renderRepoBranchSuccess(stdout io.Writer, result service.RepositoryBranchResult) error {
+	for _, line := range []string{
+		"Repository branch: " + result.Status,
+		"Project: " + result.ProjectID,
+		"Repository: " + result.RepositoryID,
+		"Previous baseline: " + result.PreviousBaseline,
+		"Baseline: " + result.Baseline,
+		fmt.Sprintf("Portable changed: %t", result.PortableChanged),
+		fmt.Sprintf("Local changed: %t", result.LocalChanged),
+	} {
+		if err := render.Line(stdout, line); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func newRepoPathCommand(stdout io.Writer, projectPath *string, dataDir *string) *cobra.Command {

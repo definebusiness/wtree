@@ -104,6 +104,20 @@ func TestRenderWorkspacePlanAlignsEveryColumn(t *testing.T) {
 	}
 }
 
+func TestRenderWorkspacePlanShowsCompanionRoleAndBaseline(t *testing.T) {
+	value := plan.WorkspacePlan{Operation: plan.Create, WorkspaceName: "feature", RootPath: "/worktrees/feature", Repositories: []plan.RepositoryPlan{
+		{ID: "root", Base: "11111111", Branch: "feature", Mount: ".", Path: "/worktrees/feature"},
+		{ID: "tools", ParentID: "root", Companion: true, Baseline: "main", Base: "22222222", Branch: "feature", Mount: "tools", Path: "/worktrees/feature/tools"},
+	}}
+	var output bytes.Buffer
+	if err := renderWorkspacePlan(&output, value); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "ROLE") || !strings.Contains(output.String(), "BASELINE") || !strings.Contains(output.String(), "tools       companion") {
+		t.Fatalf("companion human plan = %q", output.String())
+	}
+}
+
 func TestCreateNoHooksFlagIsCreateOnlyAndConflictsWithDryRun(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	create := newWorkspacePlanCommand(&stdout, &stderr, new(string), plan.Create)

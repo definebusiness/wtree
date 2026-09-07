@@ -5,11 +5,48 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/definebusiness/wtree/internal/git"
 	"github.com/definebusiness/wtree/internal/testutil"
 )
+
+func TestFetchConfiguredRefUsesAuthenticatedGitBoundaryWithoutLeakingSecrets(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	source, remote := pushedRepository(t, "published")
+	directory := t.TempDir()
+	capture := filepath.Join(directory, "environment")
+	binary := filepath.Join(directory, "git")
+	canary := "companion-fetch-credential-canary"
+	script := "#!/bin/sh\ncase \" $* \" in *\" fetch \"*) env > \"$WTREE_CAPTURE\"; echo helper-diagnostic-$ASKPASS_REQUIRED_SECRET >&2; exit 9;; esac\nexec git \"$@\"\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(directory, "target")
+	adapter := git.NewAdapterWithEnv(binary, []string{"PATH=" + os.Getenv("PATH"), "WTREE_CAPTURE=" + capture, "SSH_AUTH_SOCK=/tmp/companion-agent", "GIT_ASKPASS=/tmp/companion-askpass", "ASKPASS_REQUIRED_SECRET=" + canary, "HOME=/tmp/companion-home", "GIT_CONFIG_GLOBAL=/tmp/companion-gitconfig", "GIT_TERMINAL_PROMPT=1"})
+	if err := adapter.Clone(context.Background(), remote, target, "mirror"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.FetchConfiguredRef(context.Background(), target, "mirror", "refs/heads/published"); err == nil {
+		t.Fatal("FetchConfiguredRef error = nil")
+	} else if text := err.Error(); strings.Contains(text, canary) || strings.Contains(text, "helper-diagnostic") {
+		t.Fatalf("FetchConfiguredRef leaked authentication material: %v", err)
+	}
+	data, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"SSH_AUTH_SOCK=/tmp/companion-agent", "GIT_ASKPASS=/tmp/companion-askpass", "ASKPASS_REQUIRED_SECRET=" + canary, "HOME=/tmp/companion-home", "GIT_CONFIG_GLOBAL=/tmp/companion-gitconfig", "GIT_TERMINAL_PROMPT=0"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("authenticated fetch environment lacks %q: %s", want, data)
+		}
+	}
+	_ = source
+}
 
 func TestFetchConfiguredRefObservesAndFetchesOnlyTheConfiguredRef(t *testing.T) {
 	source, remote := pushedRepository(t, "published")
@@ -147,6 +184,47 @@ func TestFastForwardRestoresOnlyItsOwnedGeneration(t *testing.T) {
 	}
 	if _, err := adapter.FastForward(context.Background(), repository.Path, "main", old, newHead); err == nil {
 		t.Fatal("FastForward() accepted dirty worktree")
+	}
+}
+
+func TestFastForwardRefAdvancesOnlyAnInactiveExpectedGeneration(t *testing.T) {
+	repository := testutil.NewGitRepository(t)
+	repository.CommitFile("one", "one\n", "one")
+	old := mustHead(t, repository)
+	repository.CommitFile("two", "two\n", "two")
+	newHead := mustHead(t, repository)
+	repository.Run(t, "branch", "side", old)
+	adapter := git.NewAdapter("git")
+
+	receipt, err := adapter.FastForwardRef(context.Background(), repository.Path, "side", old, newHead)
+	if err != nil || receipt.OldCommit != old || receipt.NewCommit != newHead {
+		t.Fatalf("FastForwardRef() = %#v, %v", receipt, err)
+	}
+	if got, err := adapter.ResolveRef(context.Background(), repository.Path, "refs/heads/side"); err != nil || got != newHead {
+		t.Fatalf("side = %q, %v; want %q", got, err, newHead)
+	}
+	if err := adapter.RestoreFastForwardRef(context.Background(), repository.Path, receipt); err != nil {
+		t.Fatalf("RestoreFastForwardRef() = %v", err)
+	}
+	if got, err := adapter.ResolveRef(context.Background(), repository.Path, "refs/heads/side"); err != nil || got != old {
+		t.Fatalf("restored side = %q, %v; want %q", got, err, old)
+	}
+	receipt, err = adapter.FastForwardRef(context.Background(), repository.Path, "side", old, newHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository.Run(t, "update-ref", "refs/heads/side", old, newHead)
+	if err := adapter.RestoreFastForwardRef(context.Background(), repository.Path, receipt); err == nil {
+		t.Fatal("RestoreFastForwardRef overwrote concurrent movement")
+	}
+	if got, err := adapter.ResolveRef(context.Background(), repository.Path, "refs/heads/side"); err != nil || got != old {
+		t.Fatalf("concurrent side = %q, %v; want %q", got, err, old)
+	}
+	if _, err := adapter.FastForwardRef(context.Background(), repository.Path, "main", old, newHead); err == nil {
+		t.Fatal("FastForwardRef accepted an attached branch")
+	}
+	if _, err := adapter.FastForwardRef(context.Background(), repository.Path, "side", newHead, old); err == nil {
+		t.Fatal("FastForwardRef accepted divergent generation")
 	}
 }
 

@@ -14,6 +14,10 @@ The commands form one ordered scenario. The automated counterpart is
 [`run-all-commands.sh`](run-all-commands.sh); it runs the same lifecycle in an
 isolated temporary directory and compares the normalized end result with
 [`expected/all-commands-final-state.txt`](expected/all-commands-final-state.txt).
+The companion-specific public path is deliberately separate in
+[`run-companion-commands.sh`](run-companion-commands.sh) and the
+[companion tutorial](COMPANIONS.md), so its independent-baseline assertions
+stay readable.
 
 ## Command coverage
 
@@ -30,14 +34,17 @@ isolated temporary directory and compares the normalized end result with
 | `wtree import` | custom mounts by Git identity, complete import, rejected and allowed partial import |
 | `wtree list/status/path` | current and named workspace lookup, text and JSON, explicit project selection |
 | `wtree repo path/get` | root and nested context, text and JSON |
+| `wtree repo branch` | companion baseline dry-run, atomic future-facing configuration, text and JSON; executable in the companion tutorial |
+| `wtree companion update` | one configured companion fetch, safe present-workspace fast-forward, text and JSON; executable in the companion tutorial |
 | `wtree update` | stored-source dry-run authority snapshot, declared root and nested remote revisions, clean normalized result |
-| `wtree exec` | direct-argv JSON command across the default composition, stable parent-first result order |
+| `wtree exec` | direct-argv command across every present repository, present ordinary repositories, or one exact configured repository; stable parent-first result order |
 | `wtree fetch` | dry-run authority snapshot, configured tracking-ref refresh without moving local HEAD, subsequent status refresh |
 | `wtree push` | deterministic JSON readiness across the default composition without publishing or changing refs |
 | `wtree remove` | dry-run, retained state, dirty refusal, narrow `--force` override |
 | `wtree delete` | dry-run, complete deletion, partial-workspace refusal |
 | `wtree doctor` | healthy checkout, retained checkout, partial checkout, fix dry-run |
 | `wtree hooks list/share/install/retry` | local and portable declarations, explicit consent, durable retry; covered by the [lifecycle-hook tutorial](LIFECYCLE-HOOKS.md) |
+| `wtree release lock/materialize` | reproducible source locking and exact CI composition; covered by the [release tutorial](RELEASES.md) |
 | root/help commands | `--version`, `--help`, `--how-to`, and command-specific help |
 
 `--data-dir` is shown where a command must be independent of ambient user
@@ -99,6 +106,10 @@ wtree push --help
 
 Use `wtree <command> --help` for each remaining command as needed. Help and
 how-to flags are terminal: do not combine them with an operation.
+
+For the release commands, follow the [release tutorial](RELEASES.md). It
+keeps child/base tagging and publication caller-owned, and demonstrates the
+separate clean CI materialization path.
 
 ## 2. Publisher situation: initialize existing repositories
 
@@ -268,6 +279,7 @@ wtree status default --json
 wtree path default
 wtree repo path backend
 wtree repo get frontend --json
+wtree repo branch tools main --dry-run
 ```
 
 `STATUS` reports working-tree and structural state. `UPSTREAM` reports the
@@ -455,6 +467,13 @@ Delete removes worktrees, synchronized local branches, and retained state:
 wtree delete tutorial/custom --dry-run --json
 wtree delete tutorial/custom --verbose
 ```
+
+For a companion repository, its configured baseline is not workspace-owned:
+delete preserves it even with `--force`, never deletes remote refs, and reports
+the retained branch as `preserved: true` with reason `companion-baseline` in
+JSON output. A clean committed companion workspace branch can be reported as
+informational `advanced` and remains restorable through `remove` and
+`checkout`.
 
 ## 10. Dirty-worktree safety and `--force`
 

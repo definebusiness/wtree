@@ -75,6 +75,21 @@ func TestFetchCancellationMarksUnstartedRepositories(t *testing.T) {
 	}
 }
 
+func TestFetchCancellationRetainsAdditiveCompanionFactWithoutMutation(t *testing.T) {
+	project, workspace := fetchConfiguredWorkspace(t)
+	project.Repositories[0].Companion = true
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	value, err := NewFetchService().Fetch(ctx, project, workspace, FetchRequest{})
+	companionCanceled := false
+	for _, entry := range value.Repositories {
+		companionCanceled = companionCanceled || (entry.Companion && entry.Status == AggregateStatusCanceled)
+	}
+	if err == nil || value.Status != AggregateStatusFailed || !companionCanceled {
+		t.Fatalf("canceled companion fetch = %#v, %v", value, err)
+	}
+}
+
 func TestFetchContinuesAfterOrdinaryConfiguredRefFailuresAndRedacts(t *testing.T) {
 	project, workspace := fetchConfiguredWorkspace(t)
 	git := &fetchRecordingGit{Git: gitadapter.NewAdapter("git"), fetchErrors: map[string]error{"alpha": fmt.Errorf("transport https://user:super-secret@example.invalid/repo failed")}}

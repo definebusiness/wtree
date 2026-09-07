@@ -72,6 +72,9 @@ type RepositoryStatus struct {
 	ExpectedHead      string `json:"expectedHead,omitempty"`
 	IdentityMismatch  bool   `json:"identityMismatch,omitempty"`
 	HeadMismatch      bool   `json:"headMismatch,omitempty"`
+	Companion         bool   `json:"companion,omitempty"`
+	Baseline          string `json:"baseline,omitempty"`
+	HeadAdvanced      bool   `json:"headAdvanced,omitempty"`
 	Status            string `json:"status"`
 }
 
@@ -122,7 +125,10 @@ func (s *StatusService) status(ctx context.Context, project domain.Project, work
 	for _, repository := range project.ParentFirst() {
 		checkout, found := checkouts[repository.ID]
 		if !found {
-			status := RepositoryStatus{ID: repository.ID, ParentID: repository.ParentID, Missing: missing[repository.ID], StaleState: !missing[repository.ID], Status: "stale-state"}
+			status := RepositoryStatus{ID: repository.ID, ParentID: repository.ParentID, Companion: repository.Companion, Missing: missing[repository.ID], StaleState: !missing[repository.ID], Status: "stale-state"}
+			if repository.Companion {
+				status.Baseline = repository.DefaultBranch
+			}
 			if status.Missing {
 				status.Status = "missing"
 			}
@@ -253,7 +259,10 @@ func applyStatusFallbackDrift(value *WorkspaceStatus, project domain.Project, fi
 }
 
 func (s *StatusService) repositoryStatus(ctx context.Context, repository domain.Repository, checkout domain.Checkout, checkoutPath, workspaceRoot string, stale bool, managedChildPaths []string) (RepositoryStatus, error) {
-	status := RepositoryStatus{ID: repository.ID, ParentID: repository.ParentID, ExpectedBranch: checkout.Branch, Mount: checkout.Mount, Path: checkoutPath, ResolvedPath: checkout.ResolvedPath, ExpectedIdentity: repository.CommonGitDir, ExpectedHead: checkout.Head, StaleState: stale}
+	status := RepositoryStatus{ID: repository.ID, ParentID: repository.ParentID, ExpectedBranch: checkout.Branch, Mount: checkout.Mount, Path: checkoutPath, ResolvedPath: checkout.ResolvedPath, ExpectedIdentity: repository.CommonGitDir, ExpectedHead: checkout.Head, StaleState: stale, Companion: repository.Companion}
+	if repository.Companion {
+		status.Baseline = repository.DefaultBranch
+	}
 	if checkout.ResolvedPath == "" || checkout.Head == "" || (checkout.Detached && checkout.Branch != "") || (!checkout.Detached && checkout.Branch == "") {
 		status.StaleState = true
 	}
@@ -306,6 +315,15 @@ func (s *StatusService) repositoryStatus(ctx context.Context, repository domain.
 	}
 	status.Head = head
 	status.HeadMismatch = head != checkout.Head
+	if status.HeadMismatch && repository.Companion && !status.StaleState && !status.MountMismatch && !status.Detached && !status.BranchMismatch {
+		advanced, ancestorErr := gitIsAncestor(ctx, s.git, status.Path, checkout.Head, head)
+		if ancestorErr != nil {
+			return RepositoryStatus{}, NewError(ErrorGit, fmt.Errorf("compare companion checkout history for %q: %w", repository.ID, ancestorErr))
+		}
+		if advanced {
+			status.HeadMismatch, status.HeadAdvanced = false, true
+		}
+	}
 	gitStatus, err := s.git.Status(ctx, status.Path)
 	if err != nil {
 		return RepositoryStatus{}, NewError(ErrorGit, fmt.Errorf("read status for %q: %w", repository.ID, err))
@@ -322,6 +340,21 @@ func (s *StatusService) repositoryStatus(ctx context.Context, repository domain.
 	}
 	status.Status = summarizedStatus(status)
 	return status, nil
+}
+
+// gitIsAncestor is kept as a narrow optional capability while older focused
+// test doubles continue to model the established Git boundary. The production
+// adapter provides it; a missing capability is an observation failure, never
+// permission to treat rewritten history as a companion advance.
+func gitIsAncestor(ctx context.Context, git gitadapter.Git, repository, ancestor, descendant string) (bool, error) {
+	type ancestorObserver interface {
+		IsAncestor(context.Context, string, string, string) (bool, error)
+	}
+	observer, ok := git.(ancestorObserver)
+	if !ok {
+		return false, errors.New("Git ancestry observation is unavailable")
+	}
+	return observer.IsAncestor(ctx, repository, ancestor, descendant)
 }
 
 func applyLocalStatusDrift(value *WorkspaceStatus, project domain.Project, workspace domain.Workspace, snapshot DriftSnapshot) {
@@ -528,6 +561,8 @@ func summarizedStatus(status RepositoryStatus) string {
 		return "branch-mismatch"
 	case !status.Clean:
 		return "modified"
+	case status.HeadAdvanced:
+		return "advanced"
 	default:
 		return "clean"
 	}

@@ -11,6 +11,11 @@ import (
 // time without following links or reparses.
 type PrivatePath struct{ platform *privatePath }
 
+// ExpectedRemovalPath retains the exact containing-directory authority for a
+// public regular-file rollback. It exposes only identity/mode/byte-conditional
+// removal, not the stronger private-DACL operations of PrivatePath.
+type ExpectedRemovalPath struct{ platform *privatePath }
+
 // PrivateLock is an immediate advisory lock bound to the validated leaf
 // generation. Unlock also releases the retained directory authority.
 type PrivateLock interface{ Unlock() error }
@@ -59,11 +64,41 @@ func openPrivatePathWithOptions(anchor string, components []string, leaf string,
 			return nil, errors.New("invalid private directory component")
 		}
 	}
-	platform, err := openPrivatePath(anchor, components, leaf, create, protectExisting)
+	platform, err := openPrivatePath(anchor, components, leaf, create, protectExisting, false)
 	if err != nil {
 		return nil, err
 	}
 	return &PrivatePath{platform: platform}, nil
+}
+
+// OpenExpectedRemovalPath retains a cleaned absolute directory and resolves
+// leaf relative to that handle without requiring the public file to carry a
+// private application DACL.
+func OpenExpectedRemovalPath(directory, leaf string) (*ExpectedRemovalPath, error) {
+	if !validPrivateName(leaf) {
+		return nil, errors.New("invalid expected-removal leaf name")
+	}
+	platform, err := openPrivatePath(directory, nil, leaf, false, false, true)
+	if err != nil {
+		return nil, err
+	}
+	return &ExpectedRemovalPath{platform: platform}, nil
+}
+
+func (path *ExpectedRemovalPath) Close() error {
+	if path == nil || path.platform == nil {
+		return nil
+	}
+	err := path.platform.close()
+	path.platform = nil
+	return err
+}
+
+func (path *ExpectedRemovalPath) RemoveExpectedWithHook(expected os.FileInfo, expectedData []byte, hook AtomicStepHook) error {
+	if path == nil || path.platform == nil {
+		return os.ErrInvalid
+	}
+	return path.platform.removeExpected(expected, append([]byte(nil), expectedData...), hook)
 }
 
 func validPrivateName(name string) bool {

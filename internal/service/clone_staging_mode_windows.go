@@ -446,6 +446,10 @@ func (lease *windowsCloneStagingLease) releaseChild(staging string, owned, paren
 	return child.Close()
 }
 
+func (lease *windowsCloneStagingLease) closePreservingContainer() error {
+	return lease.closeHandles()
+}
+
 func (lease *windowsCloneStagingLease) closeAll() error {
 	if lease == nil {
 		return nil

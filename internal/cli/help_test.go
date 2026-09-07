@@ -22,11 +22,45 @@ func TestRootHelpDescribesCommandsConceptsSafetyAndExamples(t *testing.T) {
 	for _, want := range []string{
 		"USAGE", "GLOBAL OPTIONS", "COMMANDS", "CONCEPTS", "WORKTREE LOCATION", "EXAMPLES", "EXIT CODES",
 		"10 lifecycle-hook setup incomplete",
-		"init", "clone", "import", "create", "checkout", "list", "status", "path", "repo", "remove", "delete", "doctor", "config", "hooks",
+		"init", "clone", "import", "create", "checkout", "list", "status", "path", "repo", "remove", "delete", "doctor", "config", "hooks", "release",
 		"project", "repository forest", "base repository", "top-level mounts are logical-root-relative", "metadata and ignores", "inspection and recovery", "repository identity", "wtree clone ./project.wtree.yml ./product --dry-run", "wtree create feature/login", "wtree <command> --help",
 	} {
 		if !strings.Contains(result.Stdout, want) {
 			t.Errorf("root help missing %q:\n%s", want, result.Stdout)
+		}
+	}
+}
+
+func TestReleaseHelpAndHowToStateTheReproducibleSourceBoundary(t *testing.T) {
+	for _, check := range []struct {
+		arguments []string
+		want      string
+	}{
+		{[]string{"release", "--help"}, "does not commit, tag, push, publish, deploy"},
+		{[]string{"release", "lock", "--help"}, "never fetches, commits, tags, pushes, or publishes"},
+		{[]string{"release", "materialize", "--help"}, "Authentication remains Git-owned and noninteractive"},
+		{[]string{"release", "lock", "--how-to"}, "clean tracked prior lock"},
+		{[]string{"release", "materialize", "--how-to"}, "exact detached children"},
+	} {
+		result := testutil.RunCommand(t, cli.Execute, check.arguments...)
+		if result.Err != nil || result.Stderr != "" {
+			t.Fatalf("%v help = %#v", check.arguments, result)
+		}
+		if !strings.Contains(result.Stdout, check.want) {
+			t.Errorf("%v missing %q:\n%s", check.arguments, check.want, result.Stdout)
+		}
+	}
+	guide := testutil.RunCommand(t, cli.Execute, "release", "--how-to")
+	if guide.Err != nil || guide.Stderr != "" {
+		t.Fatalf("release how-to = %#v", guide)
+	}
+	for _, want := range []string{
+		"reproducible source", "wtree release lock", "wtree release materialize",
+		"commits and tags before", "Git-owned", "noninteractive", "wtree exec",
+		"does not commit, tag, push, publish, deploy", "no release verify", "post-materialize",
+	} {
+		if !strings.Contains(guide.Stdout, want) {
+			t.Errorf("release how-to missing %q:\n%s", want, guide.Stdout)
 		}
 	}
 }
@@ -180,6 +214,42 @@ func TestPublicDocumentationTracksCurrentCLIExtensions(t *testing.T) {
 		for _, forbidden := range check.forbidden {
 			if strings.Contains(body, forbidden) {
 				t.Errorf("%s retains stale documentation contract %q", check.path, forbidden)
+			}
+		}
+	}
+}
+
+func TestReleaseDocumentationStatesTheWorkflowAndNeverOverclaims(t *testing.T) {
+	root := testRepositoryRoot(t)
+	for path, required := range map[string][]string{
+		"README.md": {
+			"Release locks: reproducible source composition", "wtree release materialize", "Git-owned", "no `release verify` command", "tutorial/RELEASES.md",
+		},
+		"docs/TROUBLESHOOTING.md": {
+			"Release lock and materialization", "Authentication fails in CI", "A locked commit is unavailable", "A child tag collides", "Materialization reports incomplete cleanup", "A release checkout is detached",
+		},
+		"tutorial/RELEASES.md": {
+			"backend", "frontend", "tag-wtree-release", "post-release", "wtree release lock v1.4.0 --dry-run", "git add project.wtree.lock.yml", "child tags before the base tag", "wtree release materialize", "wtree exec -- go test ./...", "askpass", "detached", "make tutorial-test",
+		},
+	} {
+		data, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range required {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("%s missing release workflow contract %q", path, want)
+			}
+		}
+	}
+	for _, forbidden := range []string{"atomic release publication", "credential management", "post-materialize hook runs", "wtree release verify"} {
+		for _, path := range []string{"README.md", "tutorial/RELEASES.md"} {
+			data, err := os.ReadFile(filepath.Join(root, path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), forbidden) {
+				t.Errorf("%s overclaims release behavior %q", path, forbidden)
 			}
 		}
 	}

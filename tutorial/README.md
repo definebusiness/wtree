@@ -13,6 +13,16 @@ additional safety paths, continue with the
 local consent and are covered separately in the
 [lifecycle-hook tutorial](LIFECYCLE-HOOKS.md).
 
+The [release tutorial](RELEASES.md) is a separate offline journey from clean
+local commits through caller-owned child/base tags to an exact clean CI
+composition. It deliberately leaves build, test, packaging, and publication as
+explicit CI work.
+
+The [companion tutorial](COMPANIONS.md) is the executable v4 adoption and
+independent-baseline journey. It covers companion create, local advancement,
+exec scopes, baseline changes, best-effort update, lifecycle retention, and
+release-lock inclusion in an isolated local fixture.
+
 Run the commands in order in one terminal. Paths are stored in environment
 variables so the examples work regardless of where the `wtree-go` repository
 is checked out.
@@ -185,12 +195,16 @@ When the manifest tracked by the local base checkout is available, an additive
 `Local drift` table reports manifest/state/disk differences. `wtree status`
 does not fetch or contact remotes.
 
-To run a direct command across every verified checkout, use `exec`. Arguments
-are not interpreted by an implicit shell, and effects from the invoked command
-are not rolled back:
+To run a direct command across every verified checkout, use `exec`. To limit
+the scope, `--no-companions` selects present ordinary repositories and
+`--repository <id>` selects one configured present repository. Arguments are
+not interpreted by an implicit shell, and effects from the invoked command are
+not rolled back. These two selectors are mutually exclusive:
 
 ```sh
 wtree exec -- git status --short
+wtree exec --no-companions -- go test ./...
+wtree exec --repository backend -- git status --short
 wtree exec -- sh -c 'go test ./... | tee test.log'
 ```
 
@@ -434,6 +448,28 @@ wtree repo path frontend
 wtree repo get backend --json
 ```
 
+For a repository configured as a companion, change the baseline used only by
+future workspaces with an existing local branch. This is an atomic local and
+portable configuration change; it does not alter current workspaces or Git
+refs. A failed publication is either fully restored or leaves recovery
+evidence that must be reconciled before another baseline change.
+
+```sh
+wtree repo branch tools main --dry-run
+wtree repo branch tools release --json
+```
+
+To update present workspaces from the configured upstream companion baseline,
+use the separate companion-update command. It fetches the configured ref once
+and fast-forwards only clean, attached, compatible checkouts; it does not
+reconcile configuration like `wtree update`, restore missing worktrees, or
+push. A dry run performs no network or local mutation.
+
+```sh
+wtree companion update tools --dry-run
+wtree companion update tools --json
+```
+
 Commands also resolve project and workspace context from inside a nested
 repository:
 
@@ -536,6 +572,13 @@ wtree list
 
 The `tutorial/new-workspace` entry should no longer be listed. Its branches
 were never pushed, so the fake origins are unchanged.
+
+Companion repositories follow the same workspace lifecycle. A clean commit on
+an attached companion workspace branch is shown by `status` as informational
+`advanced`, and `remove` followed by `checkout` restores that branch. Deleting
+a companion workspace never deletes its configured baseline or any remote
+branch; the deletion JSON reports a protected baseline as `preserved: true`
+with reason `companion-baseline`.
 
 ## 14. Import manually created worktrees
 

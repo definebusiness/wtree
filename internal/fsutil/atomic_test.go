@@ -208,3 +208,21 @@ func TestRenameNoReplaceMovesDirectoryWithoutClobbering(t *testing.T) {
 		t.Fatalf("source was lost after rejected rename: %v", err)
 	}
 }
+
+func TestWriteFileAtomicCreateModeNoReplacePreservesFinalBoundaryCreation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "target")
+	err := WriteFileAtomicCreateModeNoReplaceWithOwnedTempHook(path, []byte("owned\n"), 0o600, nil, func(temporary string, info os.FileInfo) error {
+		current, err := os.Lstat(temporary)
+		if err != nil || !os.SameFile(info, current) {
+			t.Fatalf("owned temporary was not retained at final callback: %v", err)
+		}
+		return os.WriteFile(path, []byte("foreign\n"), 0o600)
+	})
+	if err == nil {
+		t.Fatal("absent-only creation succeeded after target creation")
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil || string(data) != "foreign\n" {
+		t.Fatalf("final-boundary target = %q, %v; want preserved foreign generation", data, readErr)
+	}
+}

@@ -18,11 +18,20 @@ const (
 	// PortableManifestVersion3 is the hook-capable portable manifest schema.
 	// PortableManifestVersion intentionally remains v2 for existing writers.
 	PortableManifestVersion3 = 3
+	// ProjectConfigVersion4 adds the companion repository role while retaining
+	// the v3 local hook contract.
+	ProjectConfigVersion4 = 4
+	// PortableManifestVersion4 adds the companion repository role while
+	// retaining the v3 portable and shared hook contracts.
+	PortableManifestVersion4 = 4
 
 	HookEventPostCreate = "post-create"
 	HookEventPostClone  = "post-clone"
-	HookDefaultTimeout  = time.Minute
-	HookMaximumTimeout  = 24 * time.Hour
+	// HookEventPostRelease is a trusted, local-only action that runs after a
+	// release lock has been published. It is intentionally not portable.
+	HookEventPostRelease = "post-release"
+	HookDefaultTimeout   = time.Minute
+	HookMaximumTimeout   = 24 * time.Hour
 )
 
 // Hook is one ordered direct-process declaration. Timeout and Repository keep
@@ -153,12 +162,14 @@ func validateHookEvent(event string, hooks []Hook, baseRepository string, source
 
 func hookEventAllowed(event string, source hookSource) bool {
 	switch source {
-	case hookSourceLocal, hookSourceShared:
+	case hookSourceLocal:
+		return event == HookEventPostCreate || event == HookEventPostRelease
+	case hookSourceShared:
 		return event == HookEventPostCreate
 	case hookSourcePortable:
 		return event == HookEventPostClone
 	case hookSourceAny:
-		return event == HookEventPostCreate || event == HookEventPostClone
+		return event == HookEventPostCreate || event == HookEventPostClone || event == HookEventPostRelease
 	default:
 		return false
 	}

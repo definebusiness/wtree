@@ -362,7 +362,7 @@ func (executor *UpdateExecutor) updatePublicationTargets(ctx context.Context, re
 		if err != nil {
 			return nil, err
 		}
-		local.Repositories[repository] = config.Repository{Source: filepath.ToSlash(relative), Parent: candidate.Repositories[repository].Parent, DefaultMount: candidate.Repositories[repository].Mount, DefaultBranch: candidate.Repositories[repository].DefaultBranch}
+		local.Repositories[repository] = config.Repository{Source: filepath.ToSlash(relative), Parent: candidate.Repositories[repository].Parent, DefaultMount: candidate.Repositories[repository].Mount, DefaultBranch: candidate.Repositories[repository].DefaultBranch, Companion: candidate.Repositories[repository].Companion}
 		state.Repositories[repository] = store.CheckoutState{Branch: candidate.Repositories[repository].DefaultBranch, Mount: candidate.Repositories[repository].Mount, ResolvedPath: paths[repository], Head: head}
 	}
 	for id := range local.Repositories {
@@ -376,6 +376,12 @@ func (executor *UpdateExecutor) updatePublicationTargets(ctx context.Context, re
 		}
 	}
 	local.Project.Name = candidate.Project.Name
+	for _, repository := range candidate.Repositories {
+		if repository.Companion {
+			local.Version = config.ProjectConfigVersion4
+			break
+		}
+	}
 	local.Manifest.Source = request.Plan.Source.Value
 	registryProject, ok := registry.Projects[request.ProjectID]
 	if !ok {

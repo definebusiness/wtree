@@ -42,14 +42,14 @@ func (p HookPlan) MarshalJSON() ([]byte, error) {
 }
 
 type hookPlanAuthority struct {
-	sourceSHA, workspaceSHA, digest                                                                                   string
-	entries                                                                                                           []hookPlanInputEntry
-	projectID, projectName, baseRepository, workspaceID, workspaceName, sourceRoot, targetRoot, source, event, policy string
+	sourceSHA, workspaceSHA, digest                                                                                                string
+	entries                                                                                                                        []hookPlanInputEntry
+	projectID, projectName, baseRepository, workspaceID, workspaceName, sourceRoot, targetRoot, source, event, policy, releaseName string
 }
 type hookPlanInput struct {
-	Operation, Source, Event, Policy, ProjectID, ProjectName, BaseRepository, WorkspaceID, WorkspaceName, SourceLogicalRoot, TargetLogicalRoot string
-	SourceBytes, WorkspaceStateBytes                                                                                                           []byte
-	Entries                                                                                                                                    []hookPlanInputEntry
+	Operation, Source, Event, Policy, ProjectID, ProjectName, BaseRepository, WorkspaceID, WorkspaceName, SourceLogicalRoot, TargetLogicalRoot, ReleaseName string
+	SourceBytes, WorkspaceStateBytes                                                                                                                        []byte
+	Entries                                                                                                                                                 []hookPlanInputEntry
 }
 type hookPlanInputEntry struct {
 	ID, Repository, SourceRepository, TargetRepository, Branch, Head, ConfiguredExecutable, ResolvedExecutable, Availability string
@@ -58,7 +58,7 @@ type hookPlanInputEntry struct {
 }
 
 func newHookPlan(in hookPlanInput) (HookPlan, error) {
-	if !validHookPlanCombination(in) || len(in.Entries) == 0 || !safeHookPlanID(in.ProjectID) || !safeHookPlanID(in.BaseRepository) || !safeHookPlanID(in.WorkspaceID) || !validHookPlanName(in.ProjectName) || !validHookPlanName(in.WorkspaceName) || !absolute(in.SourceLogicalRoot) || !absolute(in.TargetLogicalRoot) {
+	if !validHookPlanCombination(in) || len(in.Entries) == 0 || !safeHookPlanID(in.ProjectID) || !safeHookPlanID(in.BaseRepository) || !safeHookPlanID(in.WorkspaceID) || !validHookPlanName(in.ProjectName) || !validHookPlanName(in.WorkspaceName) || in.Operation == "release" && !validHookPlanName(in.ReleaseName) || !absolute(in.SourceLogicalRoot) || !absolute(in.TargetLogicalRoot) {
 		return HookPlan{}, errors.New("invalid hook plan")
 	}
 	entries := make([]HookPlanEntry, len(in.Entries))
@@ -90,12 +90,13 @@ func newHookPlan(in hookPlanInput) (HookPlan, error) {
 	if err != nil {
 		return HookPlan{}, err
 	}
-	public.authority = hookPlanAuthority{sourceSHA: digest(in.SourceBytes), workspaceSHA: digest(in.WorkspaceStateBytes), digest: digest(canonical), entries: cloneHookPlanInputEntries(in.Entries), projectID: in.ProjectID, projectName: in.ProjectName, baseRepository: in.BaseRepository, workspaceID: in.WorkspaceID, workspaceName: in.WorkspaceName, sourceRoot: in.SourceLogicalRoot, targetRoot: in.TargetLogicalRoot, source: in.Source, event: in.Event, policy: in.Policy}
+	public.authority = hookPlanAuthority{sourceSHA: digest(in.SourceBytes), workspaceSHA: digest(in.WorkspaceStateBytes), digest: digest(canonical), entries: cloneHookPlanInputEntries(in.Entries), projectID: in.ProjectID, projectName: in.ProjectName, baseRepository: in.BaseRepository, workspaceID: in.WorkspaceID, workspaceName: in.WorkspaceName, sourceRoot: in.SourceLogicalRoot, targetRoot: in.TargetLogicalRoot, source: in.Source, event: in.Event, policy: in.Policy, releaseName: in.ReleaseName}
 	return public, nil
 }
 func validHookPlanCombination(in hookPlanInput) bool {
 	return in.Operation == "create" && in.Source == "local" && in.Event == "post-create" && in.Policy == "automatic" ||
-		in.Operation == "clone" && in.Source == "portable" && in.Event == "post-clone" && in.Policy == "requires-run-hooks"
+		in.Operation == "clone" && in.Source == "portable" && in.Event == "post-clone" && in.Policy == "requires-run-hooks" ||
+		in.Operation == "release-lock" && in.Source == "local" && in.Event == "post-release" && in.Policy == "automatic"
 }
 func (p HookPlan) Entries() []HookPlanEntry {
 	out := make([]HookPlanEntry, len(p.entries))

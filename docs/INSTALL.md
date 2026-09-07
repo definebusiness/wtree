@@ -58,8 +58,18 @@ Hook-free local and portable configuration remains version 2. Lifecycle hooks
 are version 3 declarations: local `hooks.post-create` is trusted local setup,
 portable `hooks.post-clone` needs an explicit `wtree clone --run-hooks`, and
 portable `shared_hooks.post-create` is inert until `wtree hooks install` copies
-it into local configuration. No install or clone action authorizes a shared
-hook by itself.
+it into local configuration. Version 4 adds an optional `companion: true`
+repository marker while retaining the version-3 hook wire. A companion uses its
+configured `default_branch` as its create baseline; `--from` remains an
+ordinary-repository source. Adopt it by committing a tracked version-4 manifest
+and running `wtree update`, or by cloning that manifest. No install or clone
+action authorizes a shared hook by itself.
+
+For the complete v4 migration and safety sequence, see the executable
+[companion tutorial](../tutorial/COMPANIONS.md). It documents the separate
+future-only `wtree repo branch` and best-effort `wtree companion update`
+commands, their JSON v1 envelopes, and the absence of implicit fetching,
+pushing, merging, rebasing, resets, force updates, or credential storage.
 
 When a hook fails, the workspace remains published and the binary reports a
 bounded retry command. Run `wtree status <workspace>` and `wtree doctor

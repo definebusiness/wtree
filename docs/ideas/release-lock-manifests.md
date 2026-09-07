@@ -1,92 +1,43 @@
 # Idea: immutable release lock manifests
 
-Status: initial
+Status: specified
+Specification: [Immutable release lock manifests specification](../spec/release-lock-manifests.md)
 
 ## Summary
 
-`wtree` should support freezing one tested multi-repository workspace into an
-immutable release lock manifest. The repositories would retain their separate
-Git histories and normal development workflows, while the outer repository
-would record the exact child commits that together form a release.
+`wtree` should freeze the current commits of one local multi-repository
+workspace into a small, deterministic release lock. The lock is a revision
+overlay for the portable `project.wtree.yml`, not a second project manifest.
 
-The outer repository's release tag would identify its own commit. A committed
-lock manifest at that tagged commit would identify every nested repository's
-exact commit. Together, those two layers would provide one reproducible and
-auditable release identity without converting the project to a monorepo or
-introducing Git submodules.
-
-This follows the same broad model as revision-locked manifests used by
-multi-repository tools such as Android's `repo`: repository topology and
-fetch information are described separately from the exact revisions selected
-for a reproducible checkout.
-
-## Why a separate lock manifest is needed
-
-The portable `project.wtree.yml` should continue to describe the moving
-project definition:
-
-- repository identities and hierarchy;
-- clone remotes and URLs;
-- default branches;
-- default mounts; and
-- other information needed for normal clone, update, and synchronization
-  workflows.
-
-A release lock has a different lifecycle. It is an immutable snapshot of one
-verified combination of commits. Mixing exact release commits into the normal
-project manifest would make it unclear whether `sync` should follow branches
-or remain permanently pinned.
-
-The proposed files therefore have distinct responsibilities:
+The base repository owns and versions both files:
 
 ```text
-project.wtree.yml       portable, moving project definition
-project.wtree.lock.yml  immutable revisions for one release snapshot
+project.wtree.yml       moving repository topology and clone information
+project.wtree.lock.yml  immutable release name and child revisions
 ```
 
-The lock filename is tentative. A versioned name such as
-`releases/v1.4.0.wtree.lock.yml` could be useful when the outer repository
-retains multiple release locks on one long-lived branch. When a lock exists
-only at its corresponding outer release tag, a stable root filename is
-sufficient because Git history already versions it.
+The release identity has two layers:
 
-## The root commit is anchored by the outer tag
+1. the base repository commit selected by the CI checkout or an outer release
+   tag; and
+2. the exact non-base repository commits recorded in the lock at that base
+   commit.
 
-The lock manifest should not contain the final commit ID of the outer
-repository in which that same file is committed. Doing so creates a circular
-dependency: committing the file changes the commit ID that the file would
-need to contain.
+The base revision is deliberately absent from the lock. Recording it in a file
+committed by that same revision would create a circular dependency. The release
+name in the lock is passive metadata: `wtree` does not interpret it as a branch
+or tag and supplies it only to the local `post-release` hook.
 
-Instead:
+## Lock format
 
-1. the outer repository's annotated release tag identifies the root commit;
-2. the lock manifest stored in that root commit identifies all nested
-   repository commits; and
-3. the combination is the complete release snapshot.
-
-Conceptually:
-
-```text
-outer tag v1.4.0
-  └── outer commit
-      └── project.wtree.lock.yml
-          ├── backend commit
-          ├── frontend commit
-          └── shared commit
-```
-
-The outer tag is therefore the single entry point that CI, release tooling,
-and users should retain.
-
-## Possible lock format
-
-One possible schema is:
+A minimal format is:
 
 ```yaml
 version: 1
 
 project:
   id: 3f97ab90-0d41-4bd1-84a8-4df70dbcd221
+  manifest_sha256: 7f2e0c4c5f1c9bf1c1d53e95b71db65dc21b2f84d451af140e027f976f4f0f3b
 
 release:
   name: v1.4.0
@@ -94,226 +45,212 @@ release:
 repositories:
   backend:
     revision: 4f3c27f6b2b09a795552ad3c9c42f520d018b52e
-    remote: origin
-    url: https://github.com/acme/backend.git
-    mount: backend
-
   frontend:
     revision: 8b7133d374a09fd0d2f92ae92094386bd42c56aa
-    remote: origin
-    url: https://github.com/acme/frontend.git
-    mount: frontend
-
   shared:
     revision: 1930ad76a20bdbb59bc017d54161b3219449b27c
-    remote: upstream
-    url: https://github.com/acme/shared.git
-    parent: backend
-    mount: shared
 ```
 
-The exact schema requires a later specification. At minimum, each entry must
-bind a stable repository identity to:
+The repository map contains every non-base repository and no base-repository
+entry. Each revision is a full hexadecimal Git object ID rather than an
+abbreviation. The linked specification accepts full 40- or 64-character
+lowercase hexadecimal IDs and adds repository-local commit verification, so it
+does not assume that every repository uses SHA-1.
 
-- a full Git object ID rather than an abbreviated hash;
-- the fetch source needed by an independent CI environment;
-- its immediate parent and effective release mount; and
-- enough identity information to prevent a commit from an unrelated
-  repository from being accepted merely because an object ID string matches.
+The lock does not duplicate repository URLs, remotes, identities, parents,
+mounts, default branches, hooks, or machine-local paths. Those values remain
+authoritative in the exact portable manifest generation bound by
+`manifest_sha256`. This avoids disagreement rules between two project models.
 
-The lock must not contain machine-local checkout paths, credentials, access
-tokens, worktree administration paths, or mutable branch names as the source
-of the locked revision.
+The stable default filename is `project.wtree.lock.yml`. Alternative archival
+filenames are outside the first version because the base repository's Git
+history already versions the file.
 
-## Proposed release workflow
+## Creating a lock
 
-A typical release would begin after the coordinated release branches have
-completed hardening:
+The illustrative command is:
 
 ```sh
-wtree status release/v1.4.0
-wtree release lock v1.4.0
-git add project.wtree.lock.yml
-git commit -m "chore: lock release v1.4.0"
-git tag -a v1.4.0 -m "Release v1.4.0"
-git push origin release/v1.4.0 v1.4.0
+wtree release lock v1.4.0 [workspace] [--force] [--dry-run] [--json] [--no-hooks]
 ```
 
-The command names are illustrative, not yet a public contract.
+The release name is required, written verbatim after validation as non-empty
+control-free text, and passed to `post-release`. It has no other semantics in
+`wtree`; in particular, `wtree` does not require it to be a valid Git ref.
 
-Before generating the lock, `wtree` should verify every repository in the
-selected workspace:
+Lock generation uses the caller-owned local workspace. It:
 
-1. The checkout has the configured Git identity.
-2. The checkout is present, attached to the expected release branch, and not
-   partial.
-3. Tracked, staged, and untracked changes are absent unless a future explicit
-   policy defines otherwise.
-4. The current commit is known exactly.
-5. The commit is reachable from the intended remote or has otherwise been
-   proven available to release CI.
-6. The effective parent and mount match the workspace being frozen.
-7. No unresolved recovery record or structural doctor finding remains.
-8. Existing lock output would either be identical or require explicit
-   replacement intent.
+1. loads the selected complete workspace and its portable manifest;
+2. requires every configured repository to be present, clean, and of the
+   configured identity;
+3. reads the current full `HEAD` of every non-base repository;
+4. writes the project ID, portable-manifest digest, release name, and observed
+   revisions in deterministic order; and
+5. atomically creates `project.wtree.lock.yml` in the base repository.
 
-The lock should be generated deterministically. Repeating the command against
-the same workspace and project definition should produce byte-identical
-output.
+This is an observation, not an atomic cross-repository snapshot. The caller is
+responsible for not changing repositories while the command runs and for
+choosing a combination that has actually been tested. `wtree` does not require
+a particular branch, inspect upstream state, contact remotes, or revalidate all
+repositories immediately before writing the lock.
 
-## Child repository tags
+Generating byte-identical content when the target already contains those exact
+bytes succeeds without rewriting it. A clean tracked lock from the previous
+release is replaced normally. An untracked lock or one with uncommitted changes
+is protected unless the caller supplies `--force`.
 
-Tagging every nested repository with the same release name is useful but not
-required for reproducibility. The full object IDs in the lock manifest are the
-authoritative revision bindings.
+`--dry-run` performs the same local validation and renders the proposed release
+name and repository-to-revision mapping without writing the lock or running a
+hook.
 
-Optional child tags provide:
+## Local `post-release` hook
 
-- a human-readable release marker inside each repository;
-- easier repository-local auditing and support work;
-- a natural place for signed or annotated release metadata; and
-- protection against garbage collection when hosting policies do not retain
-  otherwise unreachable commits indefinitely.
+The hook-capable local `.wtree.yml` configuration should accept a
+repository-scoped `post-release` event using the existing ordered hook shape:
 
-If `wtree` eventually offers tag orchestration, it should be a separately
-authorized operation rather than an implicit side effect of lock generation.
-It would need complete preflight, remote/tag collision handling, rollback
-limits, signing policy, and clear behavior when only some pushes succeed.
-The first lock implementation should remain local and non-publishing.
+```yaml
+version: 3
 
-## Reproducing a release
+hooks:
+  post-release:
+    - id: tag-backend
+      repository: backend
+      command: [tag-wtree-release]
+      timeout: 5m
+    - id: tag-frontend
+      repository: frontend
+      command: [tag-wtree-release]
+      timeout: 5m
+    - id: tag-shared
+      repository: shared
+      command: [tag-wtree-release]
+      timeout: 5m
+```
 
-CI should start from the outer repository's release tag and then materialize
-the child repositories from the committed lock:
+`post-release` is local and trusted because release scripts may need the
+caller's credentials, signing configuration, and other ambient environment.
+It is not read from or embedded in the portable manifest or release lock.
+
+The event runs only after the lock file has been written successfully. It runs
+outside the core lock-generation operation and receives the normal
+authoritative local hook environment, with these release-specific values:
+
+| Variable | Value |
+|---|---|
+| `WTREE_HOOK` | `post-release` |
+| `WTREE_OPERATION` | `release-lock` |
+| `WTREE_RELEASE_NAME` | Exact `release.name` from the generated lock |
+| `WTREE_HEAD` | Validated full object ID of the hook's selected repository |
+
+The existing project, workspace, repository, and path variables remain
+available. A hook without an explicit `repository` uses the base repository,
+as other local hooks do. The documented example places one script on `PATH`
+and invokes it through one declaration for each non-base repository, giving
+the same script that repository's exact `WTREE_HEAD` and working directory.
+
+The hook is an explicitly configured user operation, not an implicit `wtree`
+tagging feature. Its commits, tags, signatures, and pushes are outside rollback.
+If it fails, the valid lock remains written and the command reports that the
+post-release action failed. `--no-hooks` suppresses execution, and `--dry-run`
+never runs it.
+
+The hook example deliberately tags only non-base repositories. After it
+succeeds, the user reviews and commits the new lock, then explicitly creates
+the base tag at that new commit. Tagging the base before the lock commit would
+point at the wrong base revision.
+
+## CI materialization
+
+A typical CI system already checks out the desired base branch, tag, or exact
+commit. That checkout contains matching versions of `project.wtree.yml` and
+`project.wtree.lock.yml`. CI therefore does not need `wtree clone` first:
 
 ```sh
 git clone --branch v1.4.0 https://github.com/acme/product.git product
 cd product
-wtree clone --lock project.wtree.lock.yml .
-wtree release verify project.wtree.lock.yml
+wtree release materialize project.wtree.lock.yml
 ```
 
-These commands are illustrative. A future implementation might instead extend
-`wtree sync` or introduce `wtree checkout --lock`.
+The illustrative `release materialize` command adopts the existing base
+checkout and creates the rest of the project. It:
 
-Materialization should:
+1. strictly loads both files and verifies the project ID and exact portable
+   manifest digest;
+2. treats the existing base checkout and commit as authoritative;
+3. derives repository identities, clone sources, topology, and mounts from
+   `project.wtree.yml`;
+4. creates every non-base repository parent-first at its configured mount;
+5. fetches all advertised branch and tag refs from its configured remote;
+6. fails if the locked commit is not available after that fetch;
+7. checks out the exact locked commit in detached state;
+8. verifies identity, mount, cleanliness, and exact `HEAD`; and
+9. writes the local configuration, default workspace state, and registry entry
+   needed by normal read-only `wtree` commands.
 
-1. read and strictly validate the lock schema;
-2. verify that it belongs to the same project definition;
-3. fetch each repository from its recorded credential-free source;
-4. check out the exact object ID in detached state or on a clearly named local
-   release branch;
-5. mount repositories parent-first using the locked hierarchy;
-6. verify every resulting Git identity, object ID, mount, and clean status;
-   and
-7. fail transactionally rather than leave a release tree that appears
-   complete but contains mixed revisions.
+No branch tip may replace a missing locked commit. Materialization either finds
+the exact object selected by the lock or reports that the release cannot be
+reconstructed from the configured remote.
 
-No branch tip may be substituted for a locked object ID. A branch can move
-after release and therefore cannot establish reproducibility.
+Authentication remains Git's responsibility. Materialization passes through
+standard noninteractive SSH-agent, askpass, and configured credential-helper
+authentication without putting credentials into either manifest, the lock,
+command output, or persisted state. `wtree` does not accept or manage secrets.
 
-## Verification and provenance
+The first version materializes only into an otherwise unmaterialized project
+whose base repository was supplied by the caller or CI. Converting an existing
+development workspace, reconciling topology changes, and lock-aware `update`
+are separate future features.
 
-A commit hash provides content identity within a Git object format, but the
-release process also needs provenance. A robust design should combine:
+Successful materialization already verifies the complete exact workspace. CI
+then runs build, test, package, signing, publication, deployment, and
+notification as explicit pipeline steps or through `wtree exec`. A separate
+verification command and a `post-materialize` hook add no required capability
+to the first version.
 
-- protected or signed outer release tags;
-- protected child tags when optional per-repository tagging is used;
-- credential-free, reviewable repository URLs in the portable project
-  definition;
-- confirmation that every locked object is available from its expected
-  remote before the outer tag is published;
-- CI verification that the checked-out object IDs exactly match the lock;
-- an auditable association between the build artifact, outer tag, and lock
-  file digest; and
-- optional future attestations or software bill of materials without making
-  them prerequisites for the basic lock format.
+## Failure and cleanup
 
-The outer tag and lock must be published only after all referenced child
-commits are available. Otherwise the outer tag would describe a release that
-cannot be reconstructed by another environment.
+Lock generation changes only its output file before the optional hook runs.
+Materialization validates all fetched locked revisions before publishing final
+checkouts. On failure it removes repository paths and local state created by
+that invocation and reports any path it cannot safely remove. It never removes
+or rewrites the caller-provided base checkout.
+
+Fetching remote refs is allowed to remain as an internal Git side effect. The
+operation does not push, create remote refs, or silently fall back to a branch.
 
 ## Relationship to normal `wtree` behavior
 
-Release locking should reuse existing `wtree` concepts rather than introduce
-a second repository model:
+Release locking reuses the existing project model:
 
 - repository IDs remain independent of paths;
-- nested repositories remain ordinary independent Git repositories;
-- mounts remain ignored by their immediate parents;
-- the project hierarchy remains parent-relative;
-- normal development workspaces continue to follow branches;
-- release materialization selects exact commits; and
-- no `.gitmodules` file or gitlink is introduced.
+- the portable manifest remains the sole topology and fetch authority;
+- nested and sibling repositories remain ordinary Git repositories;
+- mounts remain parent-relative and protected by committed ignore rules;
+- development workspaces continue to use branches; and
+- materialized release children use detached exact commits.
 
-This makes the lock manifest a metadata layer over the existing model. It does
-not merge repository histories and does not change everyday workspaces into
-submodules.
+No `.gitmodules`, gitlinks, merged histories, or second repository model are
+introduced.
 
-## Failure and safety expectations
+## Explicit non-goals for the first version
 
-Lock generation should be read-only except for writing its explicit output
-file. It must fail before replacing an existing lock when:
+- Atomic observation of all repositories at one instant.
+- Remote-availability checks during lock generation.
+- Cloning or changing the caller-provided base repository.
+- Lock-aware conversion or update of an existing development workspace.
+- Automatic commits, tags, signing, or pushes performed by `wtree` itself.
+- Rollback of effects produced by the user's `post-release` hook.
+- Per-release archival filenames.
+- Child tag orchestration as a built-in command.
+- A separate release-verification command or `post-materialize` hook.
+- Credential storage, provider login, token refresh, or SSH key management.
+- General `status` or `doctor` integration.
+- Artifact signing, provenance attestations, or SBOM generation.
 
-- any repository is missing, dirty, detached unexpectedly, or at an
-  unverified identity;
-- a commit cannot be resolved or is not available from the intended remote;
-- the workspace has inconsistent branches, mounts, or recovery state;
-- the portable project definition and observed workspace disagree;
-- an existing lock would be changed without explicit replacement intent; or
-- output would contain credentials or machine-local paths.
+## Specification handoff
 
-A dry run should print the exact repository-to-object-ID mapping and proposed
-output without touching the lock file, Git refs, index, worktrees, registry,
-or workspace state.
-
-Lock consumption must reject unknown schema versions, duplicate identities,
-missing repositories, unsafe mounts, object-ID mismatches, and fetches that do
-not make the requested object available. It must never silently fall back to
-a default branch.
-
-## Potential command surface
-
-The eventual CLI might look like:
-
-```text
-wtree release lock <release-name> [<workspace>] [--output <path>] [--dry-run] [--json]
-wtree release verify <lock-path> [--json]
-wtree clone --lock <lock-path> [destination]
-```
-
-Alternative designs could use `wtree lock`, `wtree manifest lock`, or extend
-existing clone/sync commands. Naming, replacement policy, detached-versus-local
-branch behavior, and JSON contracts belong in a later specification and
-implementation plan.
-
-## Explicit non-goals
-
-- Combining repository histories into a monorepo.
-- Creating temporary or permanent Git submodules.
-- Recording mutable branches instead of exact object IDs.
-- Automatically committing, tagging, signing, or pushing during initial lock
-  generation.
-- Storing the outer repository's self-referential final commit in its own lock
-  file.
-- Replacing artifact signing, provenance attestations, or an SBOM system.
-- Defining the final CLI or schema in this idea document.
-
-## Open design questions
-
-1. Should the lock be a stable root file versioned by the outer tag, or one
-   named file per release under a `releases/` directory?
-2. Should release mounts always come from the selected workspace, or should
-   the portable project defaults remain authoritative?
-3. Should a locked checkout be detached, use a generated local branch, or
-   allow the caller to choose?
-4. How should remote availability be proven without making normal local lock
-   generation dependent on credentials or a network connection?
-5. Should optional child tagging be a separate future command, and what
-   partial-push recovery contract would it require?
-6. Should the lock embed clone metadata or reference a digest of the exact
-   `project.wtree.yml` from which it was derived?
-7. How should SHA-1 and SHA-256 repositories express object IDs without
-   coupling the schema to one Git object format?
-8. Which command should materialize a lock: clone, checkout, sync, or a
-   release-specific command?
+The linked specification fixes the first schema to lowercase full 40- or
+64-character hexadecimal object IDs, uses idempotent whole-event reruns rather
+than durable setup-hook retry, and requires reuse of existing initialization,
+clone, registration, and hook-process boundaries where their authority matches
+this narrower release workflow.

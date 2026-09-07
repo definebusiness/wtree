@@ -56,6 +56,121 @@ func TestWorkspaceCreatorCreatesNestedWorkspaceParentFirst(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCreatorCreatesCompanionFromItsBaseline(t *testing.T) {
+	project, root, backend, data := createFixture(t)
+	root.Run(t, "branch", "ordinary-base")
+	backend.Run(t, "branch", "companion-base")
+	for index := range project.Repositories {
+		if project.Repositories[index].ID == "backend" {
+			project.Repositories[index].Companion = true
+			project.Repositories[index].DefaultBranch = "companion-base"
+		}
+	}
+	target := filepath.Join(t.TempDir(), "workspace")
+	value, err := service.NewWorkspaceCreator().Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/companion", From: "ordinary-base", TargetPath: target, DataDir: data}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !value.Repositories[1].Companion || value.Repositories[1].Baseline != "companion-base" {
+		t.Fatalf("create plan companion facts=%#v", value.Repositories[1])
+	}
+	want, err := gitadapter.NewAdapter("git").ResolveRef(context.Background(), backend.Path, "refs/heads/companion-base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := gitadapter.NewAdapter("git").ResolveRef(context.Background(), backend.Path, "refs/heads/feature/companion")
+	if err != nil || got != want {
+		t.Fatalf("companion branch base=%q err=%v want=%q", got, err, want)
+	}
+	ordinary, err := gitadapter.NewAdapter("git").ResolveRef(context.Background(), root.Path, "refs/heads/feature/companion")
+	if err != nil || ordinary == want {
+		t.Fatalf("ordinary branch=%q err=%v must use --from rather than companion baseline=%q", ordinary, err, want)
+	}
+	state, stateErr := store.ReadWorkspace(service.WorkspaceStatePath(data, project.ID, value.WorkspaceID))
+	if stateErr != nil {
+		t.Fatal(stateErr)
+	}
+	checkout := state.Repositories["backend"]
+	if checkout.Branch != "feature/companion" || checkout.Head != want || checkout.ResolvedPath != filepath.Join(target, "backend") {
+		t.Fatalf("companion state=%#v, want branch/head/path", checkout)
+	}
+}
+
+func TestWorkspaceCreatorCompanionFailureAndCancellationRollBackEveryRepository(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		create func(context.CancelFunc) *service.WorkspaceCreator
+	}{
+		{name: "effect failure", create: func(_ context.CancelFunc) *service.WorkspaceCreator {
+			return service.NewWorkspaceCreatorWith(&failingCreateGit{Git: gitadapter.NewAdapter("git"), failAt: 2}, service.NewWorkspaceTransaction())
+		}},
+		{name: "cancellation", create: func(cancel context.CancelFunc) *service.WorkspaceCreator {
+			return service.NewWorkspaceCreatorWith(&cancelAfterWorktreeGit{Git: gitadapter.NewAdapter("git"), cancel: cancel}, service.NewWorkspaceTransaction())
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			project, root, backend, data := createFixture(t)
+			backend.Run(t, "branch", "companion-base")
+			for index := range project.Repositories {
+				if project.Repositories[index].ID == "backend" {
+					project.Repositories[index].Companion = true
+					project.Repositories[index].DefaultBranch = "companion-base"
+				}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			target := filepath.Join(t.TempDir(), "workspace")
+			_, err := test.create(cancel).Create(ctx, project, service.WorkspacePlanRequest{WorkspaceName: "feature/rollback", TargetPath: target, DataDir: data}, nil)
+			if err == nil || !service.HasCleanRollback(err) {
+				t.Fatalf("Create=%v, want clean rollback", err)
+			}
+			for _, repository := range []testutil.GitRepository{root, backend} {
+				exists, branchErr := gitadapter.NewAdapter("git").BranchExists(context.Background(), repository.Path, "feature/rollback")
+				if branchErr != nil || exists {
+					t.Fatalf("residual branch at %q exists=%t err=%v", repository.Path, exists, branchErr)
+				}
+			}
+			if _, statErr := os.Lstat(target); !os.IsNotExist(statErr) {
+				t.Fatalf("residual worktree=%v", statErr)
+			}
+			if _, stateErr := os.Lstat(service.WorkspaceStatePath(data, project.ID, "feature-rollback")); !os.IsNotExist(stateErr) {
+				t.Fatalf("residual state=%v", stateErr)
+			}
+		})
+	}
+}
+
+func TestWorkspaceCreatorRejectsCompanionBaselineChangeDuringLockedReplan(t *testing.T) {
+	project, _, backend, data := createFixture(t)
+	backend.Run(t, "branch", "companion-base")
+	for index := range project.Repositories {
+		if project.Repositories[index].ID == "backend" {
+			project.Repositories[index].Companion = true
+			project.Repositories[index].DefaultBranch = "companion-base"
+		}
+	}
+	backend.CommitFile("changed.txt", "changed\n", "advance companion baseline")
+	backend.Run(t, "branch", "-f", "companion-base", "HEAD")
+	locker := mutatingCreateLocker{mutate: func() {
+		backend.CommitFile("changed-again.txt", "changed again\n", "advance companion baseline under lock")
+		backend.Run(t, "branch", "-f", "companion-base", "HEAD")
+	}}
+	transaction := service.NewWorkspaceTransactionWith(locker, store.WriteWorkspace, store.WriteRecovery, os.Remove)
+	target := filepath.Join(t.TempDir(), "workspace")
+	_, err := service.NewWorkspaceCreatorWith(gitadapter.NewAdapter("git"), transaction).Create(context.Background(), project, service.WorkspacePlanRequest{WorkspaceName: "feature/stale", TargetPath: target, DataDir: data}, nil)
+	var application *service.Error
+	if !errors.As(err, &application) || application.Kind != service.ErrorConflict {
+		t.Fatalf("locked companion baseline change=%v", err)
+	}
+	exists, branchErr := gitadapter.NewAdapter("git").BranchExists(context.Background(), backend.Path, "feature/stale")
+	if branchErr != nil || exists {
+		t.Fatalf("stale companion plan mutated branch exists=%t err=%v", exists, branchErr)
+	}
+	if _, statErr := os.Lstat(target); !os.IsNotExist(statErr) {
+		t.Fatalf("stale companion plan mutated target=%v", statErr)
+	}
+}
+
 func TestWorkspaceCreatorCreatesThreeLevelRenamedWorkspace(t *testing.T) {
 	project, root, backend, shared, data := createThreeLevelFixture(t)
 	target := filepath.Join(t.TempDir(), "workspace")
@@ -962,6 +1077,13 @@ func (g *failingCreateGit) AddWorktree(ctx context.Context, repository, path, br
 type projectLocker struct{}
 
 func (projectLocker) ProjectLock(context.Context, string, string, time.Duration) (lock.Handle, error) {
+	return noOpLock{}, nil
+}
+
+type mutatingCreateLocker struct{ mutate func() }
+
+func (locker mutatingCreateLocker) ProjectLock(context.Context, string, string, time.Duration) (lock.Handle, error) {
+	locker.mutate()
 	return noOpLock{}, nil
 }
 
