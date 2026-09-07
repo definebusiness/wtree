@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -73,7 +74,6 @@ func TestReleaseMaterializeFetchesAdvertisedCommitAndPublishesDetachedChild(t *t
 	if resolved, resolveErr := NewResolver().ResolveReadOnly(context.Background(), ResolveRequest{Path: base.Path, DataDir: data}); resolveErr != nil || resolved.Project.ID != manifest.Project.ID || !releaseMaterializeDetached(resolved.Workspace.Checkouts, "child") {
 		t.Fatalf("materialized workspace is not immediately resolvable: %#v, %v", resolved, resolveErr)
 	}
-	marker := filepath.Join(t.TempDir(), "exec-heads")
 	moduleRoot, rootErr := filepath.Abs(filepath.Join("..", ".."))
 	if rootErr != nil {
 		t.Fatal(rootErr)
@@ -87,19 +87,22 @@ func TestReleaseMaterializeFetchesAdvertisedCommitAndPublishesDetachedChild(t *t
 	if output, buildErr := build.CombinedOutput(); buildErr != nil {
 		t.Fatalf("build wtree exec fixture: %v %s", buildErr, output)
 	}
-	commandArgs := []string{"exec", "--data-dir", data, "--", "/bin/sh", "-c", "git rev-parse HEAD >> '" + marker + "'"}
-	if runtime.GOOS == "windows" {
-		commandArgs = []string{"exec", "--data-dir", data, "--", "cmd", "/C", "git rev-parse HEAD >> \"" + marker + "\""}
-	}
-	command := exec.Command(binary, commandArgs...)
+	command := exec.Command(binary, "exec", "--data-dir", data, "--json", "--", "git", "rev-parse", "HEAD")
 	command.Dir = base.Path
 	command.Env = os.Environ()
-	if output, commandErr := command.CombinedOutput(); commandErr != nil {
-		t.Fatalf("wtree exec: %v %s", commandErr, output)
+	output, commandErr := command.CombinedOutput()
+	var executed ExecResult
+	if commandErr != nil || json.Unmarshal(output, &executed) != nil || executed.Status != AggregateStatusCompleted || strings.Join(executed.ExecutionOrder, ",") != "root,child" || len(executed.Repositories) != 2 {
+		t.Fatalf("wtree exec = %v %s decoded=%#v", commandErr, output, executed)
 	}
-	execHeads, execErr := os.ReadFile(marker)
-	if execErr != nil || !strings.Contains(string(execHeads), baseBefore) || !strings.Contains(string(execHeads), child.identity) {
-		t.Fatalf("wtree exec heads=%q err=%v", execHeads, execErr)
+	for index, want := range []struct {
+		id   string
+		head string
+	}{{id: "root", head: baseBefore}, {id: "child", head: child.identity}} {
+		actual := executed.Repositories[index]
+		if actual.ID != want.id || actual.Status != AggregateStatusCompleted || actual.ExitCode == nil || *actual.ExitCode != 0 || actual.Stderr != "" || strings.TrimSpace(actual.Stdout) != want.head {
+			t.Fatalf("wtree exec repository[%d]=%#v, want id=%q head=%q", index, actual, want.id, want.head)
+		}
 	}
 }
 
