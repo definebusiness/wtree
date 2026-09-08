@@ -23,13 +23,14 @@ type MountOverride struct {
 // WorkspacePlanRequest contains only planning inputs. Planning never creates
 // branches, worktrees, directories, or state files.
 type WorkspacePlanRequest struct {
-	Operation     plan.Operation
-	WorkspaceName string
-	From          string
-	Mounts        []MountOverride
-	TargetPath    string
-	WorktreeRoot  string
-	DataDir       string
+	Operation            plan.Operation
+	WorkspaceName        string
+	From                 string
+	Mounts               []MountOverride
+	TargetPath           string
+	WorktreeRoot         string
+	DataDir              string
+	checkoutPrecondition *WorkspaceCheckoutPrecondition
 }
 
 // WorkspacePlanner creates fully preflighted, immutable plans.

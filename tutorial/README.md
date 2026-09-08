@@ -266,8 +266,10 @@ fetched during execution.
 
 ## 5. Understand remote and local branches
 
-`wtree checkout` uses branches that already exist locally in every configured
-repository. It does not create a local branch from an `origin/...`
+`wtree checkout` first matches a registered workspace by a literal,
+case-sensitive substring, including retained workspace state. To check out an
+unregistered branch that already exists locally in every configured repository,
+use `--exact`; it does not create a local branch from an `origin/...`
 remote-tracking ref. The fresh clones initially have only the
 manifest-selected `main` local branch, while the fake origins advertise
 several additional branches that are not fetched by clone.
@@ -287,7 +289,7 @@ This distinction is exercised in the following checkout examples.
 local tracking branches, this checkout is expected to fail safely:
 
 ```sh
-wtree checkout feature/customer-search --dry-run
+wtree checkout --exact feature/customer-search --dry-run
 ```
 
 The error identifies `root` as the first repository without the required
@@ -317,8 +319,8 @@ wtree create feature/customer-search --dry-run
 Use `checkout` instead. Preview the complete operation, then perform it:
 
 ```sh
-wtree checkout feature/customer-search --dry-run
-wtree checkout feature/customer-search --verbose
+wtree checkout --exact feature/customer-search --dry-run
+wtree checkout --exact feature/customer-search --verbose
 ```
 
 Inspect the workspace and its committed branch-specific files:
@@ -332,8 +334,11 @@ git -C "$WTREE_SEARCH_WORKSPACE/backend" diff main..HEAD --name-only
 git -C "$WTREE_SEARCH_WORKSPACE/frontend" diff main..HEAD --name-only
 ```
 
-`wtree path` is the supported way to find a workspace. Do not reconstruct its
-sanitized directory name yourself.
+`wtree path` is the supported way to find a workspace. It accepts a literal,
+case-sensitive unique substring of the registered workspace name; use
+`--exact` for a full name or persisted ID. An ambiguous query lists every
+candidate, and `remove` and `delete` retain their exact-only selectors. Do not
+reconstruct a sanitized directory name yourself.
 
 Jump into the branch workspace, back to the original clone (registered as the
 `default` workspace), and forth again with the same lookup command:
@@ -363,7 +368,7 @@ The aggregate checkout is expected to fail because `frontend` has no such
 branch:
 
 ```sh
-wtree checkout release/2026-q3 --dry-run
+wtree checkout --exact release/2026-q3 --dry-run
 ```
 
 Preflight is transactional: no release workspace is created even though the
@@ -380,7 +385,7 @@ wtree list
 ```sh
 git -C "$WTREE_PROJECT/frontend" branch --track \
   experiment/dark-navigation origin/experiment/dark-navigation
-wtree checkout experiment/dark-navigation --dry-run
+wtree checkout --exact experiment/dark-navigation --dry-run
 ```
 
 This is also expected to fail without creating a workspace, because the
@@ -392,7 +397,7 @@ No repository has `feature/does-not-exist`. The following command is expected
 to fail at preflight:
 
 ```sh
-wtree checkout feature/does-not-exist --dry-run
+wtree checkout --exact feature/does-not-exist --dry-run
 ```
 
 Check again that failed aggregate operations did not create partial workspace

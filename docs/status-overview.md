@@ -1,6 +1,6 @@
 # Documentation status overview
 
-Last reviewed: 2026-09-07
+Last reviewed: 2026-09-08
 
 This document summarizes lifecycle metadata for the idea, specification, and
 implementation-plan documents under `docs/`. Operational documentation,
@@ -12,12 +12,12 @@ ledgers do not use this lifecycle.
 | Status | Count |
 |---|---:|
 | `initial` | 8 |
-| `specified` | 7 |
+| `specified` | 8 |
 | `planned` | 5 |
-| `implemented` | 24 |
+| `implemented` | 26 |
 | `superseded` | 2 |
 | `abandoned` | 0 |
-| **Total** | **46** |
+| **Total** | **49** |
 
 ## Ideas
 
@@ -32,12 +32,14 @@ ledgers do not use this lifecycle.
 | [Immutable release locks with CI materialization and a post-release hook](ideas/release-lock-manifests.md) | `specified` | [Immutable release lock manifests specification](spec/release-lock-manifests.md) |
 | [Logical project roots with a designated base repository](ideas/logical-project-root-base-repository.md) | `specified` | [Portable manifest v2 base-repository format specification](spec/portable-manifest-v2-base-repository-format.md); [logical project root and repository forest specification](spec/logical-project-root-base-repository.md) |
 | [Machine-local and shared workspace lifecycle hooks](ideas/local-workspace-lifecycle-hooks.md) | `specified` | [Local and shared workspace lifecycle hooks specification](spec/local-workspace-lifecycle-hooks.md); completes the focused local/shared contract and the related portable `post-clone` boundary |
+| [Workspace name shorthand](ideas/search-for-branch-if-no-exact-match.md) | `specified` | [Workspace name shorthand specification](spec/workspace-name-shorthand.md); default substring selection, `--exact`, noninteractive errors, and removed-workspace eligibility implemented, independently reviewed, and verified locally and on Ubuntu/macOS/Windows. |
 | [Archon-based harness for deterministic milestone orchestration](ideas/workflow/creating-a-minimal-harness-to-process-the-statemachine.md) | `specified` | [Archon deterministic milestone harness specification](spec/archon-milestone-harness.md) |
 
 ## Specifications
 
 | Document | Status | Predecessor | Implementation plan |
 |---|---|---|---|
+| [Workspace name shorthand specification](spec/workspace-name-shorthand.md) | `implemented` | [Workspace name shorthand](ideas/search-for-branch-if-no-exact-match.md) | [Workspace name shorthand implementation plan](plans/workspace-name-shorthand.md); all M00–M03 milestones approved with full local and matching-source native CI verification |
 | [`wtree` specification](spec/wtree.spec.md) | `implemented` | Created directly; current topology, aggregate-command, and hook behavior is linked through its implemented extensions | [`wtree` incremental implementation plan](plans/wtree-implementation-plan.md); [project registry implementation plan](plans/project-registry-management.md); implemented portions of the logical-root, full multi-repository, and lifecycle-hook plans |
 | [`wtree` specification traceability](spec/wtree.traceability.md) | `implemented` | [`wtree` specification](spec/wtree.spec.md), including current local v2/v3 configuration and links to later command extensions | [`wtree` incremental implementation plan](plans/wtree-implementation-plan.md); extension matrices cover logical-root forests and the implemented `update`, `exec`, `fetch`, and non-publishing `push` surfaces |
 | [Nested mount ignore management specification](spec/nested-mount-ignore-management.md) | `superseded` | Created directly; superseded by the [automatic protection story](ideas/automatic-nested-mount-ignore-protection.md) | [Nested mount ignore management implementation plan](plans/nested-mount-ignore-management.md), also superseded |
@@ -68,6 +70,7 @@ lifecycle state after producing the specification.
 
 | Document | Status | Predecessor specification | Implementation evidence |
 |---|---|---|---|
+| [Workspace name shorthand implementation plan](plans/workspace-name-shorthand.md) | `implemented` | [Workspace name shorthand specification](spec/workspace-name-shorthand.md) | All M00–M03 milestones independently approved. Corrected implementation `04f5a89` passed all main focused/global/full normal/full race/tutorial/release gates and [push CI](https://github.com/definebusiness/wtree/actions/runs/34178035627) plus [PR CI](https://github.com/definebusiness/wtree/actions/runs/34178037716) on Ubuntu, macOS, and native Windows. The [durable run](ai/runs/workspace-name-shorthand.md) records complete evidence; [PR #5](https://github.com/definebusiness/wtree/pull/5) targets main and remains unmerged. |
 | [`wtree` incremental implementation plan](plans/wtree-implementation-plan.md) | `implemented` | [`wtree` specification](spec/wtree.spec.md) | All milestones approved; [run ledger](ai/runs/wtree-implementation-plan.md) is complete; matching code and tests are present |
 | [Project registry inspection and lifecycle implementation plan](plans/project-registry-management.md) | `implemented` | [`wtree` specification](spec/wtree.spec.md) | All milestones approved; [run ledger](ai/runs/project-registry-management.md) is complete; project registry commands and tests are present |
 | [Nested mount ignore management implementation plan](plans/nested-mount-ignore-management.md) | `superseded` | [Nested mount ignore management specification](spec/nested-mount-ignore-management.md) | Superseded by the [automatic protection story](ideas/automatic-nested-mount-ignore-protection.md); no milestones were authorized or completed |

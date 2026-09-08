@@ -830,24 +830,51 @@ func TestCloneExecuteDifferentProjectsDoNotSerializeRemoteEffects(t *testing.T) 
 		remote := &clonePlanRemote{commits: map[string]string{url + "\x00refs/heads/main": clonePlanRootCommit}, errors: map[string]error{}}
 		plans = append(plans, mustClonePlan(t, NewClonePlannerWith(ClonePlannerDependencies{RemoteFacts: remote}), ClonePlanRequest{ManifestSource: source, Destination: filepath.Join(base, "clone"), CWD: base, DataDir: dataDir}))
 	}
-	entered := make(chan struct{}, 2)
-	release := make(chan struct{})
-	errors := make(chan error, 2)
-	for _, plan := range plans {
-		plan := plan
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	entered := make(chan int, 2)
+	releases := []chan struct{}{make(chan struct{}), make(chan struct{})}
+	type cloneResult struct {
+		index int
+		err   error
+	}
+	results := make(chan cloneResult, 2)
+	for index, plan := range plans {
+		index, plan := index, plan
 		go func() {
-			fake := &cloneExecutionGit{plan: plan, onClone: func() { entered <- struct{}{}; <-release }}
-			_, err := NewCloneExecutorWith(CloneExecutorDependencies{Git: fake}).Execute(context.Background(), plan, nil)
-			errors <- err
+			fake := &cloneExecutionGit{plan: plan, onClone: func() {
+				select {
+				case entered <- index:
+				case <-ctx.Done():
+					return
+				}
+				select {
+				case <-releases[index]:
+				case <-ctx.Done():
+				}
+			}}
+			_, err := NewCloneExecutorWith(CloneExecutorDependencies{Git: fake}).Execute(ctx, plan, nil)
+			results <- cloneResult{index: index, err: err}
 		}()
 	}
-	for range 2 {
-		<-entered
+	for count := 0; count < len(plans); count++ {
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatalf("remote clone effects did not overlap: observed %d of %d callbacks: %v", count, len(plans), ctx.Err())
+		}
 	}
-	close(release)
-	for range 2 {
-		if err := <-errors; err != nil {
-			t.Fatal(err)
+	// Both remote effects have overlapped. Release only one final publication at
+	// a time because the shared registry lock intentionally serializes it.
+	for index := range plans {
+		close(releases[index])
+		select {
+		case result := <-results:
+			if result.index != index || result.err != nil {
+				t.Fatalf("clone %d result = %#v", index, result)
+			}
+		case <-ctx.Done():
+			t.Fatalf("clone %d did not finish after its final publication release: %v", index, ctx.Err())
 		}
 	}
 	registry, err := store.ReadRegistry(filepath.Join(dataDir, "registry.json"))

@@ -284,7 +284,10 @@ wtree repo branch tools main --dry-run
 
 `STATUS` reports working-tree and structural state. `UPSTREAM` reports the
 last-fetched local upstream relationship, and `wtree status` does not fetch or
-contact remotes.
+contact remotes. An explicit `status <workspace>` and `path <workspace>` accept
+a literal case-sensitive unique substring; `--exact` requires a full name or
+persisted ID. The omitted `status` command continues to inspect the current
+workspace.
 
 Context resolution also works inside a nested repository:
 
@@ -352,11 +355,12 @@ clean, resolvable, up-to-date state before the later workspace examples.
 ## 7. Existing-branch checkout situations
 
 The fake remotes advertise `feature/customer-search`, but a fresh clone does
-not yet have that local branch in any repository. This preflight is expected
-to fail and create nothing:
+not yet have that local branch in any repository. An unregistered local branch
+uses the explicit `--exact` path. This preflight is expected to fail and create
+nothing:
 
 ```sh
-wtree checkout feature/customer-search --dry-run
+wtree checkout --exact feature/customer-search --dry-run
 ```
 
 Materialize the local tracking branch in every source repository:
@@ -375,8 +379,8 @@ done
 Now preflight and execute checkout:
 
 ```sh
-wtree checkout feature/customer-search --dry-run --json
-wtree checkout feature/customer-search --verbose
+wtree checkout --exact feature/customer-search --dry-run --json
+wtree checkout --exact feature/customer-search --verbose
 wtree status feature/customer-search
 ```
 
@@ -390,11 +394,11 @@ do
   git -C "$checkout" branch --track \
     release/2026-q3 origin/release/2026-q3
 done
-wtree checkout release/2026-q3 --dry-run
+wtree checkout --exact release/2026-q3 --dry-run
 
 git -C "$WTREE_PROJECT/frontend" branch --track \
   experiment/dark-navigation origin/experiment/dark-navigation
-wtree checkout experiment/dark-navigation --dry-run
+wtree checkout --exact experiment/dark-navigation --dry-run
 wtree list
 ```
 
@@ -402,7 +406,7 @@ Checkout never creates a branch. A wholly missing branch therefore fails, and
 `create` is also wrong once the synchronized branch already exists:
 
 ```sh
-wtree checkout feature/does-not-exist --dry-run
+wtree checkout --exact feature/does-not-exist --dry-run
 wtree create feature/customer-search --dry-run
 ```
 

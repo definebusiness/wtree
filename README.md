@@ -409,11 +409,16 @@ wtree config set worktrees.root ~/code/worktrees
 ```
 
 Create matching branches and worktrees for every repository in deterministic
-parent-first order:
+parent-first order. `path` and an explicit `status` selector accept a literal,
+case-sensitive substring of the registered workspace name. If more than one
+workspace matches, they report every matching name and ID; use `--exact` for a
+full name or persisted ID. The omitted `status` selector still inspects the
+current workspace. These lookup rules do not apply to destructive commands:
+`remove` and `delete` require their existing exact workspace selector.
 
 ```sh
 wtree create feature/login
-cd "$(wtree path feature/login)"
+cd "$(wtree path login)"
 ```
 
 For a companion, the new workspace branch is based on that repository's
@@ -448,8 +453,8 @@ the last-fetched local upstream relationship. `wtree status` does not fetch or
 contact remotes:
 
 ```sh
-wtree status feature/login
-wtree status feature/login --json
+wtree status login
+wtree status feature/login --exact --json
 ```
 
 Run one direct executable in every verified repository checkout with `exec`.
@@ -563,6 +568,12 @@ them later:
 wtree remove feature/login
 wtree checkout feature/login
 ```
+
+`checkout` accepts a unique literal, case-sensitive substring of a registered
+workspace name and restores that workspace's canonical name and recorded
+mounts. For an existing local branch with no registered workspace, use
+`wtree checkout --exact <branch>`; the command never creates or fetches a
+branch.
 
 Permanently remove the worktrees, branches, and retained state:
 

@@ -232,7 +232,9 @@ CONCEPTS
 
 WORKTREE LOCATION
   Workspace locations come from --path, project/global worktrees.root, or the
-  platform default. Use "wtree path <workspace>"; do not reconstruct paths.
+  platform default. path and explicit status accept a literal case-sensitive
+  workspace-name substring. Use --exact for a full workspace name or ID; do not
+  reconstruct paths.
 
 EXAMPLES
   wtree init
@@ -242,8 +244,8 @@ EXAMPLES
   wtree project prune stale-project-id --dry-run
   wtree project unregister project-id --dry-run
   wtree create feature/login
-  cd "$(wtree path feature/login)"
-  wtree status feature/login --json
+  cd "$(wtree path login)"
+  wtree status login --json
   wtree exec --help
   wtree companion update tools --dry-run
   wtree doctor feature/login
@@ -275,9 +277,9 @@ func applyCommandDocumentation(command *cobra.Command) {
 		"wtree create":              "  wtree create feature/login\n  wtree create feature/login --from main\n  wtree create feature/login --mount backend=api --dry-run\n",
 		"wtree checkout":            "  wtree checkout feature/login\n  wtree checkout feature/login --dry-run\n",
 		"wtree list":                "  wtree list\n  wtree list --json\n",
-		"wtree status":              "  wtree status feature/login\n  wtree status feature/login --json\n",
+		"wtree status":              "  wtree status login\n  wtree status feature/login --exact --json\n",
 		"wtree exec":                "  wtree exec -- go test ./...\n  wtree exec -- sh -c 'make test | tee test.log'\n",
-		"wtree path":                "  wtree path feature/login\n",
+		"wtree path":                "  wtree path login\n  wtree path feature/login --exact\n",
 		"wtree repo":                "  wtree repo path backend\n  wtree repo get backend --json\n  wtree repo branch tools main --dry-run\n",
 		"wtree repo path":           "  wtree repo path backend\n",
 		"wtree repo get":            "  wtree repo get backend --json\n",

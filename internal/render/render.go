@@ -43,10 +43,19 @@ type ErrorEnvelope struct {
 }
 
 type ErrorDetails struct {
-	Code     string                          `json:"code"`
-	Message  string                          `json:"message"`
-	Rollback *RollbackDetails                `json:"rollback,omitempty"`
-	Setup    *service.SetupIncompleteDetails `json:"setup,omitempty"`
+	Code      string                          `json:"code"`
+	Message   string                          `json:"message"`
+	Rollback  *RollbackDetails                `json:"rollback,omitempty"`
+	Setup     *service.SetupIncompleteDetails `json:"setup,omitempty"`
+	Selection *SelectionDetails               `json:"selection,omitempty"`
+}
+
+// SelectionDetails preserves typed lookup facts in JSON without requiring
+// callers to parse a human diagnostic.
+type SelectionDetails struct {
+	Query      string                                `json:"query"`
+	Mode       service.WorkspaceSelectionMode        `json:"mode"`
+	Candidates []service.WorkspaceSelectionCandidate `json:"candidates"`
 }
 
 type RollbackDetails struct {
@@ -61,6 +70,10 @@ func JSONError(writer io.Writer, err error) error {
 	}
 	if setup, ok := service.SetupIncompleteFrom(err); ok {
 		details.Setup = &setup
+	}
+	var selection *service.WorkspaceSelectionError
+	if errors.As(err, &selection) {
+		details.Selection = &SelectionDetails{Query: selection.Query, Mode: selection.Mode, Candidates: append([]service.WorkspaceSelectionCandidate{}, selection.Candidates...)}
 	}
 	return JSON(writer, ErrorEnvelope{Success: false, Error: details})
 }

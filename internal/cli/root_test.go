@@ -309,11 +309,11 @@ func TestExecuteCheckoutDryRunAndRejectsUnsupportedFrom(t *testing.T) {
 		t.Fatalf("init = %#v", result)
 	}
 	project.Run(t, "branch", "feature")
-	result := testutil.RunCommand(t, cli.Execute, "checkout", "--project", project.Path, "feature", "--dry-run", "--data-dir", data, "--path", target)
+	result := testutil.RunCommand(t, cli.Execute, "checkout", "--project", project.Path, "feature", "--exact", "--dry-run", "--data-dir", data, "--path", target)
 	if result.Err != nil || !strings.Contains(result.Stdout, "Operation: checkout\n") || !strings.Contains(result.Stdout, "No changes made.\n") || result.Stderr != "" {
 		t.Fatalf("checkout dry-run = %#v", result)
 	}
-	jsonResult := testutil.RunCommand(t, cli.Execute, "checkout", "--project", project.Path, "feature", "--dry-run", "--data-dir", data, "--path", target, "--json")
+	jsonResult := testutil.RunCommand(t, cli.Execute, "checkout", "--project", project.Path, "feature", "--exact", "--dry-run", "--data-dir", data, "--path", target, "--json")
 	if jsonResult.Err != nil || jsonResult.Stderr != "" {
 		t.Fatalf("checkout JSON dry-run = %#v", jsonResult)
 	}
@@ -527,7 +527,7 @@ func TestInspectionAndDryRunPlansDoNotReconcileStaleRegistry(t *testing.T) {
 		{name: "repo path", args: []string{"repo", "path", "root", "--data-dir", data}},
 		{name: "repo get", args: []string{"repo", "get", "root", "--data-dir", data, "--json"}},
 		{name: "create dry run", args: []string{"create", "feature/new", "--data-dir", data, "--path", filepath.Join(t.TempDir(), "new"), "--dry-run"}},
-		{name: "checkout dry run", args: []string{"checkout", "feature/checkout", "--data-dir", data, "--path", filepath.Join(t.TempDir(), "checkout"), "--dry-run"}},
+		{name: "checkout dry run", args: []string{"checkout", "feature/checkout", "--exact", "--data-dir", data, "--path", filepath.Join(t.TempDir(), "checkout"), "--dry-run"}},
 		{name: "remove dry run", args: []string{"remove", "feature/retained", "--data-dir", data, "--dry-run"}},
 		{name: "delete dry run", args: []string{"delete", "feature/retained", "--data-dir", data, "--dry-run"}},
 	}

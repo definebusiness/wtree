@@ -421,23 +421,23 @@ run_json "$wtree" doctor --json
 assert_doctor_known_rows "$test_root/last.stdout"
 
 step "exercise checkout success and missing-branch preflight"
-expect_failure 'does not exist' "$wtree" checkout feature/customer-search --dry-run
+expect_failure 'does not exist' "$wtree" checkout --exact feature/customer-search --dry-run
 for checkout in "$project" "$project/backend" "$project/frontend"; do
 	fetch_fixture_branch "$checkout" feature/customer-search
 	git -C "$checkout" branch --track feature/customer-search origin/feature/customer-search >/dev/null
 done
-run_json "$wtree" checkout feature/customer-search --dry-run --json
-run_quiet "$wtree" checkout feature/customer-search --verbose
+run_json "$wtree" checkout --exact feature/customer-search --dry-run --json
+run_quiet "$wtree" checkout --exact feature/customer-search --verbose
 
 for checkout in "$project" "$project/backend"; do
 	fetch_fixture_branch "$checkout" release/2026-q3
 	git -C "$checkout" branch --track release/2026-q3 origin/release/2026-q3 >/dev/null
 done
-expect_failure 'repository "frontend"' "$wtree" checkout release/2026-q3 --dry-run
+expect_failure 'repository "frontend"' "$wtree" checkout --exact release/2026-q3 --dry-run
 fetch_fixture_branch "$project/frontend" experiment/dark-navigation
 git -C "$project/frontend" branch --track experiment/dark-navigation origin/experiment/dark-navigation >/dev/null
-expect_failure 'repository "root"' "$wtree" checkout experiment/dark-navigation --dry-run
-expect_failure 'does not exist' "$wtree" checkout feature/does-not-exist --dry-run
+expect_failure 'repository "root"' "$wtree" checkout --exact experiment/dark-navigation --dry-run
+expect_failure 'does not exist' "$wtree" checkout --exact feature/does-not-exist --dry-run
 expect_failure 'already exists' "$wtree" create feature/customer-search --dry-run
 
 step "create, remove, restore, diagnose, and delete custom mounts"

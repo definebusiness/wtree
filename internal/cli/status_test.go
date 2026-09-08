@@ -176,6 +176,10 @@ func TestExecuteStatusInfersCurrentWorkspaceAndRendersHumanTable(t *testing.T) {
 	if result.Stdout != want {
 		t.Fatalf("status stdout = %q, want %q", result.Stdout, want)
 	}
+	exact := testutil.RunCommand(t, cli.Execute, "status", "--exact", "--data-dir", data)
+	if exact.Err != nil || exact.Stderr != "" || exact.Stdout != want {
+		t.Fatalf("implicit exact status = %#v, want %q", exact, want)
+	}
 }
 
 func TestExecuteStatusRendersTrackedManifestAbsentAndReplacementDrift(t *testing.T) {
@@ -228,6 +232,29 @@ func TestExecuteStatusRendersTrackedManifestAbsentAndReplacementDrift(t *testing
 			}
 
 			jsonResult := testutil.RunCommand(t, cli.Execute, "status", "--project", project.Path, "feature/status-drift", "--data-dir", data, "--json")
+			if !test.replace {
+				if jsonResult.Err == nil || cli.ExitCode(jsonResult.Err) != 4 || jsonResult.Stderr != "" || !strings.Contains(jsonResult.Stdout, `"selection":{"query":"feature/status-drift","mode":"substring","candidates":[]}`) {
+					t.Fatalf("removed explicit status = %#v", jsonResult)
+				}
+				exactStatus := testutil.RunCommand(t, cli.Execute, "status", "--project", project.Path, "feature/status-drift", "--exact", "--data-dir", data, "--json")
+				if exactStatus.Err == nil || cli.ExitCode(exactStatus.Err) != 4 || !strings.Contains(exactStatus.Stdout, `"mode":"exact"`) {
+					t.Fatalf("removed exact status = %#v", exactStatus)
+				}
+				for _, arguments := range [][]string{
+					{"path", "feature/status-drift", "--project", project.Path, "--data-dir", data},
+					{"path", "feature/status-drift", "--exact", "--project", project.Path, "--data-dir", data},
+				} {
+					pathResult := testutil.RunCommand(t, cli.Execute, arguments...)
+					if pathResult.Err == nil || cli.ExitCode(pathResult.Err) != 4 || pathResult.Stdout != "" || pathResult.Stderr != "" {
+						t.Fatalf("removed path %v = %#v", arguments, pathResult)
+					}
+				}
+				after, readErr := os.ReadFile(statePath)
+				if readErr != nil || !bytes.Equal(stateBefore, after) {
+					t.Fatalf("removed explicit status changed state: before=%q after=%q error=%v", stateBefore, after, readErr)
+				}
+				return
+			}
 			if jsonResult.Err != nil || jsonResult.Stderr != "" || !strings.Contains(jsonResult.Stdout, test.jsonNeedle) {
 				t.Fatalf("JSON status = %#v, want %q", jsonResult, test.jsonNeedle)
 			}

@@ -39,7 +39,7 @@ func TestSelectPathsKeepsPackageLocalTestsOutOfProductionReverseClosure(t *testi
 
 func TestSelectPathsSelectsAllTestutilConsumersAndHarnesses(t *testing.T) {
 	selection, err := selectPaths("/repo", syntheticGraph(), []string{
-		"internal/testutil/git.go", "Makefile", "scripts/ci-helper_test.sh", ".github/workflows/test.yml", "internal/core/core_windows_test.go",
+		"internal/testutil/git.go", "Makefile", "scripts/ci-helper_test.sh", "tutorial/run-all-commands.sh", ".github/workflows/test.yml", "internal/core/core_windows_test.go",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -67,6 +67,9 @@ func TestChangedPathFailuresAreClosed(t *testing.T) {
 		if _, err := selectPaths("/repo", syntheticGraph(), []string{path}); err == nil {
 			t.Fatalf("unsafe or ambiguous path %q unexpectedly selected", path)
 		}
+	}
+	if _, err := selectPaths("/repo", syntheticGraph(), []string{"tutorial/fixture.bin"}); err == nil {
+		t.Fatal("unknown tutorial binary unexpectedly received a harness owner")
 	}
 }
 
