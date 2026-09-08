@@ -13,6 +13,9 @@ import (
 	"testing"
 
 	"github.com/definebusiness/wtree/internal/cli"
+	"github.com/definebusiness/wtree/internal/pathutil"
+	"github.com/definebusiness/wtree/internal/service"
+	"github.com/definebusiness/wtree/internal/store"
 	"github.com/definebusiness/wtree/internal/testutil"
 )
 
@@ -95,10 +98,35 @@ func TestWorkspaceSelectionErrorsStayAtTheProcessBoundary(t *testing.T) {
 	if err := cli.Execute([]string{"init", project.Path, "--data-dir", data}, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{`feature/search-"one"`, "feature/search-two"} {
+	// The logical state name may contain JSON-escaped punctuation independently
+	// of its persisted ID, branch, and checkout path. Keep those physical
+	// fixture values portable for native Windows execution.
+	physicalNames := []string{"feature/search-one", "feature/search-two"}
+	for _, name := range physicalNames {
 		if err := cli.Execute([]string{"create", "--project", project.Path, name, "--data-dir", data, "--path", filepath.Join(t.TempDir(), strings.ReplaceAll(name, "/", "-"))}, io.Discard, io.Discard); err != nil {
 			t.Fatal(err)
 		}
+	}
+	registry, err := store.ReadRegistry(filepath.Join(data, "registry.json"))
+	if err != nil || len(registry.Projects) != 1 {
+		t.Fatalf("registry = %#v, %v", registry, err)
+	}
+	var projectID string
+	for projectID = range registry.Projects {
+	}
+	statePath := service.WorkspaceStatePath(data, projectID, pathutil.StorageName(physicalNames[0]))
+	state, err := store.ReadWorkspace(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, physical := range append([]string{state.Path}, state.Repositories["root"].Branch) {
+		if strings.Contains(physical, `"`) {
+			t.Fatalf("portable fixture physical path or ref contains a quote: %q", physical)
+		}
+	}
+	state.Name = `feature/search-"one"`
+	if err := store.WriteWorkspace(statePath, state); err != nil {
+		t.Fatal(err)
 	}
 	arguments := []string{"path", "search", "--project", project.Path, "--data-dir", data}
 	var stdout, stderr bytes.Buffer

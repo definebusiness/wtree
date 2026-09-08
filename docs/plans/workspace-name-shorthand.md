@@ -385,8 +385,20 @@ passed (`m03-progression-semantic-red.log` and `-green.log`).
 All local implementation, independent review, and verification passed. The user
 has now authorized committing and pushing the reviewed feature from
 `feat/workspace-match` and creating a pull request to `main`. The durable run
-is active again while the matching-source Ubuntu/macOS/Windows CI matrix is
-collected. Prior run `34129361769` covers only starting commit `ef8e14e`.
+is active again. Commit `138da6160db58fad3fec724a251a5c506962ab36` is published
+in [PR #5](https://github.com/definebusiness/wtree/pull/5) to `main`; matching-source
+CI runs [34172767656](https://github.com/definebusiness/wtree/actions/runs/34172767656)
+and [34172764270](https://github.com/definebusiness/wtree/actions/runs/34172764270)
+passed Ubuntu/macOS but failed Windows: the escaping fixture used a quoted
+physical path, and the push run also exposed intermittent final-publication
+lock contention in an existing clone concurrency test. Test-only C1/C2
+remediation is independently approved: portable physical fixtures retain quoted
+logical-name escaping, and clone remote overlap is proven before controlled final
+publication. Corrected candidate `7fb2991aaa0ec192a15535ce2f2b59275f05249b0e6934210b74110c05f290aa`
+passed owning/focused normal and race tests, local/changed checks, and the full
+845-target normal suite. Main final/terminal checks and corrected-source native
+CI are being run before completion. Prior run
+`34129361769` covers only starting commit `ef8e14e`.
 Preserve unrelated worktree edits outside the feature commit. Approve M03 and
 transition the plan/specification to `implemented` only after the required
 native CI passes; merging the PR is not authorized.
