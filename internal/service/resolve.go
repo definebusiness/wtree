@@ -123,6 +123,19 @@ func (r *Resolver) ReconcileProject(ctx context.Context, dataDir string, project
 	return r.reconcileProjectWith(ctx, dataDir, project, nil)
 }
 
+// ReconcileCheckout keeps checkout selection authority valid before any
+// registry publication. The callback also protects the replacement boundary
+// when reconciliation is needed; the up-front check covers unchanged registry
+// state where no publication callback is reached.
+func (r *Resolver) ReconcileCheckout(ctx context.Context, dataDir string, project domain.Project, precondition *WorkspaceCheckoutPrecondition) error {
+	if err := precondition.revalidate(project); err != nil {
+		return err
+	}
+	return r.reconcileProjectWith(ctx, dataDir, project, func() error {
+		return precondition.revalidate(project)
+	})
+}
+
 // reconcileProjectWith retains ReconcileProject's public behavior while
 // allowing a lifecycle owner to recheck its immutable preflight immediately
 // before the registry replacement CAS.

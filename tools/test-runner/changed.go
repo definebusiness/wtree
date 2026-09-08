@@ -150,7 +150,7 @@ func selectPaths(root string, graph []PackageGraph, paths []string) (ChangeSelec
 		case strings.EqualFold(filepath.Ext(path), ".md"):
 			documentation = true
 			continue
-		case path == "Makefile" || strings.HasPrefix(path, "tools/test-runner/") || strings.HasPrefix(path, "scripts/") || strings.HasPrefix(path, ".github/workflows/"):
+		case path == "Makefile" || strings.HasPrefix(path, "tools/test-runner/") || strings.HasPrefix(path, "scripts/") || (strings.HasPrefix(path, "tutorial/") && strings.EqualFold(filepath.Ext(path), ".sh")) || strings.HasPrefix(path, ".github/workflows/"):
 			harness = true
 			selected["./tools/test-runner"] = true
 			continue

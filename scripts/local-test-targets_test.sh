@@ -9,7 +9,7 @@ cd "$repo_root"
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 require() { [[ $1 == *"$2"* ]] || fail "missing [$2]"; }
 reject() { [[ $1 != *"$2"* ]] || fail "unexpected [$2]"; }
-capture() { make -n "$@"; }
+capture() { env -u TEST_CHANGED_TIMEOUT -u MAKEFLAGS -u MFLAGS -u MAKEOVERRIDES make -n "$@"; }
 
 fast=$(capture check-local)
 require "$fast" 'go test -short -count=1 -timeout=90s ./...'
@@ -22,6 +22,9 @@ reject "$fast" 'test-full-race mode=race'
 changed=$(capture test-changed BASE_REF=HEAD)
 require "$changed" 'test-runner changed-run --base "HEAD"'
 require "$changed" 'changed-run --base "HEAD" --timeout=5m'
+
+changed_override=$(capture test-changed BASE_REF=HEAD TEST_CHANGED_TIMEOUT=30m)
+require "$changed_override" 'changed-run --base "HEAD" --timeout=30m'
 
 changed_race=$(capture test-changed-race "PACKAGES=./internal/testutil ./tools/test-runner")
 require "$changed_race" 'go test -short=false -race -count=1 -timeout=5m ./internal/testutil ./tools/test-runner'

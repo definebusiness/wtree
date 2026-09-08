@@ -4,6 +4,7 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/definebusiness/wtree/internal/domain"
 	"github.com/definebusiness/wtree/internal/render"
 	"github.com/definebusiness/wtree/internal/service"
 	"github.com/spf13/cobra"
@@ -12,9 +13,10 @@ import (
 func newStatusCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 	var dataDir string
 	var jsonOutput bool
+	var exact bool
 	command := &cobra.Command{
 		Use:   "status [workspace]",
-		Short: "show workspace checkout and upstream status",
+		Short: "show workspace checkout and upstream status by shorthand or exact name",
 		Long: "Inspect every declared forest checkout in deterministic parent-first order, including working-tree and structural status alongside upstream drift. " +
 			"UPSTREAM comparisons use last-fetched local upstream facts. When an authoritative locally tracked manifest is available, status also reports local manifest/state/disk drift; it does not fetch or contact remotes.",
 		Args: maximumOneArgument,
@@ -26,18 +28,33 @@ func newStatusCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 				}
 				dataDir = paths.DataDir
 			}
-			resolution, err := resolveCurrentWorkspace(command.Context(), *projectPath, dataDir)
-			if err != nil {
-				return err
-			}
-			workspace := resolution.Workspace
+			var project domain.Project
+			var workspace domain.Workspace
 			if len(arguments) == 1 {
-				workspace, err = service.RequireWorkspace(resolution.Project, dataDir, arguments[0])
+				resolvedProject, resolvedDataDir, err := resolveWorkspaceProject(command.Context(), *projectPath, dataDir)
 				if err != nil {
 					return err
 				}
+				dataDir = resolvedDataDir
+				mode := service.WorkspaceSelectionSubstring
+				if exact {
+					mode = service.WorkspaceSelectionExact
+				}
+				selected, err := service.NewWorkspaceSelector().Select(command.Context(), resolvedProject, service.WorkspaceSelectionRequest{
+					DataDir: dataDir, Query: arguments[0], Mode: mode, Policy: service.WorkspaceSelectionEligible,
+				})
+				if err != nil {
+					return err
+				}
+				project, workspace = resolvedProject, selected
+			} else {
+				resolved, err := resolveCurrentWorkspace(command.Context(), *projectPath, dataDir)
+				if err != nil {
+					return err
+				}
+				project, workspace = resolved.Project, resolved.Workspace
 			}
-			value, err := service.NewStatusService().StatusWithDataDir(command.Context(), resolution.Project, workspace, dataDir)
+			value, err := service.NewStatusService().StatusWithDataDir(command.Context(), project, workspace, dataDir)
 			if err != nil {
 				return err
 			}
@@ -52,6 +69,7 @@ func newStatusCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 	}
 	command.Flags().StringVar(&dataDir, "data-dir", "", "data directory")
 	command.Flags().BoolVar(&jsonOutput, "json", false, "emit JSON")
+	command.Flags().BoolVar(&exact, "exact", false, "match the full workspace name or ID")
 	return command
 }
 

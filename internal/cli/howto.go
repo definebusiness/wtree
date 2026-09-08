@@ -33,11 +33,12 @@ const globalHowTo = `WTREE HOW-TO
    Jump to a branch workspace: cd "$(wtree path feature/login)"
    Jump back to the original clone (the default workspace): cd "$(wtree path default)"
 12. Resolve workspace paths
-    Run: wtree path feature/login
+    Run: wtree path login. path and explicit status accept a literal,
+    case-sensitive workspace-name substring; use --exact for a full name or ID.
 13. Resolve repository paths
     Run: wtree repo path backend
 14. Inspect status
-    Run: wtree status feature/login --json
+    Run: wtree status login --json
 	    STATUS reports working-tree and structural state; UPSTREAM reports
 	    last-fetched local upstream facts. Local drift is compared with the
 	    locally tracked manifest when available. status does not fetch or contact remotes.
@@ -48,7 +49,9 @@ const globalHowTo = `WTREE HOW-TO
 17. Remove a workspace
     Run: wtree remove feature/login. Branches and retained state remain for checkout.
 18. Restore an existing branch with checkout
-    Run: wtree checkout feature/login
+    Run: wtree checkout login. checkout resolves one registered workspace by
+    literal case-sensitive substring and restores its recorded mounts; use
+    --exact for a full name or ID, or for an existing local branch with no state.
 19. Delete workspace and branches
     Run: wtree delete feature/login. Use --force only for the named safety overrides.
 20. Diagnose inconsistencies

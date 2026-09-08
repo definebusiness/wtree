@@ -23,11 +23,62 @@ type WorkspaceCheckoutRequest struct {
 	WorktreeRoot  string
 	DataDir       string
 	Mounts        []MountOverride
+	// SelectedWorkspace and Precondition are supplied only by the checkout
+	// selector. Existing exact service callers leave both nil and retain their
+	// established FindWorkspace behavior.
+	SelectedWorkspace *domain.Workspace
+	Precondition      *WorkspaceCheckoutPrecondition
+}
+
+type capturedWorkspaceState struct {
+	workspace domain.Workspace
+	snapshot  cloneFileSnapshot
+}
+
+// captureWorkspaceInventory reads each workspace from the same exact file
+// generation that later protects checkout execution. It is checkout-specific:
+// ListWorkspaces remains the established read-only inventory API for all
+// existing callers.
+func captureWorkspaceInventory(project domain.Project, dataDir string) ([]capturedWorkspaceState, error) {
+	entries, err := os.ReadDir(WorkspaceStateDirectory(dataDir, project.ID))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, NewError(ErrorInternal, fmt.Errorf("read workspace state: %w", err))
+	}
+	values := make([]capturedWorkspaceState, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(WorkspaceStateDirectory(dataDir, project.ID), entry.Name())
+		snapshot, snapshotErr := secureCloneFileSnapshot(path)
+		if snapshotErr != nil || !snapshot.exists {
+			return nil, NewError(ErrorConflict, fmt.Errorf("capture workspace state %q: %w", entry.Name(), snapshotErr))
+		}
+		state, decodeErr := store.DecodeWorkspace(snapshot.data)
+		if decodeErr != nil {
+			return nil, NewError(ErrorValidation, fmt.Errorf("read workspace state %q: %w", entry.Name(), decodeErr))
+		}
+		workspace, workspaceErr := workspaceFromState(state)
+		if workspaceErr != nil {
+			return nil, NewError(ErrorValidation, fmt.Errorf("decode workspace state %q: %w", entry.Name(), workspaceErr))
+		}
+		if validateErr := workspace.Validate(project); validateErr != nil {
+			return nil, NewError(ErrorValidation, fmt.Errorf("validate workspace state %q: %w", entry.Name(), validateErr))
+		}
+		values = append(values, capturedWorkspaceState{workspace: workspace, snapshot: snapshot})
+	}
+	return values, nil
 }
 
 // PlanCheckout resolves retained workspace state before planning existing
 // branches. It never creates branches and is safe to use for dry-run output.
 func (c *WorkspaceCreator) PlanCheckout(ctx context.Context, project domain.Project, request WorkspaceCheckoutRequest) (plan.WorkspacePlan, error) {
+	if err := request.Precondition.revalidate(project); err != nil {
+		return plan.WorkspacePlan{}, err
+	}
 	planRequest, err := prepareCheckoutRequest(project, request)
 	if err != nil {
 		return plan.WorkspacePlan{}, err
@@ -38,6 +89,9 @@ func (c *WorkspaceCreator) PlanCheckout(ctx context.Context, project domain.Proj
 // CheckoutWorkspace restores a workspace from retained state or creates an
 // unambiguous existing-branch checkout using only add-worktree effects.
 func (c *WorkspaceCreator) CheckoutWorkspace(ctx context.Context, project domain.Project, request WorkspaceCheckoutRequest, progress func(transaction.Event)) (plan.WorkspacePlan, error) {
+	if err := request.Precondition.revalidate(project); err != nil {
+		return plan.WorkspacePlan{}, err
+	}
 	planRequest, err := prepareCheckoutRequest(project, request)
 	if err != nil {
 		return plan.WorkspacePlan{}, err
@@ -49,9 +103,19 @@ func prepareCheckoutRequest(project domain.Project, request WorkspaceCheckoutReq
 	if request.WorkspaceName == "" {
 		return WorkspacePlanRequest{}, NewError(ErrorValidation, errors.New("workspace name is required"))
 	}
-	stored, found, err := FindWorkspace(project, request.DataDir, request.WorkspaceName)
-	if err != nil {
-		return WorkspacePlanRequest{}, err
+	stored, found := domain.Workspace{}, false
+	if request.SelectedWorkspace != nil {
+		stored, found = *request.SelectedWorkspace, true
+	} else if request.Precondition != nil && request.Precondition.branchOnly {
+		// The exact branch-only precondition freezes state absence. Never use a
+		// later inventory read to turn that branch request into a workspace.
+		found = false
+	} else {
+		var err error
+		stored, found, err = FindWorkspace(project, request.DataDir, request.WorkspaceName)
+		if err != nil {
+			return WorkspacePlanRequest{}, err
+		}
 	}
 	mounts := request.Mounts
 	target := request.TargetPath
@@ -72,6 +136,7 @@ func prepareCheckoutRequest(project domain.Project, request WorkspaceCheckoutReq
 	return WorkspacePlanRequest{
 		Operation: plan.Checkout, WorkspaceName: request.WorkspaceName, TargetPath: target,
 		WorktreeRoot: request.WorktreeRoot, DataDir: request.DataDir, Mounts: mounts,
+		checkoutPrecondition: request.Precondition,
 	}, nil
 }
 

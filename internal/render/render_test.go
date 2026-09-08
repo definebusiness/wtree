@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/definebusiness/wtree/internal/render"
@@ -54,6 +55,41 @@ func TestJSONErrorIncludesCleanRollbackOutcome(t *testing.T) {
 	}
 	if envelope.Success || envelope.Error.Code != "git" || !envelope.Error.Rollback.Complete {
 		t.Fatalf("JSONError() = %s", output.String())
+	}
+}
+
+func TestJSONErrorIncludesOnlyTypedWorkspaceSelectionDetails(t *testing.T) {
+	var output bytes.Buffer
+	selection := &service.WorkspaceSelectionError{Query: `feature/"quoted"`, Mode: service.WorkspaceSelectionSubstring, Candidates: []service.WorkspaceSelectionCandidate{{Name: "feature/alpha", ID: "alpha"}, {Name: "feature/beta", ID: "beta"}}}
+	if err := render.JSONError(&output, service.NewError(service.ErrorConflict, selection)); err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Error struct {
+			Code      string `json:"code"`
+			Selection *struct {
+				Query      string `json:"query"`
+				Mode       string `json:"mode"`
+				Candidates []struct {
+					Name string `json:"name"`
+					ID   string `json:"id"`
+				} `json:"candidates"`
+			} `json:"selection"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Code != "conflict" || envelope.Error.Selection == nil || envelope.Error.Selection.Query != `feature/"quoted"` || envelope.Error.Selection.Mode != "substring" || len(envelope.Error.Selection.Candidates) != 2 || envelope.Error.Selection.Candidates[0].Name != "feature/alpha" || envelope.Error.Selection.Candidates[1].ID != "beta" {
+		t.Fatalf("selection envelope = %s", output.String())
+	}
+
+	output.Reset()
+	if err := render.JSONError(&output, service.NewError(service.ErrorValidation, errors.New("ordinary failure"))); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), `"selection"`) {
+		t.Fatalf("ordinary error gained selection detail: %s", output.String())
 	}
 }
 

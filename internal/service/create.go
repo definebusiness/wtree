@@ -111,6 +111,9 @@ func (c *WorkspaceCreator) execute(ctx context.Context, project domain.Project, 
 		Steps:    steps,
 		Progress: progress,
 		Revalidate: func(ctx context.Context) error {
+			if err := request.checkoutPrecondition.revalidate(project); err != nil {
+				return err
+			}
 			revalidated, err := c.planner.Plan(ctx, project, request)
 			if err != nil {
 				return err

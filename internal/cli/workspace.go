@@ -17,7 +17,7 @@ import (
 func newCheckoutCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Command {
 	var targetPath, worktreeRoot, dataDir string
 	var mounts []string
-	var dryRun, jsonOutput, verbose, force bool
+	var dryRun, jsonOutput, verbose, force, exact bool
 	command := &cobra.Command{
 		Use:   "checkout <workspace-or-branch>",
 		Short: "checkout an existing synchronized workspace branch",
@@ -50,7 +50,26 @@ func newCheckoutCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Co
 			if err != nil {
 				return service.NewError(service.ErrorValidation, err)
 			}
-			request := service.WorkspaceCheckoutRequest{WorkspaceName: arguments[0], TargetPath: targetPath, WorktreeRoot: worktreeRoot, DataDir: dataDir, Mounts: overrides}
+			mode := service.WorkspaceSelectionSubstring
+			if exact {
+				mode = service.WorkspaceSelectionExact
+			}
+			selector := service.NewWorkspaceSelector()
+			selection, selectErr := selector.SelectCheckout(ctx, resolution.Project, service.WorkspaceSelectionRequest{DataDir: dataDir, Query: arguments[0], Mode: mode, Policy: service.WorkspaceSelectionCheckout})
+			if selectErr != nil {
+				if !exact || render.ErrorCode(selectErr) != string(service.ErrorWorkspaceNotFound) {
+					return selectErr
+				}
+				selection, selectErr = selector.SelectExactBranch(ctx, resolution.Project, dataDir, arguments[0])
+				if selectErr != nil {
+					return selectErr
+				}
+			}
+			workspaceName := arguments[0]
+			if selection.Workspace != nil {
+				workspaceName = selection.Workspace.Name
+			}
+			request := service.WorkspaceCheckoutRequest{WorkspaceName: workspaceName, TargetPath: targetPath, WorktreeRoot: worktreeRoot, DataDir: dataDir, Mounts: overrides, SelectedWorkspace: selection.Workspace, Precondition: selection.Precondition}
 			creator := service.NewWorkspaceCreator()
 			value, err := creator.PlanCheckout(ctx, resolution.Project, request)
 			if err != nil {
@@ -62,7 +81,7 @@ func newCheckoutCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Co
 				}
 				return renderWorkspacePlan(stdout, value)
 			}
-			if err := resolver.ReconcileProject(ctx, dataDir, resolution.Project); err != nil {
+			if err := resolver.ReconcileCheckout(ctx, dataDir, resolution.Project, selection.Precondition); err != nil {
 				return err
 			}
 			var progressErr error
@@ -99,6 +118,7 @@ func newCheckoutCommand(stdout, stderr io.Writer, projectPath *string) *cobra.Co
 	command.Flags().BoolVar(&jsonOutput, "json", false, "emit JSON")
 	command.Flags().BoolVar(&verbose, "verbose", false, "emit transaction progress")
 	command.Flags().BoolVar(&force, "force", false, "unsupported for checkout")
+	command.Flags().BoolVar(&exact, "exact", false, "match the full workspace name or ID, or an existing local branch")
 	return command
 }
 
@@ -151,23 +171,34 @@ func newListCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 
 func newPathCommand(stdout io.Writer, projectPath *string) *cobra.Command {
 	var dataDir string
+	var exact bool
 	command := &cobra.Command{
 		Use:   "path <workspace>",
-		Short: "print one workspace path",
+		Short: "print one workspace path by shorthand or exact name",
 		Args:  exactArguments(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
 			project, dataDir, err := resolveWorkspaceProject(command.Context(), *projectPath, dataDir)
 			if err != nil {
 				return err
 			}
-			workspace, err := service.RequireWorkspace(project, dataDir, arguments[0])
+			mode := service.WorkspaceSelectionSubstring
+			if exact {
+				mode = service.WorkspaceSelectionExact
+			}
+			workspace, err := service.NewWorkspaceSelector().Select(command.Context(), project, service.WorkspaceSelectionRequest{
+				DataDir: dataDir, Query: arguments[0], Mode: mode, Policy: service.WorkspaceSelectionEligible,
+			})
 			if err != nil {
+				return err
+			}
+			if err := service.ValidateWorkspaceRoot(workspace); err != nil {
 				return err
 			}
 			return render.Line(stdout, workspace.RootPath)
 		},
 	}
 	command.Flags().StringVar(&dataDir, "data-dir", "", "data directory")
+	command.Flags().BoolVar(&exact, "exact", false, "match the full workspace name or ID")
 	return command
 }
 
