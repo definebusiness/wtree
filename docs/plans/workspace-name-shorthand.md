@@ -1,6 +1,6 @@
 # Workspace name shorthand implementation plan
 
-Status: initial
+Status: implemented
 Source specification: [Workspace name shorthand specification](../spec/workspace-name-shorthand.md)
 Source of truth: [Selection](../spec/workspace-name-shorthand.md#2-inputs-and-selection), [eligibility](../spec/workspace-name-shorthand.md#3-removed-workspace-eligibility), [checkout](../spec/workspace-name-shorthand.md#4-checkout-resolution-and-execution), and [output contracts](../spec/workspace-name-shorthand.md#5-output-and-error-contract); [workspace inventory and checkout preparation](../../internal/service/workspace.go); [transaction revalidation](../../internal/service/transaction.go); [CLI workspace commands](../../internal/cli/workspace.go); [status command](../../internal/cli/status.go); [error rendering](../../internal/render/render.go); [verification targets](../../Makefile)
 Delivery style: test-first, one reviewed milestone at a time
@@ -302,7 +302,7 @@ Exit criteria: checkout resolves once to the canonical target, preserves exact
 branch-only access, rejects stale authority without retargeting, and all three
 commands and their public examples agree with the specification.
 
-### [ ] M03 — Verify complete acceptance and close lifecycle documentation
+### [x] M03 — Verify complete acceptance and close lifecycle documentation
 
 Specification coverage: [section 6](../spec/workspace-name-shorthand.md#6-delivery-and-acceptance), AC01–AC08.
 
@@ -347,20 +347,22 @@ overview, and complete this run's ledger under its final-response gate.
 ## Acceptance evidence
 
 The [run ledger](../ai/runs/workspace-name-shorthand.md) records source identities,
-exact commands, review decisions, and the local evidence directory. M00–M02
-results below are approved milestone evidence. The frozen M03 local candidate
-`9ab56a342255ba34f69a63f7674074cc22be1da351fcb947aa12c72ac3b4db66` passed
-focused normal/race, `make check-local`, changed-area verification, and
-`make test-full` (845 service targets, 11m30.584s), recorded in `m03-*.log`.
-Independent review approved the local candidate with no material findings.
-Main-agent verification also passed on the same source: focused normal/race,
-`make check-local`, changed-area coverage with the recorded 30-minute package
-bound, `make test-full` (845 service targets, 9m8.935s), `make test-full-race`
-(845 service targets, 9m13.785s), `make tutorial-test`, `make release-test`, and
-`git diff --check`. Exact commands and successful exits are in
-`main-m03-0.log` through `main-m03-8.log`. The final source archive and manifest
-are `m03-final-local.tar.gz` and `m03-final-local.json`; the code digest above
-is unchanged. Matching-source native CI is the only outstanding gate.
+exact commands, independent reviews, and the local evidence directory. All
+milestones are approved. The final implementation and test source is commit
+`04f5a89b640f29a9d88907c11bb1edfed0cb7813`, source digest
+`7fb2991aaa0ec192a15535ce2f2b59275f05249b0e6934210b74110c05f290aa`.
+Independent normal review approved the complete candidate and the test-only
+Windows corrections with no material findings. Main-agent verification passed
+owning and focused normal/race tests, `make check-local`, changed-area tests
+with the recorded 30-minute package bound, `make test-full` (845 service
+targets, 9m11.274s), `make test-full-race` (845 targets, 10m25.683s),
+`make tutorial-test`, `make release-test`, and `git diff --check`.
+Exact commands and exit statuses are in `main-m03-ci-0.log` through
+`main-m03-ci-10.log`; `m03-ci-main-verified.json` records the source manifest.
+Matching-source [push CI](https://github.com/definebusiness/wtree/actions/runs/34178035627)
+and [PR CI](https://github.com/definebusiness/wtree/actions/runs/34178037716)
+passed on Ubuntu, macOS, and native Windows, including normal/race tests,
+formatting, vet, build, release layout, safe directory reuse, and manifest checks.
 
 `TestWorkspaceSelectionExecutableProgressionAcrossPathStatusRemoveAndCheckout`
 adds a real-repository command-boundary progression for AC01–AC05: shorthand
@@ -373,35 +375,26 @@ passed (`m03-progression-semantic-red.log` and `-green.log`).
 |---|---|---|
 | AC01 | `TestWorkspaceSelectionMatchingAndDetails`; `TestWorkspaceSelectionPathAndExplicitStatus` | M00/M01 focused normal/race and changed-area gates passed; M03 focused/global/frozen full normal gates passed; main focused, full normal/race, and terminal verification passed. |
 | AC02 | `TestWorkspaceSelectionMatchingAndDetails`; `TestWorkspaceSelectionPathAndExplicitStatus`; `TestWorkspaceSelectionCheckoutCanonicalShorthandAndExactID`; `TestWorkspaceSelectionCheckoutEmptySelectorBeatsCorruptInventory` | M00–M02 independently approved; M02 R1 corrupt-inventory empty-selector RED/GREEN and `main-m02-0..5.log` passed. |
-| AC03 | `TestWorkspaceSelectionRemovedWorkspacePoliciesAndObservation`; `TestWorkspaceSelectionRetainsPersistedPartialAndDamagedCandidates`; `TestWorkspaceSelectionRealForestRemovalIsReadOnly`; `TestWorkspaceSelectionUncertainObservationsDoNotNarrowCandidates`; `TestWorkspaceSelectionPlatformPathComparison` | M00 corrected candidate-observation and read-only snapshots approved; M02 focused normal/race passed. Native matrix pending. |
+| AC03 | `TestWorkspaceSelectionRemovedWorkspacePoliciesAndObservation`; `TestWorkspaceSelectionRetainsPersistedPartialAndDamagedCandidates`; `TestWorkspaceSelectionRealForestRemovalIsReadOnly`; `TestWorkspaceSelectionUncertainObservationsDoNotNarrowCandidates`; `TestWorkspaceSelectionPlatformPathComparison` | M00 corrected candidate-observation and read-only snapshots approved; M02 focused normal/race passed. Native Ubuntu/macOS/Windows normal and race matrix passed at `04f5a89`. |
 | AC04 | `TestWorkspaceSelectionErrorsStayAtTheProcessBoundary`; `TestWorkspaceSelectionEOFProcessKeepsScalarPathOutput`; `TestWorkspaceSelectionPathAndExplicitStatus`; `TestJSONErrorIncludesOnlyTypedWorkspaceSelectionDetails` and stable-envelope tests | M01 process-boundary/JSON review and required gates passed; M03 cross-command acceptance and frozen full normal suite passed. |
 | AC05 | `TestWorkspaceSelectionCheckoutCanonicalShorthandAndExactID`; `TestWorkspaceSelectionCheckoutRestoresForestCompanionCanonicalTarget`; `TestWorkspaceSelectionCheckoutRestoresPlainMultiTopLevelForest`; `TestWorkspaceSelectionCheckoutOverlayRetainsUnspecifiedMounts` | M02 normal/race, tutorial, local, and changed-area gates passed; `main-m02-0..5.log`. |
 | AC06 | `TestWorkspaceSelectionCheckoutPreconditions`; `TestWorkspaceSelectionCheckoutExactBranchAbsencePrecondition`; `TestWorkspaceSelectionCheckoutExactBranchAppearanceUnderLock`; `TestWorkspaceSelectionCheckoutLookupFailuresHaveNoEffectsAcrossModes`; `TestWorkspaceSelectionCheckoutRefusesPersistedPartialDetachedAndDivergentStateWithoutMutation` | M02 locked-precondition mutation RED, restored GREEN, normal/race/transaction gates and independent review passed. |
 | AC07 | `TestWorkspaceSelectionExactFlagAllowlist`; destructive no-effect cases in `TestWorkspaceSelectionPathAndExplicitStatus` | M01 complete excluded-command matrix and destructive snapshots approved; M02 checkout-only allowlist extension verified. |
-| AC08 | `TestDetailedCommandHelpAndUnsupportedOptionMatrix`, existing how-to tests and executable tutorial runners; M03 consistency audit and final gates | M02 tutorials passed; M03 focused normal/race and frozen full normal passed; main terminal full-race, release, and final tutorial gates passed. Latest CI run [34129361769](https://github.com/definebusiness/wtree/actions/runs/34129361769) passed for starting commit `ef8e14e`, not the changed source; matching-source Ubuntu/macOS/Windows runs pending. |
+| AC08 | `TestDetailedCommandHelpAndUnsupportedOptionMatrix`, existing how-to tests and executable tutorial runners; M03 consistency audit and final gates | M02 tutorials passed; M03 focused normal/race and frozen full normal passed; main terminal full-race, release, and final tutorial gates passed. Matching-source Ubuntu/macOS/Windows push and PR CI passed at `04f5a89`; see links above. |
 
-## Remaining completion gate
+## Delivery and portability verification
 
-All local implementation, independent review, and verification passed. The user
-has now authorized committing and pushing the reviewed feature from
-`feat/workspace-match` and creating a pull request to `main`. The durable run
-is active again. Commit `138da6160db58fad3fec724a251a5c506962ab36` is published
-in [PR #5](https://github.com/definebusiness/wtree/pull/5) to `main`; matching-source
-CI runs [34172767656](https://github.com/definebusiness/wtree/actions/runs/34172767656)
-and [34172764270](https://github.com/definebusiness/wtree/actions/runs/34172764270)
-passed Ubuntu/macOS but failed Windows: the escaping fixture used a quoted
-physical path, and the push run also exposed intermittent final-publication
-lock contention in an existing clone concurrency test. Test-only C1/C2
-remediation is independently approved: portable physical fixtures retain quoted
-logical-name escaping, and clone remote overlap is proven before controlled final
-publication. Corrected candidate `7fb2991aaa0ec192a15535ce2f2b59275f05249b0e6934210b74110c05f290aa`
-passed owning/focused normal and race tests, local/changed checks, and the full
-845-target normal suite. Main final/terminal checks and corrected-source native
-CI are being run before completion. Prior run
-`34129361769` covers only starting commit `ef8e14e`.
-Preserve unrelated worktree edits outside the feature commit. Approve M03 and
-transition the plan/specification to `implemented` only after the required
-native CI passes; merging the PR is not authorized.
+The reviewed implementation is published in
+[PR #5](https://github.com/definebusiness/wtree/pull/5), from
+`feat/workspace-match` to `main`. Native Windows exposed two test-fixture issues:
+a quoted physical path and scheduling-dependent clone publication contention.
+The independently reviewed correction uses portable paths while preserving
+quoted logical-name escaping assertions, and proves concurrent remote callbacks
+before releasing their final publications in order. Production behavior and
+production timeouts are unchanged. All local and native gates passed on the
+corrected source. The final lifecycle-only documentation update retains these
+results because implementation, tests, workflows, flags, and test inventory are
+unchanged. Unrelated worktree edits are preserved; the PR is not merged.
 
 ## Execution log
 
@@ -413,3 +406,4 @@ belong in this plan's [durable run ledger](../ai/runs/workspace-name-shorthand.m
 | 2026-09-07 | M00 | Focused normal/race, exact regression, check-local, changed-area (30m package bound), diff check passed; see durable ledger | Independent normal reviewer approved; material findings resolved | Uncommitted; base `ef8e14e` |
 | 2026-09-07 | M01 | Focused normal/race, exact regression, check-local, changed-area (30m package bound), diff check passed; see durable ledger | Independent normal reviewer approved; material findings resolved | Uncommitted; base `ef8e14e` |
 | 2026-09-07 | M02 | Focused normal/race, tutorial, check-local, changed-area (30m package bound), diff check passed; see durable ledger | Independent normal reviewer approved; material findings resolved | Uncommitted; base `ef8e14e` |
+| 2026-09-08 | M03 | Main owning/focused normal/race, local/changed, full normal/race (845 service targets each), tutorial, release, diff and lifecycle checks passed; matching-source push 34178035627 and PR 34178037716 passed Ubuntu/macOS/Windows | Independent normal reviewers approved complete acceptance and Windows test-only correction; no unresolved findings | `04f5a89` implementation/test source; final documentation-only closure retains verified source |

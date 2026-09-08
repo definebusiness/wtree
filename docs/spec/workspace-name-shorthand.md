@@ -1,6 +1,6 @@
 # Workspace name shorthand specification
 
-Status: planned
+Status: implemented
 Source idea: [Workspace name shorthand](../ideas/search-for-branch-if-no-exact-match.md)
 Implementation plan: [Workspace name shorthand implementation plan](../plans/workspace-name-shorthand.md)
 
