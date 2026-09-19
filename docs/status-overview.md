@@ -11,13 +11,13 @@ ledgers do not use this lifecycle.
 
 | Status | Count |
 |---|---:|
-| `initial` | 8 |
+| `initial` | 9 |
 | `specified` | 8 |
 | `planned` | 5 |
 | `implemented` | 26 |
 | `superseded` | 2 |
 | `abandoned` | 0 |
-| **Total** | **49** |
+| **Total** | **50** |
 
 ## Ideas
 
@@ -32,6 +32,7 @@ ledgers do not use this lifecycle.
 | [Immutable release locks with CI materialization and a post-release hook](ideas/release-lock-manifests.md) | `specified` | [Immutable release lock manifests specification](spec/release-lock-manifests.md) |
 | [Logical project roots with a designated base repository](ideas/logical-project-root-base-repository.md) | `specified` | [Portable manifest v2 base-repository format specification](spec/portable-manifest-v2-base-repository-format.md); [logical project root and repository forest specification](spec/logical-project-root-base-repository.md) |
 | [Machine-local and shared workspace lifecycle hooks](ideas/local-workspace-lifecycle-hooks.md) | `specified` | [Local and shared workspace lifecycle hooks specification](spec/local-workspace-lifecycle-hooks.md); completes the focused local/shared contract and the related portable `post-clone` boundary |
+| [Recorded bugs](ideas/bugs.md) | `initial` | None; the README root-layout documentation bug is fixed with both layouts illustrated and metadata ownership clarified in [README](../README.md#what-it-does). Checked against the v2 manifest validator and existing topology tests. |
 | [Workspace name shorthand](ideas/search-for-branch-if-no-exact-match.md) | `specified` | [Workspace name shorthand specification](spec/workspace-name-shorthand.md); default substring selection, `--exact`, noninteractive errors, and removed-workspace eligibility implemented, independently reviewed, and verified locally and on Ubuntu/macOS/Windows. |
 | [Archon-based harness for deterministic milestone orchestration](ideas/workflow/creating-a-minimal-harness-to-process-the-statemachine.md) | `specified` | [Archon deterministic milestone harness specification](spec/archon-milestone-harness.md) |
 

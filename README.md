@@ -2,8 +2,9 @@
 
 `wtree` manages synchronized Git workspaces across a project containing a
 forest of independent Git repositories. The project has one logical root,
-which may be an ordinary directory, and one designated top-level base
-repository that owns its portable and machine-local metadata.
+which may be an ordinary directory or a Git repository checkout, and one
+designated top-level base repository that owns its portable and machine-local
+metadata.
 
 It was created because existing worktree tools did not support synchronized
 branch management across sibling and nested repositories: creating a
@@ -12,16 +13,24 @@ every declared repository tree as one logical operation.
 
 ## What it does
 
-`wtree` discovers independent Git repositories below an explicit logical-root
-boundary, records their Git identities and parent relationships, and treats
-the resulting forest as one project. It then creates, imports, restores,
-inspects, and safely removes complete workspaces.
+`wtree` discovers independent Git repositories at and below an explicit
+logical-root boundary, records their Git identities and parent relationships,
+and treats the resulting forest as one project. It then creates, imports,
+restores, inspects, and safely removes complete workspaces.
 
 Repository identity is based on Git's common directory, not the checkout
 directory name. A repository can therefore be mounted under a different name
 in a workspace without losing its identity.
 
-For example, a project like this:
+Both root layouts are supported by portable manifest version 2:
+
+- **Ordinary directory root:** one or more top-level repositories sit below
+  the logical root. One is selected as the base repository.
+- **Git repository root:** the logical root is also the base repository's
+  checkout, with `parent: ""` and `mount: .`. It is the sole top-level
+  repository; other repositories are nested beneath it.
+
+For example, an ordinary directory root can contain this project:
 
 ```text
 product/                       # logical project root, not a Git checkout
@@ -36,8 +45,7 @@ product/                       # logical project root, not a Git checkout
         └── .git/
 ```
 
-can have a synchronized `feature/login` workspace whose nested checkout is
-mounted as `api/` instead of `backend/`:
+It can have a synchronized `feature/login` workspace with the same mounts:
 
 ```text
 feature-login/                 # logical workspace root
@@ -54,6 +62,28 @@ All three repositories use the `feature/login` branch. Top-level mounts are
 relative to the logical root; a child mount is relative to its immediate Git
 parent. The base repository owns `.wtree.yml` and `project.wtree.yml`, but it
 does not become the parent of sibling repositories.
+
+A Git repository root instead looks like this after initialization:
+
+```text
+product/                       # logical project root and base repository
+├── .git/
+├── .gitignore                 # ignores /.wtree.yml and /services/api/
+├── .wtree.yml                 # machine-local configuration, ignored by Git
+├── project.wtree.yml          # portable manifest to commit to Git
+└── services/
+    └── api/                   # child repository of the base repository
+        ├── .git/
+        └── components/
+            └── shared/       # child repository of api
+                └── .git/
+```
+
+Here the base repository is mounted at `.`, `api` at `services/api` relative
+to the base, and `shared` at `components/shared` relative to `api`. A created
+workspace places the base worktree at its logical workspace root and preserves
+those child mounts; all three repositories use the workspace branch. Metadata
+lives directly in the logical root because that directory is the base checkout.
 
 ## Why it exists
 
@@ -88,14 +118,26 @@ To publish an existing project, first push every repository and connect its
 current branch to the intended upstream. `wtree init` writes ignored
 machine-local `.wtree.yml` and tracked `project.wtree.yml` in the selected base
 repository. It updates each Git parent's `.gitignore` for its direct child
-mounts; ordinary grouping directories and the logical root own no metadata or
-ignore rules. Review, commit, and push the manifest and every changed
-`.gitignore`.
+mounts. Ordinary grouping directories and a non-Git logical root own no metadata
+or ignore rules. When the logical root is the base Git checkout, it owns both
+metadata files and its repository's `.gitignore`. Review, commit, and push the
+manifest and every changed `.gitignore`.
+
+For the ordinary directory layout above, select `api` as the base:
 
 ```sh
 cd ~/code/product
 wtree init --base-repository api
 git -C services/api add .gitignore project.wtree.yml
+```
+
+For the Git repository root layout, `init` selects the sole top-level
+repository automatically:
+
+```sh
+cd ~/code/product
+wtree init
+git add .gitignore project.wtree.yml
 ```
 
 `project.wtree.yml` is a portable, reviewable authoring artifact. `init` never
@@ -278,6 +320,44 @@ repositories:
     mount: clients/web
     # clone, upstream, identity, and default_branch are written by `wtree init`
 ```
+
+## Troubleshooting: Worktree incomplete
+
+If parts of a worktree have been deleted wtree does refuse to the remove command.
+To be able to remove it, this currently has to be fixed manually:
+
+1. Delete this entire folder, including any remaining repositories inside:
+
+Find the directory of the worktree (use `wtree path <worktree-name>`).
+
+Extract the project UUID from the path. It is the name of the first folder inside
+the worktrees root.
+
+**This discards any uncommitted files inside it.**
+
+2. From each original repository belonging to that workspace, including the original platform repository, run:
+
+```shell
+git worktree prune --dry-run --verbose
+git worktree prune --verbose
+```
+
+Check the preview first: pruning can clear registrations for other missing worktrees too.
+
+3. Remove the matching workspace JSON file from:
+
+<data-dir>/state/<project-uuid>/
+
+<data-dir> is your --data-dir override, $WTREE_DATA_HOME, or by default on macOS:
+
+~/Library/Application Support/wtree
+
+Open the JSON files and identify the one whose path matches the deleted folder. Move that file outside the state directory to keep a backup
+while unregistering the workspace.
+
+Then run wtree list from the original project to confirm it is gone.
+
+Branches remain available. Leave the project registry entry intact—it represents the whole project, not this workspace.
 
 ## Lifecycle hooks: explicit local consent
 
