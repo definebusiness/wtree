@@ -1,6 +1,6 @@
 # Documentation status overview
 
-Last reviewed: 2026-09-08
+Last reviewed: 2026-09-20
 
 This document summarizes lifecycle metadata for the idea, specification, and
 implementation-plan documents under `docs/`. Operational documentation,
@@ -11,13 +11,13 @@ ledgers do not use this lifecycle.
 
 | Status | Count |
 |---|---:|
-| `initial` | 9 |
+| `initial` | 11 |
 | `specified` | 8 |
 | `planned` | 5 |
 | `implemented` | 26 |
 | `superseded` | 2 |
 | `abandoned` | 0 |
-| **Total** | **50** |
+| **Total** | **52** |
 
 ## Ideas
 
@@ -25,6 +25,8 @@ ledgers do not use this lifecycle.
 |---|---|---|
 | [Actionable recovery from an incomplete rollback](ideas/actionable-incomplete-rollback-recovery.md) | `initial` | None |
 | [Allow workspaces when a branch is missing](ideas/allowing-missing-branches.md) | `initial` | None |
+| [Bug: stale worktree checkout conflict](ideas/bug-stale-worktree-checkout-conflict.md) | `initial` | None; incident evidence, reproduction, code entry points, and regression criteria recorded. No product fix implemented. |
+| [Bug: stale default state and orphaned removal recovery](ideas/bug-stale-default-state-and-removal-recovery.md) | `initial` | None; separate and combined reproductions, captured recovery record, and repair safety criteria recorded. Local metadata repair verified by status and checkout dry run; no product fix implemented. |
 | [Automatically protect nested repository mounts](ideas/automatic-nested-mount-ignore-protection.md) | `specified` | [Automatic nested mount ignore protection specification](spec/automatic-nested-mount-ignore-protection.md); supersedes the prior [specification](spec/nested-mount-ignore-management.md) and [implementation plan](plans/nested-mount-ignore-management.md) |
 | [Clone and synchronize a multi-repository project](ideas/cloning-a-multi-repository-project.md) | `specified` | [Portable manifest clone specification](spec/portable-manifest-clone.md) |
 | [Companion repositories with independent baselines](ideas/companion-repositories.md) | `specified` | [Companion repositories specification](spec/companion-repositories.md) |
@@ -32,7 +34,7 @@ ledgers do not use this lifecycle.
 | [Immutable release locks with CI materialization and a post-release hook](ideas/release-lock-manifests.md) | `specified` | [Immutable release lock manifests specification](spec/release-lock-manifests.md) |
 | [Logical project roots with a designated base repository](ideas/logical-project-root-base-repository.md) | `specified` | [Portable manifest v2 base-repository format specification](spec/portable-manifest-v2-base-repository-format.md); [logical project root and repository forest specification](spec/logical-project-root-base-repository.md) |
 | [Machine-local and shared workspace lifecycle hooks](ideas/local-workspace-lifecycle-hooks.md) | `specified` | [Local and shared workspace lifecycle hooks specification](spec/local-workspace-lifecycle-hooks.md); completes the focused local/shared contract and the related portable `post-clone` boundary |
-| [Recorded bugs](ideas/bugs.md) | `initial` | None; the README root-layout documentation bug is fixed with both layouts illustrated and metadata ownership clarified in [README](../README.md#what-it-does). Checked against the v2 manifest validator and existing topology tests. |
+| [Recorded bugs](ideas/bugs.md) | `initial` | None; two open checkout/recovery reports added on 2026-09-20. The README root-layout documentation bug is fixed with both layouts illustrated and metadata ownership clarified in [README](../README.md#what-it-does). Checked against the v2 manifest validator and existing topology tests. |
 | [Workspace name shorthand](ideas/search-for-branch-if-no-exact-match.md) | `specified` | [Workspace name shorthand specification](spec/workspace-name-shorthand.md); default substring selection, `--exact`, noninteractive errors, and removed-workspace eligibility implemented, independently reviewed, and verified locally and on Ubuntu/macOS/Windows. |
 | [Archon-based harness for deterministic milestone orchestration](ideas/workflow/creating-a-minimal-harness-to-process-the-statemachine.md) | `specified` | [Archon deterministic milestone harness specification](spec/archon-milestone-harness.md) |
 
